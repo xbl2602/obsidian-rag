@@ -1,0 +1,470 @@
+{
+  "graph-ignore-rollback-technical-20260731-2140.md": {
+    "hash": "bab50bca81349f90c2f1a0df986de760",
+    "chunks": 6
+  },
+  "graph-ignore-rollback-user-20260731-2140.md": {
+    "hash": "9f53fe20ba2567e4266f688e390f824c",
+    "chunks": 4
+  },
+  "graph-ignore-tagging-technical-20260731-2100.md": {
+    "hash": "4c194f283cc22ca40a6c3bfbbded3c53",
+    "chunks": 5
+  },
+  "graph-ignore-tagging-user-20260731-2100.md": {
+    "hash": "2f0bcd3588a0758fbc70b3950389f9be",
+    "chunks": 5
+  },
+  "_workflow-元数据填充.md": {
+    "hash": "44033beb43d06e7090d53cba7d8bf7cf",
+    "chunks": 10
+  },
+  "原始规则.md": {
+    "hash": "2875b8752149ef640cd4e9570053f2f6",
+    "chunks": 13
+  },
+  "暑假项目说明书-Project-Charter.md": {
+    "hash": "dfb81d107d4b229cbafd18d99cc081ca",
+    "chunks": 37
+  },
+  "1Clippings/原始数据-标注版.md": {
+    "hash": "ec7bb0e7001354a33f34dcfbf412eb4b",
+    "chunks": 12
+  },
+  "1Clippings/原始数据.md": {
+    "hash": "3b5ac84f462c04b63fb6c7ca0fdcffcc",
+    "chunks": 1
+  },
+  "1Clippings/碎片条目.md": {
+    "hash": "d61e2ef45b9d5c927e0c04ed70ff96a8",
+    "chunks": 7
+  },
+  "user profile/A1_认知模型.md": {
+    "hash": "9ba70ac14717a41cdc607849e663c7a4",
+    "chunks": 9
+  },
+  "user profile/A2_决策系统.md": {
+    "hash": "7e55303488aaf32d4bb4679c4f2cf7a5",
+    "chunks": 8
+  },
+  "user profile/A3_元认知与学习系统.md": {
+    "hash": "b1d1b81a6447b9b470f99d69e71771b5",
+    "chunks": 7
+  },
+  "user profile/B1_航宇工程方向.md": {
+    "hash": "fcfe5777751d58ce5c1137b521e7e8f6",
+    "chunks": 6
+  },
+  "user profile/B2_Rocketry.md": {
+    "hash": "02468a0d17267ca3ceea1949840e79cd",
+    "chunks": 7
+  },
+  "user profile/B3_CFD能力评估.md": {
+    "hash": "60494195faded59f6e71b90e1b8e270c",
+    "chunks": 7
+  },
+  "user profile/B4_CAD与编程能力.md": {
+    "hash": "1ce9c383671335a510ac9f25209e1482",
+    "chunks": 7
+  },
+  "user profile/B5_AI增强工程.md": {
+    "hash": "3e903ee62ddfe49309bfebcb4236d443",
+    "chunks": 7
+  },
+  "user profile/C1_沟通偏好.md": {
+    "hash": "292bd3525b17d1046b81f22b08680c87",
+    "chunks": 9
+  },
+  "user profile/C2_动机与情绪模式.md": {
+    "hash": "801969f66fdfd1db0c9778226930eff9",
+    "chunks": 6
+  },
+  "user profile/C3_优势风险盲点.md": {
+    "hash": "223aaca9591eadf1bf83cd068b446bd5",
+    "chunks": 6
+  },
+  "user profile/D1_当前阶段与目标.md": {
+    "hash": "7406505e3fce61010c688a7ebe811374",
+    "chunks": 8
+  },
+  "user profile/D2_成长路径建议.md": {
+    "hash": "b16e544e53f2b11c840d01407b68af7b",
+    "chunks": 8
+  },
+  "概念/网格无关性验证方法.md": {
+    "hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "chunks": 1
+  },
+  "SOLIDWORK CSWA/概念/CSWA.md": {
+    "hash": "921926cd915f6f418816e215dfac7b34",
+    "chunks": 3
+  },
+  "SOLIDWORK CSWA/概念/CSWP.md": {
+    "hash": "e2dc55797d4f6adb534b054d4187ff36",
+    "chunks": 3
+  },
+  "SOLIDWORK CSWA/概念/GD&T.md": {
+    "hash": "cd239409e392af1360b2e1fdcff45522",
+    "chunks": 3
+  },
+  "SOLIDWORK CSWA/概念/Six-Sigma.md": {
+    "hash": "829d08a33ec0b63fd750928f22d3ada6",
+    "chunks": 3
+  },
+  "SOLIDWORK CSWA/论点/ME加分技能-Cpp与MATLAB.md": {
+    "hash": "c917f0ca8b7d5608ecce506f03dc14ff",
+    "chunks": 3
+  },
+  "SOLIDWORK CSWA/论点/ME核心认证路线-CSWA到CSWP.md": {
+    "hash": "cae9a6bacf5e3aa36242ca8a0b9be6f5",
+    "chunks": 3
+  },
+  "SOLIDWORK CSWA/论点/ME认证-SixSigma与Ansys.md": {
+    "hash": "a92a2a9689f6383c8bde1a1be6e6dd0d",
+    "chunks": 3
+  },
+  "SOLIDWORK CSWA/论点/工程图纸语言-GD&T与ASME-Y14.5.md": {
+    "hash": "ee951de769de4bd3fa2a7146999789da",
+    "chunks": 3
+  },
+  "ROCKETRY/任务节点/任务流程.md": {
+    "hash": "5691986f0a080660e06e67a5cc6a0edd",
+    "chunks": 7
+  },
+  "ROCKETRY/报告/HEBAT3_Technical_Report.md": {
+    "hash": "403e03eabe52470c6788885ddb3bd61e",
+    "chunks": 57
+  },
+  "ROCKETRY/报告/report_checklist.md": {
+    "hash": "05cd7bbf7b5548cfa2c2060c42391ef9",
+    "chunks": 14
+  },
+  "ROCKETRY/报告/report_questions.md": {
+    "hash": "66814f91fd95f878ac9b15b75017df26",
+    "chunks": 64
+  },
+  "ROCKETRY/概念/AI辅助CFD自动化.md": {
+    "hash": "1bda4bb907d91d5300918519f122b3bb",
+    "chunks": 3
+  },
+  "ROCKETRY/概念/AWT-vs-TransitionalFlows.md": {
+    "hash": "d4f03948795a8700d50a3ae4336062e2",
+    "chunks": 4
+  },
+  "ROCKETRY/概念/FLUENT配置与求解设置.md": {
+    "hash": "289244035e32e7bc3a31a251e2899d57",
+    "chunks": 11
+  },
+  "ROCKETRY/概念/OpenRocket多目标优化.md": {
+    "hash": "c6a4f97b7610b6c426f3517ea29c6279",
+    "chunks": 3
+  },
+  "ROCKETRY/概念/y+控制与壁面处理策略.md": {
+    "hash": "734d638e69286254c5e74118136a0d37",
+    "chunks": 6
+  },
+  "ROCKETRY/概念/航空航天知识库与问答系统.md": {
+    "hash": "8d5080fddf7341b1a830d4a45a58bbf4",
+    "chunks": 3
+  },
+  "ROCKETRY/背景/HEBAT3_ORK_Design_Parameters.md": {
+    "hash": "4ef84ab44b05f3708ff36815726faca6",
+    "chunks": 13
+  },
+  "ROCKETRY/背景/HEBAT3_Project_Background.md": {
+    "hash": "7661cf2a30d9ea1336558c39087d66d2",
+    "chunks": 43
+  },
+  "ROCKETRY/论点/AI Agent 在航空航天工程中的应用-执行概要.md": {
+    "hash": "9ee5827c07c58f3066705f7dc0b154ea",
+    "chunks": 8
+  },
+  "ROCKETRY/论点/CFD免费工具-SimScale.md": {
+    "hash": "c377ac669e8f7a91783ca194d40f814e",
+    "chunks": 3
+  },
+  "ROCKETRY/论点/太空机会-ESA欧洲通道.md": {
+    "hash": "ace2594c3ff5691a7da24c60af5fd82c",
+    "chunks": 3
+  },
+  "ROCKETRY/论点/太空机会-亚洲与全球社区.md": {
+    "hash": "9e8dc25c864ecf0d2347ba12aa06a93c",
+    "chunks": 3
+  },
+  "ROCKETRY/论点/航天奖学金与导师计划.md": {
+    "hash": "ef85298eb2383b720cffd07e4f272637",
+    "chunks": 3
+  },
+  "ROCKETRY/论点/航天竞赛-学生火箭与NASA挑战.md": {
+    "hash": "7c79fd38a28f2baeea4018cd316c894f",
+    "chunks": 3
+  },
+  "ROCKETRY/附录/ansys-near-wall-treatment-quotes.md": {
+    "hash": "1fac6d5fe4cf1eeb39e0ec7ea1c6b962",
+    "chunks": 4
+  },
+  "ROCKETRY/附录/y+-wall-treatment-english-report.md": {
+    "hash": "8f73399d0561727c80bc65f1fbb4d650",
+    "chunks": 1
+  },
+  "OTHER CERT/任务节点/OpenAI-Collective-申请.md": {
+    "hash": "fcdb79dbd943a10a1636e2f1562f352d",
+    "chunks": 5
+  },
+  "OTHER CERT/论点/AI证书与学习平台清单.md": {
+    "hash": "a6a06a0a38ac3ae8051dcc01c83d7d04",
+    "chunks": 5
+  },
+  "OTHER CERT/论点/OpenAI-Student-Collective.md": {
+    "hash": "17f9162b0857c4d13d4afc0aef77aaa4",
+    "chunks": 3
+  },
+  "OTHER CERT/论点/YC-AI-Student-Starter-Pack.md": {
+    "hash": "689f39f6b53a1dc2cba49e2a6dc9dfd7",
+    "chunks": 3
+  },
+  "OTHER CERT/论点/免费入门证书清单.md": {
+    "hash": "fba64a3858778618e0206623dd83938d",
+    "chunks": 6
+  },
+  "OTHER CERT/论点/黑客松地图-2026全球竞赛.md": {
+    "hash": "6667db31753de519f229bcff07537b09",
+    "chunks": 5
+  },
+  "OTHER CERT/论点/黑客松获胜攻略.md": {
+    "hash": "859ea61fc4d65e65b9169baac6a0d1f4",
+    "chunks": 5
+  },
+  "Engineering Projects/概念/Kalman-Filter.md": {
+    "hash": "963084e6a8bbd5da3f8f4078ee61194a",
+    "chunks": 3
+  },
+  "Engineering Projects/概念/PID.md": {
+    "hash": "b8563bd3e1b4f5c0c006d45b3ba2fa55",
+    "chunks": 3
+  },
+  "Engineering Projects/概念/TinyML.md": {
+    "hash": "94322ab32eee26324bde14ae4b5ba2f0",
+    "chunks": 3
+  },
+  "Engineering Projects/概念/柔性机构.md": {
+    "hash": "d29c02d6e740975acb031ad6e7b85b73",
+    "chunks": 3
+  },
+  "Engineering Projects/概念/生成式设计.md": {
+    "hash": "d28ab03f1a7fbd01ee669fe04cbf4008",
+    "chunks": 3
+  },
+  "Engineering Projects/论点/传感器融合姿态追踪-Kalman.md": {
+    "hash": "feaf1a30a722315d25a036427e2021f9",
+    "chunks": 4
+  },
+  "Engineering Projects/论点/工程学习资源清单.md": {
+    "hash": "babd8f8d01fd382eb18839ecfb8396d8",
+    "chunks": 3
+  },
+  "Engineering Projects/论点/工程项目灵感来源.md": {
+    "hash": "5bbb76fb7c2ac9940104fd03adf20202",
+    "chunks": 3
+  },
+  "Engineering Projects/论点/强化学习机械臂-拾放.md": {
+    "hash": "6b97d9d1f0f7212951afe646ddc57f2e",
+    "chunks": 4
+  },
+  "Engineering Projects/论点/柔性机构-Compliant-Mechanism.md": {
+    "hash": "dedfa29a870ed5ad308857bdf150045f",
+    "chunks": 4
+  },
+  "Engineering Projects/论点/液压机械手-流体动力.md": {
+    "hash": "5f1ce9d0cc1c0a10fa9ca9bab64201c3",
+    "chunks": 4
+  },
+  "Engineering Projects/论点/生成式设计无人机框架.md": {
+    "hash": "5ca4bfd200c23053dfd8a6976c5b35c4",
+    "chunks": 4
+  },
+  "Engineering Projects/论点/自平衡机器人-PID控制.md": {
+    "hash": "9b7ed6d844e0b1a32ff99cd488bb8bef",
+    "chunks": 4
+  },
+  "Engineering Projects/论点/边缘AI手势控制器-TinyML.md": {
+    "hash": "f8d2a1dcca02bab8e29a0c8cb6f6fd22",
+    "chunks": 4
+  },
+  "Career/论点/实习获取路径与工具.md": {
+    "hash": "d3968b14bd28f55c882d31233eb2df61",
+    "chunks": 3
+  },
+  "Career/论点/年轻人核心技能.md": {
+    "hash": "d19abe9e9fe3d4241b01365470cbf2b4",
+    "chunks": 3
+  },
+  "Career/论点/心态与表达力.md": {
+    "hash": "53eeec95eb87a53cbcd908a6f7ce3404",
+    "chunks": 3
+  },
+  "Career/论点/求职-Networking五律.md": {
+    "hash": "28bd9cee74d9182ea6f2fea99f90436a",
+    "chunks": 3
+  },
+  "Career/论点/求职-简历与ATS优化.md": {
+    "hash": "73d8dce20532392068938ae4ca6aab2d",
+    "chunks": 3
+  },
+  "Career/论点/财务习惯-十律.md": {
+    "hash": "b3f0edb7fd89b8da9c50f9173d83237e",
+    "chunks": 3
+  },
+  "Career/论点/面试与简历包装策略.md": {
+    "hash": "20e44ef04bae27a6231dcc91d6f6bd78",
+    "chunks": 3
+  },
+  "AI Knowledge System/概念/Agentic-RAG.md": {
+    "hash": "42f9503d68c6fbc7e4a01194dbcb75c1",
+    "chunks": 3
+  },
+  "AI Knowledge System/概念/AI Agent.md": {
+    "hash": "b951f0a610a90a7b38f585dc6ec34194",
+    "chunks": 3
+  },
+  "AI Knowledge System/概念/Embedding.md": {
+    "hash": "26e3f5ccb3e3b1994d5250f5dc7f3875",
+    "chunks": 3
+  },
+  "AI Knowledge System/概念/Prompt-Caching.md": {
+    "hash": "60aed80090b67a90060c99af70757a0f",
+    "chunks": 4
+  },
+  "AI Knowledge System/概念/RAG.md": {
+    "hash": "a57a96d72c152e38a311befbb5189575",
+    "chunks": 3
+  },
+  "AI Knowledge System/概念/ReAct.md": {
+    "hash": "b84a042595d250390f0c089c72432cc5",
+    "chunks": 3
+  },
+  "AI Knowledge System/概念/Second Brain.md": {
+    "hash": "58a5fc322e83a1467974942c3dbd9dec",
+    "chunks": 3
+  },
+  "AI Knowledge System/概念/Vector DB.md": {
+    "hash": "21c07d1702fc520bafcd3791407987a6",
+    "chunks": 3
+  },
+  "AI Knowledge System/论点/Agentic-AI-核心技术栈.md": {
+    "hash": "22c1157f06818f4eec3b56970fab1fe6",
+    "chunks": 5
+  },
+  "AI Knowledge System/论点/AI Fundamentals 从LLM到RAG到Agent.md": {
+    "hash": "b128f86354cf88f8c415d35b2890cb05",
+    "chunks": 10
+  },
+  "AI Knowledge System/论点/Simple Brain 极简第二大脑方案.md": {
+    "hash": "c4686d7713132389a9e3ea30919fb149",
+    "chunks": 3
+  },
+  "AI Knowledge System/论点/免费-AI-应用工具清单.md": {
+    "hash": "af47c69a61fb170d0b85547e13697c1f",
+    "chunks": 6
+  },
+  "AI Dev Workflow/概念/Agent-Evals.md": {
+    "hash": "96e2e8bcbc2fd60853ce46a3dff8efe4",
+    "chunks": 3
+  },
+  "AI Dev Workflow/概念/AI Agent.md": {
+    "hash": "182481f96333b78cacbc8746c80c7bb2",
+    "chunks": 3
+  },
+  "AI Dev Workflow/概念/Dataview.md": {
+    "hash": "61492b3be4bb9d2e443d0f2c51a4a955",
+    "chunks": 3
+  },
+  "AI Dev Workflow/概念/Docker MCP Gateway.md": {
+    "hash": "3fde5488a8506cd51c6bae36088f836b",
+    "chunks": 6
+  },
+  "AI Dev Workflow/概念/Guardrails.md": {
+    "hash": "edecef14bbd2105f542c450351bf02c3",
+    "chunks": 3
+  },
+  "AI Dev Workflow/概念/MCP Transport.md": {
+    "hash": "936eb5d83f166f58787cec02f0730155",
+    "chunks": 6
+  },
+  "AI Dev Workflow/概念/MCP.md": {
+    "hash": "6fcbaa18451d72c5a212467ecfb56324",
+    "chunks": 3
+  },
+  "AI Dev Workflow/概念/Multi-Agent-Systems.md": {
+    "hash": "46120b8a4e676a7d8b8199489b98e352",
+    "chunks": 3
+  },
+  "AI Dev Workflow/概念/Obsidian Workspaces.md": {
+    "hash": "10e9df236149b62d420db575dc823fd1",
+    "chunks": 3
+  },
+  "AI Dev Workflow/概念/Vibe-Coding.md": {
+    "hash": "bb2ebdc9c79c337c7f46c995e4563a46",
+    "chunks": 3
+  },
+  "AI Dev Workflow/论点/3D-Website-构建工作流.md": {
+    "hash": "b0cb1b972a842637088708c62d75691d",
+    "chunks": 6
+  },
+  "AI Dev Workflow/论点/Agentic-AI-工程化与可靠性.md": {
+    "hash": "63cad5836dbb3db0992eee1b3f27703a",
+    "chunks": 6
+  },
+  "AI Dev Workflow/论点/MCP 2026-07-28 规格大改版：迈向无状态协议核心.md": {
+    "hash": "a6b044a247c897daad32c2a3372c46a5",
+    "chunks": 7
+  },
+  "AI Dev Workflow/论点/MCP vs API 传统API为何不能满足AI Agent.md": {
+    "hash": "d7b11a842f9d3c411e1971344c235fe7",
+    "chunks": 7
+  },
+  "AI Dev Workflow/论点/MCP vs API：执行层才是关键.md": {
+    "hash": "818fcac3c3372450d06553bda5fedd03",
+    "chunks": 9
+  },
+  "AI Dev Workflow/论点/MCP 学习笔记：从协议到实战.md": {
+    "hash": "f2a7830b6874278bdd41e50559236a14",
+    "chunks": 11
+  },
+  "AI Dev Workflow/论点/Obsidian Dashboard 搭建方法.md": {
+    "hash": "a581cc74c341c87d16a8da558122907e",
+    "chunks": 3
+  },
+  "AI Dev Workflow/论点/Obsidian Workspaces 替代 Dashboards.md": {
+    "hash": "4fb84beb9698134184614a5ac4115950",
+    "chunks": 3
+  },
+  "AI Dev Workflow/论点/Obsidian 主页仪表盘布局方案.md": {
+    "hash": "245e95a42b29d962a145bdb786928b56",
+    "chunks": 3
+  },
+  "AI Dev Workflow/论点/Obsidian 仿 Notion 仪表盘搭建.md": {
+    "hash": "690584f9109b527f59f4a50538653a4e",
+    "chunks": 3
+  },
+  "AI Dev Workflow/论点/Vibe-Coding-工具清单.md": {
+    "hash": "07f6ef1495ee6852314bbb8ecfe176ca",
+    "chunks": 6
+  },
+  "AI Dev Workflow/论点/普通人用 AI 解决问题的实践路径.md": {
+    "hash": "4976ab818573fcd806635e5147a32fdc",
+    "chunks": 3
+  },
+  "AI Dev Workflow/论点/核心开发栈-Claude-Code-Vercel-n8n-DigitalOcean.md": {
+    "hash": "e61a031dbd89969a5aa01b5d713a6c47",
+    "chunks": 8
+  },
+  "AI Dev Workflow/论点/用 Docker 运行与构建 MCP Server：从零到自定义工具.md": {
+    "hash": "48a20117f13167f4733bb5acda408d12",
+    "chunks": 7
+  },
+  "AI Dev Workflow/附录/OfficeCLI-SKILL.md": {
+    "hash": "8d17b0e2c71e5d92c62a23f56c81a291",
+    "chunks": 42
+  }
+}
