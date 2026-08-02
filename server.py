@@ -3,27 +3,34 @@
 """
 from mcp.server import MCPServer
 
-from index import VAULT, index_vault, kb_stale
+from index import VAULT, index_vault, kb_stale, log
 from retriever import hybrid_search, reset_bm25_index
 
 server = MCPServer("obsidian-rag", title="Obsidian RAG", version="0.1.0")
 
 
 def ensure_fresh():
-    """指纹检查：Vault 有变化则自动增量重建索引，返回提示文本。"""
-    stale, stats = kb_stale(VAULT)
-    if not stale:
-        return ""
-    index_vault(VAULT, incremental=True)
-    reset_bm25_index()
-    parts = []
-    if stats["changed"]:
-        parts.append(f"{stats['changed']} 个文件变更")
-    if stats["added"]:
-        parts.append(f"新增 {stats['added']} 个文件")
-    if stats["removed"]:
-        parts.append(f"删除 {stats['removed']} 个文件")
-    return f"（检测到{'、'.join(parts)}，已自动更新索引）\n\n"
+    """指纹检查：Vault 有变化则自动增量重建索引，返回提示文本。
+
+    任何一步失败都降级为"用旧索引检索 + 提示"，绝不让检索整体失败。
+    """
+    try:
+        stale, stats = kb_stale(VAULT)
+        if not stale:
+            return ""
+        index_vault(VAULT, incremental=True)
+        reset_bm25_index()
+        parts = []
+        if stats["changed"]:
+            parts.append(f"{stats['changed']} 个文件变更")
+        if stats["added"]:
+            parts.append(f"新增 {stats['added']} 个文件")
+        if stats["removed"]:
+            parts.append(f"删除 {stats['removed']} 个文件")
+        return f"（检测到{'、'.join(parts)}，已自动更新索引）\n\n"
+    except Exception as e:
+        log(f"自动同步索引失败（使用旧索引继续）：{e}")
+        return f"（检测到 Vault 变化，但自动更新索引失败：{e}；以下为旧索引结果）\n\n"
 
 
 @server.tool()

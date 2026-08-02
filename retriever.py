@@ -1,4 +1,4 @@
-"""retriever.py — 混合检索：BM25 关键词召回 + Dense 向量，RRF 融合。"""
+"""retriever.py — 混合检索：BM25 关键词召回 + Dense 向量，加权融合。"""
 import math
 import re
 from collections import Counter
@@ -8,7 +8,6 @@ import chromadb
 from index import CHROMA_DIR, get_model
 
 CHUNK_LIMIT = 2000  # 检索时返回给 LLM 的单块最大字符
-ANCHOR_RE = re.compile(r"^【[^\n]*】\n")
 
 
 def get_collection():
@@ -30,14 +29,6 @@ def tokenize(text):
         cn = m.group(0)
         tokens.extend([cn[i : i + 2] for i in range(len(cn) - 1)])
     return tokens
-
-
-def build_bm25_index(collection, sample_ratio=1.0):
-    """从 Chroma 现有 chunk 构建 BM25 倒排索引（首次调用时构建，缓存在内存）。"""
-    all_docs = collection.get(include=["documents", "metadatas"])["documents"]
-    if not all_docs:
-        return None
-    return BM25(all_docs)
 
 
 class BM25:
@@ -77,41 +68,36 @@ class BM25:
 
 _bm25 = None
 _bm25_ids = None
+_bm25_files = None
 
 
 def get_bm25(collection):
-    global _bm25, _bm25_ids
+    global _bm25, _bm25_ids, _bm25_files
     if _bm25 is None:
-        all_docs = collection.get(include=["documents"])["documents"]
-        all_ids = collection.get(include=[])["ids"]
-        _bm25 = BM25(all_docs)
-        _bm25_ids = all_ids
-    return _bm25, _bm25_ids
+        all_data = collection.get(include=["documents", "metadatas"])  # 一次取齐 ids+documents+file
+        _bm25 = BM25(all_data["documents"])
+        _bm25_ids = all_data["ids"]
+        _bm25_files = [m.get("file", "") for m in all_data["metadatas"]]
+    return _bm25, _bm25_ids, _bm25_files
 
 
 def _reset_bm25():
-    global _bm25, _bm25_ids
+    global _bm25, _bm25_ids, _bm25_files
     _bm25 = None
     _bm25_ids = None
+    _bm25_files = None
 
 
-# ---------- RRF 融合 ----------
+# ---------- 结果格式化 ----------
 
-def rrf_fuse(*ranked_lists, k=60):
-    """Reciprocal Rank Fusion：多个候选列表按排名融合。"""
-    score_map = {}
-    for ranked in ranked_lists:
-        for rank, cid in enumerate(ranked):
-            score_map[cid] = score_map.get(cid, 0.0) + 1.0 / (k + rank + 1)
-    return sorted(score_map.items(), key=lambda x: x[1], reverse=True)
-
-
-def _format_result(collection, cids, metas_by_id):
+def _format_result(collection, cids):
+    """一次批量取 top_k 结果（避免 N+1），并剥离首块的中文锚点。"""
+    got = collection.get(ids=cids, include=["metadatas", "documents"])
     lines = []
-    for cid in cids:
-        meta = metas_by_id.get(cid, {})
-        doc = collection.get(ids=[cid], include=["documents"])["documents"][0]
-        doc = ANCHOR_RE.sub("", doc)  # 剥离检索辅助的中文锚点，只给 LLM 原文
+    for cid, meta, doc in zip(got["ids"], got["metadatas"], got["documents"]):
+        anchor = meta.get("anchor") or ""
+        if anchor and doc.startswith(anchor):
+            doc = doc[len(anchor):]
         if len(doc) > CHUNK_LIMIT:
             doc = doc[:CHUNK_LIMIT]
         lines.append(f"[来源] {meta.get('file', '')} (## {meta.get('heading', '')})")
@@ -120,30 +106,39 @@ def _format_result(collection, cids, metas_by_id):
     return "\n".join(lines) if lines else "未找到相关内容。"
 
 
-def hybrid_search(query, top_k=5, folder="", dense_weight=0.6, bm25_weight=0.4, alpha=0.7):
+# ---------- 混合检索 ----------
+
+def hybrid_search(query, top_k=5, folder="", dense_weight=0.6, bm25_weight=0.4):
     """混合检索：dense 向量 + BM25 关键词，加权融合后取 top_k。"""
     model = get_model()
     collection = get_collection()
 
-    # dense 检索
+    # dense 检索（不带 where：Chroma 的 $startswith 依赖版本、此处验证已失效；
+    # 改为查全库候选后在内存按 file 前缀过滤，与 BM25 侧对称）
     emb = model.encode([query], normalize_embeddings=True).tolist()[0]
-    where = {"file": {"$startswith": folder}} if folder else None
-    dense_k = max(top_k * 4, 20)
+    dense_k = max(top_k * 8, 50)
     dense_res = collection.query(
         query_embeddings=[emb],
         n_results=dense_k,
-        where=where,
-        include=["metadatas", "distances"],
+        include=["distances"],
     )
-    dense_ids = dense_res["ids"][0]
-    dense_dists = dense_res["distances"][0]
+    dense_ids = [cid for cid in dense_res["ids"][0] if not folder or str(cid).startswith(folder)]
+    dense_dists = [
+        d for cid, d in zip(dense_res["ids"][0], dense_res["distances"][0])
+        if not folder or str(cid).startswith(folder)
+    ]
 
-    # BM25 检索
-    bm25, bm25_ids = get_bm25(collection)
+    # BM25 检索（与 dense 一样按 folder 过滤，避免越界结果漏入）
+    bm25, bm25_ids, bm25_files = get_bm25(collection)
     bm25_scores = bm25.score(query)
+    bm25_hits = [
+        bm25_ids[i]
+        for i in range(len(bm25_scores))
+        if bm25_scores[i] > 0 and (not folder or bm25_files[i].startswith(folder))
+    ]
 
     # 融合打分
-    all_cids = set(dense_ids) | {bm25_ids[i] for i in range(len(bm25_scores)) if bm25_scores[i] > 0}
+    all_cids = set(dense_ids) | set(bm25_hits)
     combined = {}
     for cid in all_cids:
         score = 0.0
@@ -160,12 +155,7 @@ def hybrid_search(query, top_k=5, folder="", dense_weight=0.6, bm25_weight=0.4, 
         combined[cid] = score
 
     ranked = [c for c, _ in sorted(combined.items(), key=lambda x: x[1], reverse=True)][:top_k]
-
-    metas_by_id = {}
-    for cid in ranked:
-        res = collection.get(ids=[cid], include=["metadatas"])["metadatas"][0]
-        metas_by_id[cid] = res
-    return _format_result(collection, ranked, metas_by_id)
+    return _format_result(collection, ranked)
 
 
 def reset_bm25_index():
