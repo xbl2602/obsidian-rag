@@ -273,6 +273,57 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
 
 ---
 
+### 问题 10：检索结果"截断当完整" + 六项检索体验缺口（2026-08-02 修复）
+
+- **现象**：用户实测检索"免费 CERT"时，19 块的清单文件只返回 5 块截断切片，
+  AI 却把它当完整答案汇报——skill 缺完整性守卫。审查（general 子代理逐行
+  review）后确认方案并修复 6 项 + 2 个顺手项。
+- **方案**：
+  1. **完整性标记（retriever.py `_format_result`）**：来源行带 `[块 k/N]`
+     （k 取 meta.chunk，N 从 BM25 缓存 `_bm25_files` Counter 派生——与检索
+     内容同源同生命周期，reindex 后同步重建，无独立缓存不撒谎）；超
+     CHUNK_LIMIT 的块尾部附 `… [本块已截断，完整内容见源文件]`。
+  2. **同文件封顶**：正文模式每文件最多 3 块（`MAX_CHUNKS_PER_FILE`），
+     按分数保留最高、边迭代边计数填满 top_k；list 模式不封顶（标记即
+     完整性提示）。命中封顶输出汇总行"同一文件最多展示 3 块…"。
+  3. **folder 边界**：`_in_folder()` 前缀+边界校验（`rel == folder` 或
+     `startswith(folder + "/")`），杜绝 folder="AI" 误匹配 "AIML/"、
+     "AI.md"、"AI Dev/"；`_norm_folder()` 统一 `\\`→`/`、去首尾空白斜杠；
+     folder 支持父目录与单文件。
+  4. **dense 候选池**：`dense_k = max(top_k*8, 200)` 无条件放大（原 50），
+     修 folder 检索后过滤的小目录召回天花板（BM25 侧本就全库打分）。
+  5. **性能**：融合阶段 `in`/`.index()` 的 O(M·N) 列表扫描 → dict 查找
+     （`dense_map`/`bm25_map`），二次搜索实测 0.02s。
+  6. **文案对齐（server.py）**：reindex_knowledge docstring 改为"一般无需
+     手动调用，仅在自动同步失败或用户明确要求时"；search_knowledge
+     docstring 注明首次调用/变更后首次调用耗时数十秒属正常 + folder 精确
+     语义 + `[块 k/N]` 标记说明。
+  7. **skill（obsidian-knowledge-search）**：Step 6 重复 → 7（修编号）；
+     新增 **Completeness guard 硬规则**（k<N 且涉清单/数量 → 必读源文件；
+     截断标记 → 必读源文件；同文件 ≥2 块 → 整读优先；快问快答可只引块但
+     不得声称完整）；folder 语义修正；首次延迟提示；list 模式口径
+     （不封顶 + 标记说明）；frontmatter 描述与正文一致化。
+- **验证**：验收脚本 27/27 全绿（见 §7 验收标准）。附带清理：C 盘 0 字节
+  告急（pip cache 4.8GB + 旧 bge-m3 快照 + Chroma ONNX 垃圾 79MB），清出
+  7.1GB——ONNX MiniLM 是 Chroma 默认嵌入函数触发的下载，本项目用 BGE-M3
+  根本不需要，已删。
+
+---
+
+## 7. 验收标准（问题 10 修复）
+
+| # | 验收项 | 结果 |
+|---|--------|------|
+| 1 | 来源行带 `[块 k/N]`，N 与 index_meta.json 块数一致（19 块文件回 19） | ✔ |
+| 2 | 正文模式同文件 ≤3 块 + 封顶汇总行；list 模式不封顶、无汇总行 | ✔ |
+| 3 | 截断标记（临时 collection 构造 7000 字符块单测） | ✔ |
+| 4 | folder 边界 9 组单测 + `_norm_folder` 2 组全过；"OTHER CERT/论点"/"ROCKETRY" 零越界 | ✔ |
+| 5 | 泛化查询（GitHub Foundations 多少钱）、双语查询（HEBAT3 仿真配置）回归命中 | ✔ |
+| 6 | 二次搜索 0.02s（<5s 门槛） | ✔ |
+| 7 | skill 编号无重复 Step、含 Completeness guard 节、与代码语义一致 | ✔ |
+
+---
+
 ## 6. 现状与下一步
 
 **已验证**：
@@ -287,8 +338,55 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
   787 → 1058 块，>1500 块 36 → 5（纯表格）
 
 **待办**：
-- [ ] 端到端再验一轮（opencode 实际问答）
+- [x] 端到端再验一轮（opencode 实际问答）→ 已由问题 10 验收脚本覆盖
 - [ ] 评估防重复 server 进程方案（避免多次测试叠加内存占用）
 - [ ] （可选）若泛化查询仍偶发不中，调 BM25 加权 / RRF 融合 / folder 限定
 - [ ] 给 `HEBAT3_ORK_Design_Parameters.md` 等其他全英文笔记补中文 `summary`，
       让中文锚点更贴合内容（增强效果已验证，但锚点来自元数据，元数据越准命中越准）
+
+---
+
+## 问题 11：现存不足崩溃 + 无法自动修复 + 无法自动切 CPU（2026-08-05 修复）
+
+- **现象**：显存/内存不足时：`torch.cuda.OutOfMemoryError` 直接崩、MCP server 启动即死
+  且无限重启循环、检索永久失败；`import torch` 偶发 `WinError 1455`（页面文件不足）。
+- **根因（7 个）**：
+  1. **P5（致命）** `index.py` 顶层 `from sentence_transformers import ...` →
+     **任何 import index 的进程（含 MCP server 启动）都会加载 CUDA DLL** →
+     内存不足时启动即死，进程层"无法自动修复"。
+  2. **P1** `get_model()` 设备一次性探测（`cuda if available else cpu`），
+     `_model` 缓存后永不更换 → 无任何切 CPU 机制。
+  3. **P2** 索引/检索编码裸奔（`model.encode` 无 try/except、无 batch 控制），
+     一次编码全部新块；且 CUDA OOM 后驱动上下文损坏，同模型对象继续每次崩溃。
+  4. **P3** `kb_stale` 只校验 Vault 指纹，不校验 Chroma↔meta 一致性 →
+     `--full` 中途被杀（清库窗口）后 0 块 + meta 完好 + 文件未变 → **永不自动重建**。
+  5. **P7** 即使发现 0 块，增量路径指纹全命中 `new_ids` 为空 → 0 块保持 0 块。
+  6. **P4** server 工具层无兜底，异常直接上抛。
+  7. **P6** CPU 降级内存也不足：bge-m3 fp32 ≈2.3GB，需 fp16 减半。
+- **方案（已实现）**：
+  1. **延迟导入**：`sentence_transformers` 移入 `_build_model()` 内，import index/server 不碰 torch。
+  2. **设备状态机**（`index.py`）：CUDA 初始化/编码失败 → 进入 **5 分钟冷却**（`_cuda_cooldown_until`，
+     进程内，非硬性窗口）→ 冷却到期后每次调用先做**毫秒级显存探测**（`_cuda_probe`，分配 64MB
+     tensor），通过即用 CUDA、失败再冷却；`fallback_to_cpu()` 同进程内卸载 CUDA 模型 + `empty_cache()`；
+     `device_state.json` 仅作诊断落盘（失败原因/时间），不再做门禁。
+     **显存恢复后自动切回**：CPU 模型缓存期间，每次请求探测通过即 `_try_switch_back_cuda()`
+     （先释放 CPU 模型避免双模型内存峰值，失败回滚 CPU 并冷却）——无 24h 硬等待。
+  3. **`encode_safe()` 统一入口**：捕获 OOM/页面文件/内存类错误（`_is_memory_error` 匹配
+     "out of memory"/"paging file"/1455 等）→ 自动降级 CPU 重试一次；非内存错误不降级；
+     CPU 也失败才抛（不可恢复）。索引（`index_vault`）与检索（`hybrid_search`）共用；
+     encode 显式 `batch_size=32`（检索 1）。
+  4. **CPU fp16**：`_build_model("cpu", fp16=True)` 减半内存（失败回退 fp32）。
+  5. **一致性自愈**：`kb_stale` 增加 `_chroma_count()` 校验（meta 块数 vs Chroma 实际 count，
+     不加载模型、毫秒级），不符 → stale → 自动重建；`index_vault` 检测
+     "meta 有数据但 Chroma 空" → 清空 meta 强制全量重嵌（修 P7 的增量空转）。
+  6. **server 兜底**：两个工具 try/except 返回明确提示文本（旧索引仍可用），不崩。
+- **验证**（全部通过）：
+  - 导入链：`import server` 后 `sys.modules` 无 torch/sentence_transformers。
+  - 状态机 9 组单测：冷却期不探测/探测失败重冷却/到期探测通过即就绪/切回成功/切回失败
+    回滚+冷却/缓存路径冷却期零探测/自动切回/encode OOM 降级。
+  - **真实场景**：CUDA 真 OOM（978MiB 分配失败）→ 日志降级 → CPU fp16 加载 1s →
+    中文查询命中正确（21.6s 首查，`[块 k/N]` 标记正确）→ 增量 reindex 成功（973 块，
+    kb_stale 归零）；显存恢复后清冷却 → 探测通过 → **直接加载 CUDA 成功**（无需等窗口）。
+  - 崩溃恢复：系统级崩溃后 MCP server 自动重启加载新代码（112MB 未预载模型 vs 旧版 782MB）。
+- **环境提醒**：本机内存长期紧张（空闲常 <2GB）+ C 盘告急会诱发 WinError 1455；
+  模型缓存需保持完整（HF 磁盘不足警告时勿删 `~/.cache/huggingface` 下 bge-m3）。
