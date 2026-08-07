@@ -478,3 +478,10 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
 - **使用方式（AI/人）**：`reindex_knowledge` 或自动同步启动后，轮询 `index_status`
   看阶段/进度/ETA；心跳 >30s 且 running → 告警并建议查 PID 处置；遇到
   LockBusyError → 按提示结束残留进程重试。
+- **补充（自适应卡死基线，2026-08-07）**：初版 `PROGRESS_STALE_SECONDS=30` 是固定
+  阈值，慢机器（CPU 嵌入单批可达 1-2 分钟）会正常干活被误报卡死。改为自适应：
+  每次 `update_progress` 观测"距上次心跳间隔"，取本次任务最大值 `max_gap_s`；
+  卡死阈值 = `max(30s, max_gap_s × 2)`——快机器（CUDA 基线 ~8s）16s 无心跳即警，
+  慢机器（基线 ~90s）放宽到 180s 不误报；首次模型加载期（无基线）附带"任务早期
+  可能属正常"提示。`server.py` 的残留 running 判定同用自适应阈值。
+  验证：6 场景矩阵（快/慢 × 正常/卡死 + 加载期）输出全部正确。

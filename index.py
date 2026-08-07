@@ -44,12 +44,14 @@ def log(*args):
 
 
 # ---------- 进度报告（data/index_progress.json，AI/人可随时读取） ----------
-# 约定：running=True 时 updated_at 是心跳，距当前 >30s 视为疑似卡死；
-# eta_s 由 update_progress 按 chunks 进度推算（进度未推进时为 None）。
+# 约定：running=True 时 updated_at 是心跳（每次批处理/文件扫描后刷新）。
+# 卡死判断用自适应基线（见 progress_text）：本任务实际观测到的最大心跳间隔
+# max_gap_s × 2，下限 PROGRESS_STALE_SECONDS——快机器（CUDA 每批 ~1-8s）与
+# 慢机器（CPU 每批可达 1-2 分钟）都不会误报，也不会漏判。
 
 _progress = {}
 _progress_lock = threading.Lock()
-PROGRESS_STALE_SECONDS = 30  # 心跳超过该秒数视为疑似卡死
+PROGRESS_STALE_SECONDS = 30  # 卡死基线下限（秒）：心跳间隔基线不足时用它兜底
 
 
 def _pid_alive(pid):
@@ -75,6 +77,10 @@ def update_progress(**fields):
     now = time.time()
     with _progress_lock:
         base = dict(_progress)
+        # 观测心跳间隔：每次刷新时记录"距上次心跳"的最大值（本次任务的自适应基线）
+        if base.get("running") and base.get("updated_at"):
+            gap = now - base["updated_at"]
+            base["max_gap_s"] = round(max(base.get("max_gap_s") or 0.0, gap), 1)
         base.update(fields)
         base.setdefault("pid", os.getpid())
         base.setdefault("started_at", now)
@@ -99,10 +105,10 @@ def update_progress(**fields):
 
 
 def progress_start(phase, files_total, message=""):
-    """索引开始：重置进度并置 running。"""
+    """索引开始：重置进度与自适应基线，置 running。"""
     update_progress(running=True, phase=phase, message=message,
                     files_total=files_total, files_done=0,
-                    chunks_total=None, chunks_done=0, error=None)
+                    chunks_total=None, chunks_done=0, error=None, max_gap_s=0.0)
 
 
 def progress_finish(phase, message):
@@ -145,11 +151,21 @@ def progress_text(p):
     if p.get("running"):
         last = p.get("updated_at") or 0
         gap = now - last
-        if gap > PROGRESS_STALE_SECONDS:
-            lines.append(f"  ⚠ 疑似卡死：心跳已停 {int(gap)}s（> {PROGRESS_STALE_SECONDS}s）。"
-                         f"建议检查 PID {p.get('pid')} 是否存活；确认卡死可结束该进程后重试。")
+        baseline = p.get("max_gap_s") or 0.0
+        # 自适应卡死阈值：任务自己观测到的最大心跳间隔 × 2，下限 30s。
+        # 首次加载模型（无历史基线）与慢机器（CPU 嵌入单批可达 1-2 分钟）
+        # 由基线自动放宽，不会误报；基线建立后异常停顿会立即被捕获。
+        threshold = max(PROGRESS_STALE_SECONDS, baseline * 2)
+        if gap > threshold:
+            tip = ""
+            elapsed = p.get("elapsed_s") or 0
+            if elapsed < 300 and baseline < PROGRESS_STALE_SECONDS:
+                tip = "（任务早期：首次加载 embedding 模型可能耗时 1-2 分钟，若进程 CPU 仍活跃属正常）"
+            lines.append(f"  ⚠ 疑似卡死：心跳已停 {int(gap)}s（> 阈值 {int(threshold)}s，"
+                         f"本任务正常心跳基线 ~{int(baseline)}s）{tip}")
+            lines.append(f"  建议检查 PID {p.get('pid')} 是否存活；确认卡死可结束该进程后重试。")
         else:
-            lines.append(f"  心跳: {int(gap)}s 前（正常）")
+            lines.append(f"  心跳: {int(gap)}s 前（正常，本任务基线 ~{int(baseline)}s）")
     return "\n".join(lines)
 
 

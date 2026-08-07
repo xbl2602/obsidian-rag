@@ -26,15 +26,18 @@ _background = {"thread": None, "pid": None}
 def _index_running():
     """本进程（或残留进程）是否有索引任务在跑。
 
-    进度文件里 running=True 但心跳已超过 2×PROGRESS_STALE_SECONDS 视为
-    残留死进程的陈旧标志——不挡新任务（配合写锁超时，残留实例最终会被锁超时顶掉）。
+    进度文件里 running=True 但心跳已超过自适应阈值（max(30s, 该任务观测到的
+    最大心跳间隔×2)）视为残留死进程的陈旧标志——不挡新任务（配合写锁超时，
+    残留实例最终会被锁超时顶掉）。
     """
     if _background["thread"] is not None and _background["thread"].is_alive():
         return True
     p = read_progress()
     if p.get("running"):
         last = p.get("updated_at") or 0
-        if time.time() - last <= PROGRESS_STALE_SECONDS * 2:
+        baseline = p.get("max_gap_s") or 0.0
+        threshold = max(PROGRESS_STALE_SECONDS, baseline * 2)
+        if time.time() - last <= threshold:
             return True
         log("检测到陈旧 running 进度（心跳超时），视为残留标志，允许启动新任务")
     return False
