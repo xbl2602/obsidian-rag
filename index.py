@@ -31,7 +31,7 @@ EXCLUDE_PATTERNS = ("session-", "会话", ".tmp")
 
 LOCK_TIMEOUT_SECONDS = 60   # 等待写锁上限；超时抛 LockBusyError（不再无限死等）
 LOCK_POLL_SECONDS = 0.5     # 非阻塞尝试间隔
-EMBED_BATCH_SIZE = 64       # 嵌入分批大小：降低显存峰值 + 提供逐批进度心跳
+EMBED_BATCH_SIZE = 16       # 嵌入分批大小：降低显存峰值 + 进度数字跳动密度（停滞检测粒度）
 
 
 class LockBusyError(RuntimeError):
@@ -44,14 +44,23 @@ def log(*args):
 
 
 # ---------- 进度报告（data/index_progress.json，AI/人可随时读取） ----------
-# 约定：running=True 时 updated_at 是心跳（每次批处理/文件扫描后刷新）。
-# 卡死判断用自适应基线（见 progress_text）：本任务实际观测到的最大心跳间隔
-# max_gap_s × 2，下限 PROGRESS_STALE_SECONDS——快机器（CUDA 每批 ~1-8s）与
-# 慢机器（CPU 每批可达 1-2 分钟）都不会误报，也不会漏判。
+# 双通道心跳（2026-08-07 v3 设计）：
+#   1. 独立心跳线程每 HEARTBEAT_INTERVAL 秒强制写盘一次（updated_at 刷新）——
+#      与硬件性能无关，间隔恒定；覆盖模型加载期与批次内耗时；
+#   2. 事件更新：批次完成/阶段切换时立即写盘（进度数字推进）。
+# 双重判定（index_status 输出依据，固定阈值、简单明确）：
+#   - 心跳停止：距上次心跳 > HEARTBEAT_TIMEOUT（3 间隔）→ 疑似卡死
+#   - 进度停滞：心跳在走，但进度（块数/文件数）> STALL_TIMEOUT（5 间隔）未推进
+#     → 疑似批次内卡死（假活）
 
 _progress = {}
 _progress_lock = threading.Lock()
-PROGRESS_STALE_SECONDS = 30  # 卡死基线下限（秒）：心跳间隔基线不足时用它兜底
+HEARTBEAT_INTERVAL = 5.0   # 心跳线程写盘间隔（秒）
+HEARTBEAT_TIMEOUT = 15.0   # 心跳停止判定：3 × HEARTBEAT_INTERVAL
+STALL_TIMEOUT = 25.0       # 进度停滞判定：5 × HEARTBEAT_INTERVAL
+
+_heartbeat_thread = None
+_heartbeat_stop = threading.Event()
 
 
 def _pid_alive(pid):
@@ -71,20 +80,32 @@ def read_progress():
         return {}
 
 
+def _write_progress_file(base):
+    """原子写进度文件（在 _progress_lock 内调用）。"""
+    try:
+        DATA_DIR.mkdir(exist_ok=True)
+        tmp = PROGRESS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(base, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, PROGRESS_FILE)
+    except Exception as e:
+        log(f"写进度文件失败（忽略）：{e}")
+
+
 def update_progress(**fields):
-    """更新进度文件（原子写）。自动维护 pid/started_at/updated_at/elapsed_s/eta_s/running。"""
+    """事件更新（批次完成/阶段切换时调用）：推进进度并立即写盘。
+
+    事件更新即"进度推进"——刷新 last_advance_at（停滞判定依据）。
+    心跳线程不经过本函数，因此不会掩盖停滞。
+    """
     global _progress
     now = time.time()
     with _progress_lock:
         base = dict(_progress)
-        # 观测心跳间隔：每次刷新时记录"距上次心跳"的最大值（本次任务的自适应基线）
-        if base.get("running") and base.get("updated_at"):
-            gap = now - base["updated_at"]
-            base["max_gap_s"] = round(max(base.get("max_gap_s") or 0.0, gap), 1)
         base.update(fields)
         base.setdefault("pid", os.getpid())
         base.setdefault("started_at", now)
         base["updated_at"] = now
+        base["last_advance_at"] = now
         elapsed = now - base["started_at"]
         base["elapsed_s"] = round(elapsed, 1)
         done = base.get("chunks_done") or 0
@@ -95,35 +116,77 @@ def update_progress(**fields):
         else:
             base["eta_s"] = None
         _progress = base
+        _write_progress_file(base)
+
+
+def _heartbeat_tick():
+    """心跳线程体：定时强制写盘（刷新 updated_at 但不动 last_advance_at）。
+
+    仅刷新心跳时间戳、耗时与 ETA；进度数字保持内存中的最新值。
+    模型加载期、单批嵌入期间心跳照常走——心跳停止即为真异常。
+    """
+    with _progress_lock:
+        base = dict(_progress)
+        if not base.get("running"):
+            return
+        now = time.time()
+        base["updated_at"] = now
+        base["elapsed_s"] = round(now - base.get("started_at", now), 1)
+        done = base.get("chunks_done") or 0
+        total = base.get("chunks_total")
+        if done and total:
+            elapsed = base["elapsed_s"]
+            speed = done / elapsed if elapsed > 0 else 0
+            base["eta_s"] = round((total - done) / speed, 1) if speed > 0 else None
+        else:
+            base["eta_s"] = None
+        _write_progress_file(base)
+
+
+def _heartbeat_loop():
+    """心跳循环：每 HEARTBEAT_INTERVAL 秒写盘一次，直到任务结束。"""
+    while not _heartbeat_stop.wait(HEARTBEAT_INTERVAL):
         try:
-            DATA_DIR.mkdir(exist_ok=True)
-            tmp = PROGRESS_FILE.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(base, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(tmp, PROGRESS_FILE)
+            _heartbeat_tick()
         except Exception as e:
-            log(f"写进度文件失败（忽略）：{e}")
+            log(f"心跳写盘失败（忽略）：{e}")
 
 
 def progress_start(phase, files_total, message=""):
-    """索引开始：重置进度与自适应基线，置 running。"""
+    """索引开始：重置进度，置 running，启动心跳线程。"""
+    global _heartbeat_thread, _heartbeat_stop
+    _heartbeat_stop = threading.Event()
     update_progress(running=True, phase=phase, message=message,
                     files_total=files_total, files_done=0,
-                    chunks_total=None, chunks_done=0, error=None, max_gap_s=0.0)
+                    chunks_total=None, chunks_done=0, error=None,
+                    last_advance_at=time.time())
+    _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True,
+                                         name="progress-heartbeat")
+    _heartbeat_thread.start()
 
 
 def progress_finish(phase, message):
-    """索引结束：保留最终统计，置 running=False。"""
+    """索引结束：保留最终统计，置 running=False，停心跳线程。"""
+    global _heartbeat_thread
     update_progress(running=False, phase=phase, message=message)
+    _heartbeat_stop.set()
 
 
 def progress_error(error):
-    """索引失败：置 error 态。"""
+    """索引失败：置 error 态，停心跳线程。"""
+    global _heartbeat_thread
     update_progress(running=False, phase="error",
                     message="索引失败", error=str(error)[:500])
+    _heartbeat_stop.set()
 
 
 def progress_text(p):
-    """把进度 dict 格式化为 AI 可读文本（供 index_status 工具使用）。"""
+    """把进度 dict 格式化为 AI 可读文本（供 index_status 工具使用）。
+
+    双重判定（固定阈值，与硬件性能无关——心跳由独立线程每 5s 恒定刷新）：
+    - 心跳停止：距上次心跳 > HEARTBEAT_TIMEOUT → 疑似卡死；
+    - 进度停滞：心跳在走但进度 > STALL_TIMEOUT 未推进 → 疑似批次内卡死。
+    """
     if not p:
         return "（无进度记录：索引从未运行或进度文件缺失）"
     now = time.time()
@@ -151,21 +214,20 @@ def progress_text(p):
     if p.get("running"):
         last = p.get("updated_at") or 0
         gap = now - last
-        baseline = p.get("max_gap_s") or 0.0
-        # 自适应卡死阈值：任务自己观测到的最大心跳间隔 × 2，下限 30s。
-        # 首次加载模型（无历史基线）与慢机器（CPU 嵌入单批可达 1-2 分钟）
-        # 由基线自动放宽，不会误报；基线建立后异常停顿会立即被捕获。
-        threshold = max(PROGRESS_STALE_SECONDS, baseline * 2)
-        if gap > threshold:
+        advance = p.get("last_advance_at") or last
+        stall = now - advance
+        if gap > HEARTBEAT_TIMEOUT:
             tip = ""
-            elapsed = p.get("elapsed_s") or 0
-            if elapsed < 300 and baseline < PROGRESS_STALE_SECONDS:
+            if (p.get("elapsed_s") or 0) < 300 and (p.get("chunks_done") or 0) == 0:
                 tip = "（任务早期：首次加载 embedding 模型可能耗时 1-2 分钟，若进程 CPU 仍活跃属正常）"
-            lines.append(f"  ⚠ 疑似卡死：心跳已停 {int(gap)}s（> 阈值 {int(threshold)}s，"
-                         f"本任务正常心跳基线 ~{int(baseline)}s）{tip}")
+            lines.append(f"  ⚠ 疑似卡死：心跳已停 {int(gap)}s（> {int(HEARTBEAT_TIMEOUT)}s）{tip}")
             lines.append(f"  建议检查 PID {p.get('pid')} 是否存活；确认卡死可结束该进程后重试。")
+        elif stall > STALL_TIMEOUT:
+            lines.append(f"  ⚠ 进度停滞：心跳正常（{int(gap)}s 前）但进度已 {int(stall)}s 未推进"
+                         f"（> {int(STALL_TIMEOUT)}s），疑似批次内卡死（假活）")
+            lines.append(f"  建议检查 PID {p.get('pid')} 是否仍在消耗 CPU；确认卡死可结束该进程后重试。")
         else:
-            lines.append(f"  心跳: {int(gap)}s 前（正常，本任务基线 ~{int(baseline)}s）")
+            lines.append(f"  心跳: {int(gap)}s 前（正常） · 进度推进: {int(stall)}s 前")
     return "\n".join(lines)
 
 

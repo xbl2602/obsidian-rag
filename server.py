@@ -4,6 +4,8 @@
 关键设计（2026-08-07 修复）：
 - reindex 在后台线程执行：reindex_knowledge 立即返回，进度经 data/index_progress.json
   实时落盘，AI 可随时调 index_status 查看进度 / ETA / 卡死判断；
+- 心跳由独立线程每 5s 恒定写盘（与硬件性能无关），卡死判定 = 心跳停 >15s
+  或 进度停滞 >25s（双重判定，抓批次内假活）；
 - 索引过程中搜索不阻塞：用现有索引返回结果并附提示（首跑索引为空时例外，同步等待）；
 - 写锁 60s 超时 + 持有者 PID 定位，杜绝"残留实例持锁 → 新实例无限死等"。
 """
@@ -13,7 +15,7 @@ import time
 
 from mcp.server import MCPServer
 
-from index import (VAULT, PROGRESS_STALE_SECONDS, LockBusyError, index_vault,
+from index import (VAULT, HEARTBEAT_TIMEOUT, LockBusyError, index_vault,
                    kb_stale, log, progress_text, read_progress)
 from retriever import hybrid_search, reset_bm25_index
 
@@ -26,20 +28,17 @@ _background = {"thread": None, "pid": None}
 def _index_running():
     """本进程（或残留进程）是否有索引任务在跑。
 
-    进度文件里 running=True 但心跳已超过自适应阈值（max(30s, 该任务观测到的
-    最大心跳间隔×2)）视为残留死进程的陈旧标志——不挡新任务（配合写锁超时，
-    残留实例最终会被锁超时顶掉）。
+    进度文件里 running=True 但心跳已停（> HEARTBEAT_TIMEOUT，心跳由独立线程
+    每 5s 恒定刷新，与硬件性能无关）→ 视为残留死进程的陈旧标志，不挡新任务。
     """
     if _background["thread"] is not None and _background["thread"].is_alive():
         return True
     p = read_progress()
     if p.get("running"):
         last = p.get("updated_at") or 0
-        baseline = p.get("max_gap_s") or 0.0
-        threshold = max(PROGRESS_STALE_SECONDS, baseline * 2)
-        if time.time() - last <= threshold:
+        if time.time() - last <= HEARTBEAT_TIMEOUT:
             return True
-        log("检测到陈旧 running 进度（心跳超时），视为残留标志，允许启动新任务")
+        log("检测到陈旧 running 进度（心跳已停），视为残留标志，允许启动新任务")
     return False
 
 
@@ -144,9 +143,10 @@ def reindex_knowledge() -> str:
 
 @server.tool()
 def index_status() -> str:
-    """查看索引进度：阶段、文件/块处理数、耗时、预计剩余时间、心跳（可判断是否卡死）。
-    适用于：reindex_knowledge 或自动同步启动后轮询；索引长时间无响应时判断是否卡死
-    （心跳超过 30s 会给出告警与处置建议）。"""
+    """查看索引进度：阶段、文件/块处理数、耗时、预计剩余时间、心跳状态。
+    双重判定：①心跳停止 >15s（独立线程每 5s 恒定刷新，与硬件性能无关）→ 疑似卡死；
+    ②心跳正常但进度 >25s 未推进 → 疑似批次内卡死（假活）。均附处置建议。
+    适用于：reindex_knowledge 或自动同步启动后轮询；索引长时间无响应时判断卡死。"""
     p = read_progress()
     return progress_text(p)
 
