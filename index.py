@@ -2,7 +2,6 @@
 import argparse
 import hashlib
 import json
-import msvcrt
 import os
 import re
 import sys
@@ -11,7 +10,12 @@ from pathlib import Path
 
 import chromadb
 
-VAULT = r"D:\_STOREROOM\lol\Obsidian Vault"
+# 跨平台文件锁：Windows 用 msvcrt（字节范围锁），Linux/macOS 用 fcntl（flock）。
+# 按平台函数内局部导入：Linux 上 import index 不触碰 msvcrt，反之亦然。
+_IS_WINDOWS = os.name == "nt"
+
+# 环境变量覆盖 Vault 路径（接收端机器用 OBSIDIAN_VAULT 指向导入解压出的 vault 目录）
+VAULT = os.environ.get("OBSIDIAN_VAULT", r"D:\_STOREROOM\lol\Obsidian Vault")
 DATA_DIR = Path(__file__).parent / "data"
 CHROMA_DIR = DATA_DIR / "chroma"
 INDEX_META = DATA_DIR / "index_meta.json"
@@ -355,8 +359,28 @@ def kb_stale(vault):
     return stale, {"changed": changed, "added": added, "removed": removed}
 
 
+def _lock_acquire(f):
+    """按平台获取文件锁：Windows msvcrt 字节锁 / Linux fcntl flock。"""
+    if _IS_WINDOWS:
+        import msvcrt
+        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+
+
+def _lock_release(f):
+    """按平台释放文件锁（与 _lock_acquire 严格对称）。"""
+    if _IS_WINDOWS:
+        import msvcrt
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
 def write_lock():
-    """进程级文件锁（Windows msvcrt），串行化 Chroma 写操作，防并发损坏。"""
+    """进程级文件锁（Windows msvcrt / Linux fcntl），串行化 Chroma 写操作，防并发损坏。"""
     import contextlib
 
     @contextlib.contextmanager
@@ -368,12 +392,11 @@ def write_lock():
             if f.tell() == 0:
                 f.write(b"0")
             f.seek(0)
-            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+            _lock_acquire(f)
             yield
         finally:
             try:
-                f.seek(0)
-                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                _lock_release(f)
             finally:
                 f.close()
 

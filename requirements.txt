@@ -1,0 +1,15 @@
+# obsidian-rag 依赖（接收端/新机器部署用）
+# 用法：
+#   Windows（CUDA）：.venv\Scripts\pip install -r requirements.txt
+#   Linux：           .venv/bin/pip install -r requirements.txt
+#
+# torch 因平台而异，不在此锁定，按平台单独安装：
+#   Windows + CUDA：   pip install torch==2.11.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+#   Linux + CUDA：     pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+#   Linux 仅 CPU：     pip install torch==2.11.0
+# 注意：本机实测 Python 3.14 + torch 2.11.0+cu128 组合可用
+# （cu130 会被 Windows Smart App Control 拦截，勿用）
+
+chromadb==1.5.9
+mcp==2.0.0
+sentence-transformers==5.6.1

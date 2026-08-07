@@ -1,7 +1,7 @@
 # 个人 AI 工程助手 — 任务记录
 
 > 开发记录：Obsidian Vault + RAG + MCP + AI Agent 全链路搭建与调优
-> 更新：2026-08-02
+> 更新：2026-08-06
 
 ---
 
@@ -390,3 +390,50 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
   - 崩溃恢复：系统级崩溃后 MCP server 自动重启加载新代码（112MB 未预载模型 vs 旧版 782MB）。
 - **环境提醒**：本机内存长期紧张（空闲常 <2GB）+ C 盘告急会诱发 WinError 1455；
   模型缓存需保持完整（HF 磁盘不足警告时勿删 `~/.cache/huggingface` 下 bge-m3）。
+
+---
+
+## 问题 12：RAG 数据跨机器分发（导出/导入工具 + Linux 支持）（2026-08-06 完成）
+
+- **背景**：`data/` 被 .gitignore，GitHub 同步不携带索引；虚拟机（Ubuntu）上跑
+  RAG 需要重新全量嵌入（28s+）且依赖网络与 GPU。需求：导出一个文件，接收端
+  一条命令秒级恢复索引（不重算嵌入），兼作测试靶子数据（含完整性自检）。
+- **交付**：
+  - `export.py`：自动刷新（stale 才增量重建）→ chromadb API 读全库（不加载模型，
+    持 index.lock）→ 打包 zip：`payload.jsonl.gz`（id/text/embedding/meta，JSON+gzip）
+    + `vault/` 源文件 + `index_meta.json` + `manifest.json`（逐文件 sha256）
+    + `AI_GUIDE.md`（注入本次导出信息）→ **导出自校验**（把自己当接收方解包比对）→
+    `data/export/` 只留最近 3 个。输出固定 `data/export/obsidian-rag-export-*.zip`（9.4MB/973块）。
+  - `import.py`：两阶段防半成品——先 CRC+sha256 全量校验（任一失败中止、目标零改动），
+    通过后才：交互确认覆盖（`--yes` 跳过，AI 非交互必加）→ 备份 index_meta →
+    持锁 delete+重建+分批 upsert（500/批，纯向量重插）→ count 校验 + 随机 3 块
+    embedding 余弦一致性 → 原子写回 index_meta → `vault_export/` 落位 →
+    包移入 `data/archive/` → 清临时区。重跑幂等。
+  - `AI_GUIDE.md`：AI 自动执行引导（仓库模板 + 包内注入版），含 Ubuntu/Windows 双平台
+    命令、验证点、失败分支决策表、只读靶子数据用法。
+  - `requirements.txt`：chromadb 1.5.9 / mcp 2.0.0 / sentence-transformers 5.6.1 锁版本，
+    torch 平台命令注释（Windows cu128 源 / Linux 默认源）。
+  - `tests/verify_export_import.py`：端到端验证套件（39 项断言，标准库无 pytest）。
+- **代码改动（最小面）**：
+  1. `index.py` 跨平台文件锁：`import msvcrt`（Windows 专属，Linux 上 `import index` 直接崩）
+     → `_IS_WINDOWS = os.name == "nt"` + `_lock_acquire/_lock_release` 函数内按平台局部导入
+     （msvcrt 字节锁 / fcntl flock），`write_lock()` 接口不变。**Windows 分支逐字保留**。
+  2. `index.py` VAULT 环境变量覆盖：`VAULT = os.environ.get("OBSIDIAN_VAULT", 原路径)`，
+     本机行为不变；接收端指向 `vault_export/` 防"文件全删"误判清库。
+- **过程中发现并修复的 bug**：
+  1. numpy 数组 `or []` 触发 truth-value 歧义（export 读库、import 自检两处）。
+  2. import 抽查取样逻辑写岔（会积累数百条）→ 引用池 + `random.Random(7).sample(3)`。
+  3. 测试脚本对 gzip 二进制 count 行数 → 先 `gzip.decompress`。
+  4. **精度陷阱（关键）**：旧 chroma 结构库 embedding 存 float64 原值；新库对 cosine
+     空间做**归一化 + float32 存储**（cos=1 但值差 ≤1 ULP，2.98e-8）→ "逐位比对"必然
+     失败。自检判据改为**余弦相似度 ≥ 1-1e-6**（检索排名的本质等价判据）。
+  5. import 把传入包移入 archive（接收方语义正确）→ 测试脚本改用归档后的包继续后续组。
+- **验证**：39/39 全过——回归（import 链/锁/指纹/幂等/检索）、导出 12 项、
+  副本导入 9 项（count/meta/vault/归档/清理/中文文件名往返）、覆盖与交互取消、
+  **损坏注入**（payload 篡改与包截断 → 中止且目标索引零改动）、留 3 个、**端到端
+  检索对比：真库与副本 top-3 结果逐字符一致**。
+- **遗留/风险**：
+  - fcntl 锁分支无法本机（Windows）实测，交付 AI_GUIDE §5 Linux 验收清单
+    （`import index` 无 msvcrt 报错 → 全流程导入 → 首查触发 bge-m3 下载属预期）。
+  - 本机 CUDA 仍被 SAC 拦截 `_argkmin` DLL（sklearn 扩展）→ 实测走 CPU fp16 兜底，功能不受影响。
+  - 导入库 embedding 存储为 float32+归一化，与原库 float64 检索结果等价（余弦判据保障）。
