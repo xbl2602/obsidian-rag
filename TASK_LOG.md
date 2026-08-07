@@ -437,3 +437,44 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
     （`import index` 无 msvcrt 报错 → 全流程导入 → 首查触发 bge-m3 下载属预期）。
   - 本机 CUDA 仍被 SAC 拦截 `_argkmin` DLL（sklearn 扩展）→ 实测走 CPU fp16 兜底，功能不受影响。
   - 导入库 embedding 存储为 float32+归一化，与原库 float64 检索结果等价（余弦判据保障）。
+
+## 问题 13：残留实例持锁死等 + 无进度可见性（2026-08-07 修复）
+
+- **背景**：某次会话结束后遗留两个 `server.py` 孤儿进程（17:16 启动），持续持有
+  `index.lock` 的 msvcrt 字节锁；新会话实例（20:07）在 `write_lock()` 上无限阻塞，
+  所有 MCP 调用 30s 超时、进程 CPU 归零看似死机 15+ 分钟。同时索引期间毫无
+  进度可见性——MCP 调用超时后既不知道任务在跑、也不知道还要多久、无法判断卡死。
+- **交付**：
+  1. **写锁超时 + 持有者定位（index.py）**：`_lock_acquire` 改非阻塞轮询
+     （`LK_NBLCK` / `LOCK_NB`，0.5s 间隔），`LOCK_TIMEOUT_SECONDS=60` 超时抛
+     `LockBusyError`（含持有者 PID 与处置建议）。锁文件记录持有者 PID；
+     超时后若持有者已死则清锁重试一次兜底。**不再无限死等**。
+  2. **进度文件（index.py）**：`data/index_progress.json`（原子写）——阶段
+     （scanning/embedding/writing/done/error）、文件 done/total、块 done/total、
+     耗时、ETA（按块进度线性推算）、心跳 `updated_at`。约定：running 时心跳
+     超 30s 视为疑似卡死。嵌入分批（`EMBED_BATCH_SIZE=64`）逐批更新心跳。
+  3. **后台索引（server.py）**：`reindex_knowledge` 改后台线程立即返回；
+     新增 `index_status` 工具输出进度文本（含 ETA 与卡死告警）；`ensure_fresh`
+     检测到变更时后台更新、用旧索引先出结果（索引为空的首跑场景例外，同步等），
+     杜绝"索引几分钟 + MCP 30s 超时"假死。
+  4. **并发防护（index.py）**：`encode_safe` 加线程锁（模型不可重入：后台索引
+     线程与检索并发编码会崩）；`server.py` 对残留 running 标志按心跳时效判定
+     （超 2×30s 视为死进程残留，不挡新任务）。
+- **过程中发现并修复的 bug**：
+  1. `_lock_record_holder` 写入 PID 后文件指针未归位 → `msvcrt.locking` 按当前
+     指针解锁 ≠ 锁定位置 → PermissionError 覆盖正常流程（解锁前强制 `f.seek(0)`）。
+  2. `write_lock` 的 finally 无条件释放锁 → 超时未获锁时也调 UNLCK 抛
+     PermissionError 掩盖 `LockBusyError`（改为仅 `acquired=True` 时释放）。
+  3. 测试污染：临时 vault 测试写入了真实 Chroma/meta（40 条目）→ 用真实 vault
+     增量重建自动清理（"清理 40 个失效块"，块数精确回到 1185）。
+- **验证**：
+  - 锁竞争：A 持锁 8s，B 超时 3s → 抛 `LockBusyError`（含持有者 PID 与建议），
+    无 PermissionError 掩盖、无死等。
+  - 进度：真实全量重建中实时轮询 `index_progress.json` 见 "嵌入 768/1185 块"，
+    完成 phase=done（1185 块，149s）。
+  - 端到端 MCP：stdio 会话 `tools/list` 三个工具齐；`index_status` 显示 done 详情；
+    `reindex_knowledge` 秒回（后台启动 PID）；搜索在索引期间不阻塞、结果正确
+    （新路径 10-Areas/... 命中）；最终 index_status 干净收束。
+- **使用方式（AI/人）**：`reindex_knowledge` 或自动同步启动后，轮询 `index_status`
+  看阶段/进度/ETA；心跳 >30s 且 running → 告警并建议查 PID 处置；遇到
+  LockBusyError → 按提示结束残留进程重试。
