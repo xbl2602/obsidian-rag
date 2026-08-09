@@ -30,14 +30,14 @@ from pathlib import Path
 import chromadb
 import numpy as np
 
-from index import (CHROMA_DIR, DATA_DIR, VAULT, collect_md_files, index_vault,
-                   kb_stale, log, write_lock)
+from config import CFG
+from index import (CHROMA_DIR, COLLECTION_NAME, DATA_DIR, VAULT, collect_md_files,
+                   index_vault, kb_stale, log, write_lock)
 
-COLLECTION = "obsidian_kb"
-MODEL_NAME = "BAAI/bge-m3"
+MODEL_NAME = CFG["model_name"]
 EXPORT_DIR = DATA_DIR / "export"
 GUIDE_FILE = Path(__file__).parent / "AI_GUIDE.md"
-KEEP_EXPORTS = 3
+KEEP_EXPORTS = CFG["keep_exports"]
 EXPORT_PREFIX = "obsidian-rag-export-"
 
 
@@ -75,7 +75,7 @@ def read_all_chunks():
     """持锁读取全部切块。返回 (ids, texts, metas, emb_lists)。"""
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     collection = client.get_or_create_collection(
-        name=COLLECTION, metadata={"hnsw:space": "cosine"}
+        name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
     )
     with write_lock():
         got = collection.get(include=["embeddings", "documents", "metadatas"])

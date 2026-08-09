@@ -23,10 +23,10 @@ from pathlib import Path
 import chromadb
 import numpy as np
 
-from index import CHROMA_DIR, DATA_DIR, VAULT, save_meta, write_lock
+from config import CFG
+from index import CHROMA_DIR, COLLECTION_NAME, DATA_DIR, VAULT, save_meta, write_lock
 
-COLLECTION = "obsidian_kb"
-UPSERT_BATCH = 500
+UPSERT_BATCH = CFG["import_upsert_batch"]
 IMPORT_WORK_DIR = DATA_DIR / "import_work"
 VAULT_EXPORT_DIR = Path(__file__).parent / "vault_export"
 ARCHIVE_DIR = DATA_DIR / "archive"
@@ -97,7 +97,7 @@ def existing_chunks():
     try:
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         col = client.get_or_create_collection(
-            name=COLLECTION, metadata={"hnsw:space": "cosine"}
+            name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
         )
         return col.count()
     except Exception as e:
@@ -135,11 +135,11 @@ def rebuild(manifest):
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     with write_lock():
         try:
-            client.delete_collection(COLLECTION)
+            client.delete_collection(COLLECTION_NAME)
         except Exception:
             pass
         col = client.get_or_create_collection(
-            name=COLLECTION, metadata={"hnsw:space": "cosine"}
+            name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
         )
 
         ids, texts, embs, metas = [], [], [], []

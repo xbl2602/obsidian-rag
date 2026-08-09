@@ -5,17 +5,18 @@ from collections import Counter
 
 import chromadb
 
-from index import CHROMA_DIR, encode_safe
+from config import CFG
+from index import CHROMA_DIR, COLLECTION_NAME, encode_safe
 
-CHUNK_LIMIT = 2000  # 检索时返回给 LLM 的单块最大字符
-MAX_CHUNKS_PER_FILE = 3  # 正文模式下同一文件最多展示块数（防同文件饱和）
-TRUNCATE_MARK = "… [本块已截断，完整内容见源文件]"
+CHUNK_LIMIT = CFG["return_chunk_limit"]  # 检索时返回给 LLM 的单块最大字符
+MAX_CHUNKS_PER_FILE = CFG["max_chunks_per_file"]  # 正文模式下同一文件最多展示块数（防同文件饱和）
+TRUNCATE_MARK = CFG["truncate_mark"]
 
 
 def get_collection():
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     return client.get_or_create_collection(
-        name="obsidian_kb", metadata={"hnsw:space": "cosine"}
+        name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
     )
 
 
@@ -58,7 +59,11 @@ def tokenize(text):
 
 
 class BM25:
-    def __init__(self, docs, k1=1.5, b=0.75):
+    def __init__(self, docs, k1=None, b=None):
+        if k1 is None:
+            k1 = CFG["bm25_k1"]
+        if b is None:
+            b = CFG["bm25_b"]
         self.k1 = k1
         self.b = b
         self.docs = docs
@@ -153,15 +158,21 @@ def _format_result(collection, cids, include_body=True, file_counts=None, capped
 
 # ---------- 混合检索 ----------
 
-def hybrid_search(query, top_k=5, folder="", dense_weight=0.6, bm25_weight=0.4, include_body=True):
+def hybrid_search(query, top_k=None, folder="", dense_weight=None, bm25_weight=None, include_body=True):
     """混合检索：dense 向量 + BM25 关键词，加权融合后取 top_k。"""
+    if top_k is None:
+        top_k = CFG["default_top_k"]
+    if dense_weight is None:
+        dense_weight = CFG["fusion_dense_weight"]
+    if bm25_weight is None:
+        bm25_weight = CFG["fusion_bm25_weight"]
     folder = _norm_folder(folder)
     collection = get_collection()
 
     # dense 检索（不带 where：Chroma 的 $startswith 依赖版本、此处验证已失效；
     # 改为查全库候选后在内存按文件前缀过滤，与 BM25 侧对称）
-    emb = encode_safe([query], batch_size=1).tolist()[0]
-    dense_k = max(top_k * 8, 200)  # 无条件放大候选池：过滤在取回后做，候选不足会漏（含 folder 场景）
+    emb = encode_safe([query]).tolist()[0]
+    dense_k = max(top_k * CFG["dense_candidate_factor"], CFG["dense_min_candidates"])  # 无条件放大候选池：过滤在取回后做，候选不足会漏（含 folder 场景）
     dense_res = collection.query(
         query_embeddings=[emb],
         n_results=dense_k,

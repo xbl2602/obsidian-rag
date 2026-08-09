@@ -11,27 +11,30 @@ from pathlib import Path
 
 import chromadb
 
+from config import CFG
+
 # 跨平台文件锁：Windows 用 msvcrt（字节范围锁），Linux/macOS 用 fcntl（flock）。
 # 按平台函数内局部导入：Linux 上 import index 不触碰 msvcrt，反之亦然。
 _IS_WINDOWS = os.name == "nt"
 
-# 环境变量覆盖 Vault 路径（接收端机器用 OBSIDIAN_VAULT 指向导入解压出的 vault 目录）
-VAULT = os.environ.get("OBSIDIAN_VAULT", r"D:\_STOREROOM\lol\Obsidian Vault")
+# 环境变量 OBSIDIAN_VAULT 优先于 config.json 的 vault（config.py 已并入该优先逻辑）
+VAULT = CFG["vault"]
 DATA_DIR = Path(__file__).parent / "data"
 CHROMA_DIR = DATA_DIR / "chroma"
 INDEX_META = DATA_DIR / "index_meta.json"
 LOCK_FILE = DATA_DIR / "index.lock"
 PROGRESS_FILE = DATA_DIR / "index_progress.json"
-MODEL_NAME = "BAAI/bge-m3"
-EXCLUDE_DIRS = {".obsidian", ".smart-env", ".trash", ".git", "TEMP", "templates"}
+MODEL_NAME = CFG["model_name"]
+COLLECTION_NAME = CFG["collection_name"]
+EXCLUDE_DIRS = set(CFG["exclude_dirs"])
 # 结构类文件：纯链接清单/指令文件，非知识本体，排除以免污染检索
-STRUCTURE_FILES = {"目录.md", "AGENTS.md", "LOG.md", "README.md"}
+STRUCTURE_FILES = set(CFG["exclude_files"])
 # AI 会话/临时文件模式
-EXCLUDE_PATTERNS = ("session-", "会话", ".tmp")
+EXCLUDE_PATTERNS = tuple(CFG["exclude_patterns"])
 
-LOCK_TIMEOUT_SECONDS = 60   # 等待写锁上限；超时抛 LockBusyError（不再无限死等）
-LOCK_POLL_SECONDS = 0.5     # 非阻塞尝试间隔
-EMBED_BATCH_SIZE = 16       # 嵌入分批大小：降低显存峰值 + 进度数字跳动密度（停滞检测粒度）
+LOCK_TIMEOUT_SECONDS = CFG["lock_timeout_seconds"]
+LOCK_POLL_SECONDS = CFG["lock_poll_seconds"]
+EMBED_BATCH_SIZE = CFG["embed_batch_size"]
 
 
 class LockBusyError(RuntimeError):
@@ -55,9 +58,9 @@ def log(*args):
 
 _progress = {}
 _progress_lock = threading.Lock()
-HEARTBEAT_INTERVAL = 5.0   # 心跳线程写盘间隔（秒）
-HEARTBEAT_TIMEOUT = 15.0   # 心跳停止判定：3 × HEARTBEAT_INTERVAL
-STALL_TIMEOUT = 25.0       # 进度停滞判定：5 × HEARTBEAT_INTERVAL
+HEARTBEAT_INTERVAL = CFG["heartbeat_interval"]   # 心跳线程写盘间隔（秒）
+HEARTBEAT_TIMEOUT = CFG["heartbeat_timeout"]     # 心跳停止判定（3 × interval）
+STALL_TIMEOUT = CFG["stall_timeout"]             # 进度停滞判定（5 × interval）
 
 _heartbeat_thread = None
 _heartbeat_stop = threading.Event()
@@ -201,6 +204,10 @@ def progress_text(p):
         lines.append("· 索引空闲（无进行中任务）")
     lines.append(f"  阶段: {p.get('phase', '?')}")
     lines.append(f"  消息: {p.get('message', '')}")
+    if p.get("device"):
+        dev = p.get("device")
+        mark = "✅" if dev == "cuda" else "⚠ 慢速模式"
+        lines.append(f"  设备: {dev} {mark}")
     if p.get("error"):
         lines.append(f"  错误: {p.get('error')}")
     if p.get("files_total") is not None:
@@ -234,7 +241,7 @@ def progress_text(p):
 _model = None
 _device = None  # 当前模型所在设备："cuda" / "cpu" / None
 DEVICE_STATE_FILE = DATA_DIR / "device_state.json"
-CUDA_COOLDOWN_SECONDS = 300  # CUDA 失败后冷却 5 分钟，到期轻量探测自动重试
+CUDA_COOLDOWN_SECONDS = CFG["cuda_cooldown_seconds"]  # CUDA 失败后冷却期，到期轻量探测自动重试
 _cuda_cooldown_until = 0.0   # 进程内冷却截止时间戳
 
 
@@ -247,6 +254,29 @@ def _write_device_state(state):
         os.replace(tmp, DEVICE_STATE_FILE)
     except Exception as e:
         log(f"写入设备状态失败（忽略）：{e}")
+
+
+def _report_device(device, note=""):
+    """上报当前设备：写入 device_state.json（清旧失败标记）+ 索引进度里记录 device。
+
+    在每次模型成功就位后调用：成功用 CUDA 会覆盖掉历史上残留的 failed 记录，
+    避免陈旧失败标记（如旧版 _argkmin 拦截）误导后续排查。
+    """
+    global _progress
+    _write_device_state({
+        "device": device,
+        "healthy": device == "cuda",
+        "checked_at": round(time.time(), 1),
+        "note": note,
+    })
+    if device == "cpu":
+        log(f"⚠ 当前在 CPU 模式编码（{note}）——速度约为 CUDA 的 1/12。")
+    with _progress_lock:
+        base = dict(_progress)
+        if base.get("running"):
+            base["device"] = device
+            _write_progress_file(base)
+            _progress = base
 
 
 def _cuda_probe():
@@ -316,6 +346,7 @@ def _try_switch_back_cuda():
         _model, _device = new, "cuda"
         del old
         log("显存已恢复，自动切回 CUDA")
+        _report_device("cuda", note="auto-switched-back")
     except Exception as e:
         _model, _device = old, "cpu"  # 回滚，继续用 CPU
         _cooldown_cuda(str(e))
@@ -337,6 +368,7 @@ def get_model():
         try:
             log("加载 embedding 模型（device=cuda）...")
             _model, _device = _load_model("cuda")
+            _report_device("cuda")
             return _model
         except Exception as e:
             log(f"CUDA 初始化失败（{e}），降级 CPU")
@@ -348,6 +380,7 @@ def get_model():
                 pass
     log("加载 embedding 模型（device=cpu）...")
     _model, _device = _load_model("cpu")
+    _report_device("cpu", note="cuda-init-failed")
     return _model
 
 
@@ -371,13 +404,15 @@ def _vstack(arrays):
     return np.vstack(arrays)
 
 
-def encode_safe(texts, batch_size=32):
+def encode_safe(texts, batch_size=None):
     """带 CUDA→CPU 自动降级的编码入口（索引与检索共用）。
 
     线程锁串行化编码（模型不可重入）；CUDA 内存不足（OOM/页面文件不足）
     → 标记失败、卸载模型、切 CPU 重试一次；仍失败（CPU 内存也不足）才抛出。
     """
     with _encode_lock:
+        if batch_size is None:
+            batch_size = CFG["encode_batch_size"]
         try:
             return get_model().encode(texts, normalize_embeddings=True,
                                       batch_size=batch_size, show_progress_bar=False)
@@ -436,13 +471,16 @@ def split_paragraphs(text):
     return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
 
 
-def split_sentences(text, max_len=1500):
+def split_sentences(text, max_len=None):
     """按句子边界切块，永不从句子中间剪断。
 
     边界：中文标点（。！？）后；英文 .!? 后必须紧跟空格 + 大写字母或数字
     （避免 Mr./e.g./3.14 等缩写/小数被误切）。常见缩写先保护再切。
     单句本身超过 max_len 时宁长勿断（整句保留），避免语义截断。
+    max_len 默认取 config 的 chunk_char_limit。
     """
+    if max_len is None:
+        max_len = CFG["chunk_char_limit"]
     ABBR = {"mr.", "mrs.", "ms.", "dr.", "prof.", "e.g.", "i.e.", "etc.", "vs.", "st.", "no.", "al."}
     for a in list(ABBR) + [a.capitalize() for a in ABBR]:
         text = text.replace(" " + a, " " + a.replace(".", "\x00"))
@@ -523,7 +561,7 @@ def _chroma_count():
     try:
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         return client.get_or_create_collection(
-            name="obsidian_kb", metadata={"hnsw:space": "cosine"}
+            name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
         ).count()
     except Exception as e:
         log(f"Chroma count 失败（忽略）：{e}")
@@ -692,7 +730,7 @@ def index_vault(vault, incremental=True, full=False):
     try:
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         collection = client.get_or_create_collection(
-            name="obsidian_kb", metadata={"hnsw:space": "cosine"}
+            name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
         )
 
         meta = {} if full else load_meta()
@@ -726,18 +764,20 @@ def index_vault(vault, incremental=True, full=False):
                 continue
 
             front, body = extract_frontmatter(content)
-            # 两级切块：标题切 → 超长块降级段落切 → 超长段落降级句子切（永不剪断句子）
-            if len(body) <= 200:
+            # 两级切块：标题切 → 超长块降级段落切 → 超长段级句子剪（永不剪断句子）
+            short_doc = CFG["short_doc_char_limit"]
+            chunk_max = CFG["chunk_char_limit"]
+            if len(body) <= short_doc:
                 chunks = [(front.get("title", ""), body)]
             else:
                 chunks = []
                 for heading, text in split_by_headings(body):
-                    if len(text) <= 1500:
+                    if len(text) <= chunk_max:
                         chunks.append((heading, text))
                     else:
-                        # 每个段落独立降级：段落超长才句子切，短段落保持完整
+                        # 每个段落独立降级：段落超长才句子剪，短段落保持完整
                         for p in split_paragraphs(text):
-                            if len(p) <= 1500:
+                            if len(p) <= chunk_max:
                                 chunks.append((heading, p))
                             else:
                                 for s in split_sentences(p):
@@ -788,9 +828,9 @@ def index_vault(vault, incremental=True, full=False):
             update_progress(phase="writing", message="写库与清理...")
             if full:
                 log("全量重建：清空旧库后写入...")
-                client.delete_collection("obsidian_kb")
+                client.delete_collection(COLLECTION_NAME)
                 collection = client.get_or_create_collection(
-                    name="obsidian_kb", metadata={"hnsw:space": "cosine"}
+                    name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
                 )
 
             if emb is not None:

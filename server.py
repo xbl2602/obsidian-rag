@@ -15,7 +15,7 @@ import time
 
 from mcp.server import MCPServer
 
-from index import (VAULT, HEARTBEAT_TIMEOUT, LockBusyError, index_vault,
+from index import (VAULT, COLLECTION_NAME, HEARTBEAT_TIMEOUT, LockBusyError, index_vault,
                    kb_stale, log, progress_text, read_progress)
 from retriever import hybrid_search, reset_bm25_index
 
@@ -116,7 +116,7 @@ def ensure_fresh():
 
 
 @server.tool()
-def search_knowledge(query: str, top_k: int = 5, folder: str = "", include_body: bool = True) -> str:
+def search_knowledge(query: str, top_k: int = None, folder: str = "", include_body: bool = True) -> str:
     """语义搜索 Obsidian 知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题；folder 可按 Vault 内子目录过滤（如 ROCKETRY 或 AI Knowledge System，边界校验的前缀匹配，须是完整目录名）；返回最相关的笔记段落与来源文件路径，来源行带 [块 k/N] 位置标记。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
     try:
         note = ensure_fresh()
