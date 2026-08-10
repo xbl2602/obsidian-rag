@@ -685,10 +685,11 @@ def kb_stale(vault):
             changed += 1
         else:
             added += 1
-    removed = len(set(meta) - seen)
+    meta_files = {k for k, v in meta.items() if isinstance(v, dict)}
+    removed = len(meta_files - seen)
     stale = bool(changed or added or removed)
 
-    expected = sum(info.get("chunks", 0) for info in meta.values())
+    expected = sum(info.get("chunks", 0) for info in meta.values() if isinstance(info, dict))
     actual = _chroma_count()
     if actual is not None and actual != expected:
         log(f"索引一致性校验失败：Chroma {actual} 块 vs meta {expected} 块，触发重建")
@@ -829,7 +830,7 @@ def index_vault(vault, incremental=True, full=False):
         # 崩溃自愈（P7）：meta 有数据但 Chroma 空（如 --full 中途被杀在清库窗口）
         # → 增量指纹全命中时 new_ids 为空，普通增量路径无法补数据，需强制全量重嵌。
         if not full and meta and collection.count() == 0:
-            log(f"检测到索引库为空（meta 记录 {sum(i.get('chunks', 0) for i in meta.values())} 块），自动全量重建")
+            log(f"检测到索引库为空（meta 记录 {sum(i.get('chunks', 0) for i in meta.values() if isinstance(i, dict))} 块），自动全量重建")
             meta = {}
         current_rels = {str(f.relative_to(vault)).replace("\\", "/") for f in files}
 
@@ -936,6 +937,8 @@ def index_vault(vault, incremental=True, full=False):
             # 已删文件（不在 meta）与幽灵块（块数变少后超出 chunks 的旧 id）都会被清除。
             valid = set()
             for rel, info in meta.items():
+                if not isinstance(info, dict):
+                    continue
                 for i in range(info.get("chunks", 0)):
                     valid.add(f"{rel}::{i}")
             all_ids = collection.get(include=[])["ids"]

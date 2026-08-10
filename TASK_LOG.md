@@ -612,4 +612,29 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
     改为仅 cap 值变化时记录一次；`--full` 时版本升级日志不再误报
     （空 meta 无 `_version`，之前每次全量都打）。
 
+---
+
+## 问题 16：meta 顶层 `_version` 破坏遍历 → 自动同步失效（2026-08-10 修复）
+
+- **现象**：搜索时每次返回"检测到 Vault 变化，但自动更新索引失败：
+  'int' object has no attribute 'get'；以下为旧索引结果"。
+- **根因**：问题 15 把 `_version: 2`（int）作为顶层字段写入 meta——
+  原本 meta 的字典语义是"键=文件路径，值=条目 dict"，`_version` 破坏该
+  语义。三处遍历全中雷（`meta.items()` / `meta.values()` 遇到 int 调 `.get` 崩溃）：
+  1. `kb_stale` 一致性校验（`index.py:691`）：`sum(info.get("chunks") for info in meta.values())`
+  2. `kb_stale` 已删文件统计（`set(meta) - seen`）：即使不崩，`_version` 键
+     也会被算作"已删文件"→ `removed=1` → **永远 stale、每次搜索都触发重建**
+  3. `index_vault` 空库自愈日志（832）与失效块清理 valid 生成（939）
+- **为什么问题 15 验证时没爆**：验证走 `--full`（meta 先清空再重写）+ CLI
+  脚本直连检索，不经过含 `_version` 的 meta 遍历路径；MCP server 当时仍是
+  旧代码。本次 opencode 重启后 server 加载新代码，`ensure_fresh → kb_stale`
+  首次触发即崩。
+- **修复（index.py，最小面）**：三处遍历加 `isinstance(x, dict)` 守卫；
+  removed 统计改为先过滤出 dict 条目（`meta_files`）再减 `seen`。
+- **验证**：`kb_stale` 返回 `stale=False, stats 全 0`（不再误报）；
+  832/939 已由同一守卫覆盖，`py_compile` 通过。
+- **遗留（长期可选）**：守卫只治标。根治是把 meta 文件改为嵌套结构
+  （`{"meta": {...}, "_version": 2}`），需迁移兼容旧 meta——当前守卫 + 版本化
+  已足够，暂不做。
+
 
