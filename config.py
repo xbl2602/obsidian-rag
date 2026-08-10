@@ -29,8 +29,8 @@ DEFAULTS = {
     "short_doc_char_limit": 200,
 
     # ---- 嵌入与硬件 ----
-    "embed_batch_size": 16,       # index_vault 分批嵌入的批次
-    "encode_batch_size": 32,      # encode_safe 默认批次（查询/编码入口通用）
+    "embed_batch_size": 8,        # index_vault 分批嵌入的批次（自动按显存收紧，此为上限）
+    "encode_batch_size": 32,      # encode_safe 默认批次（查询/编码入口通用，自动按显存收紧）
     "cuda_cooldown_seconds": 300, # CUDA 失败后冷却期
 
     # ---- 锁与并发 ----
@@ -128,10 +128,11 @@ CONFIG_TEMPLATE = """\
 
   // 索引嵌入的分批大小。显存/内存紧张时调小（如 8），显存充裕调大（如 64）
   // 可略微提速。影响：显存峰值 + 进度数字跳动频率（小批更平滑）。
-  "embed_batch_size": 16,
+  // 运行时还会按当前可用显存自动收紧（此值为上限），一般无需手动调整。
+  "embed_batch_size": 8,
 
   // 通用编码默认批次大小（查询编码等单点编码用，索引批大小另由上项控制）。
-  // 影响：单次 encode 的显存；一般无需改动。
+  // 影响：单次 encode 的显存；运行时同样自动按显存收紧。
   "encode_batch_size": 32,
 
   // CUDA 失败（OOM 等）后冷却的秒数：冷却期内不尝试 GPU，到期自动轻量探测。

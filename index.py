@@ -327,12 +327,11 @@ def _build_model(device, fp16=False):
 
 
 def _load_model(device):
-    """按 device 加载模型。CPU 优先 fp16 减半内存（P6），失败回退 fp32。"""
-    if device == "cpu":
-        try:
-            return _build_model("cpu", fp16=True), "cpu"
-        except Exception as e:
-            log(f"CPU fp16 加载失败，回退 fp32：{e}")
+    """按 device 加载模型。CUDA/CPU 均优先 fp16 减半显存（8GB 卡防共享显存溢出），失败回退 fp32。"""
+    try:
+        return _build_model(device, fp16=True), device
+    except Exception as e:
+        log(f"{device} fp16 加载失败，回退 fp32：{e}")
     return _build_model(device), device
 
 
@@ -394,6 +393,38 @@ def _is_memory_error(e):
 # 模型不可重入：后台索引线程与检索（搜索时编码查询）可能并发，必须串行编码
 _encode_lock = threading.Lock()
 
+# Windows WDDM 显存溢出会静默排入共享显存（系统内存）而不抛错，只能靠耗时识别病态
+SLOW_BATCH_SECONDS = 30.0  # CUDA 单批编码超过此值视为疑似共享显存溢出
+_slow_batch_count = 0
+
+
+def _release_cuda_cache():
+    """释放 CUDA 缓存分配器池（编码后调用，防高水位残留与共享显存溢出）。"""
+    if _device == "cuda":
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
+def _auto_batch_size(desired):
+    """按当前可用显存自动收紧批次（防共享显存溢出），配置值仅作上限。
+
+    经验校准（fp16 + bge-m3，8GB 移动卡实测）：固定开销约 3GB
+    （模型+上下文+工作区），长块（1500 字）激活约 0.4GB/块。
+    """
+    if _device != "cuda":
+        return desired
+    import torch
+    free_gb = torch.cuda.mem_get_info()[0] / 1024 ** 3
+    cap = int((free_gb - 3.0) / 0.4)
+    cap = max(2, min(32, cap))
+    if desired > cap:
+        log(f"可用显存 {free_gb:.1f}GB，批次 {desired} 收紧为 {cap}")
+        return cap
+    return desired
+
 
 def _vstack(arrays):
     """拼接分批嵌入结果（sentence_transformers 默认 numpy；个别配置返回 torch 张量）。"""
@@ -404,25 +435,51 @@ def _vstack(arrays):
     return np.vstack(arrays)
 
 
+def _encode(texts, batch_size):
+    """执行一次编码；CUDA 内存不足（OOM/页面文件不足）→ 降级 CPU 重试一次。"""
+    try:
+        return get_model().encode(texts, normalize_embeddings=True,
+                                  batch_size=batch_size, show_progress_bar=False)
+    except (RuntimeError, OSError, MemoryError) as e:
+        if _is_memory_error(e) and _device == "cuda":
+            log(f"CUDA 编码内存不足（{e}），自动降级 CPU 重试...")
+            fallback_to_cpu(str(e))
+            return get_model().encode(texts, normalize_embeddings=True,
+                                      batch_size=batch_size, show_progress_bar=False)
+        raise
+
+
 def encode_safe(texts, batch_size=None):
     """带 CUDA→CPU 自动降级的编码入口（索引与检索共用）。
 
     线程锁串行化编码（模型不可重入）；CUDA 内存不足（OOM/页面文件不足）
     → 标记失败、卸载模型、切 CPU 重试一次；仍失败（CPU 内存也不足）才抛出。
+    Windows WDDM 显存溢出会静默排入共享显存而不报错，只能靠耗时识别病态：
+    单批 >SLOW_BATCH_SECONDS → 告警；连续两批仍慢 → 主动降级 CPU。
+    编码结束统一 empty_cache，防止分配器高水位残留（空闲占用 7.7GB 问题）。
     """
     with _encode_lock:
         if batch_size is None:
-            batch_size = CFG["encode_batch_size"]
-        try:
-            return get_model().encode(texts, normalize_embeddings=True,
-                                      batch_size=batch_size, show_progress_bar=False)
-        except (RuntimeError, OSError, MemoryError) as e:
-            if _is_memory_error(e) and _device == "cuda":
-                log(f"CUDA 编码内存不足（{e}），自动降级 CPU 重试...")
-                fallback_to_cpu(str(e))
-                return get_model().encode(texts, normalize_embeddings=True,
-                                          batch_size=batch_size, show_progress_bar=False)
-            raise
+            batch_size = _auto_batch_size(CFG["encode_batch_size"])
+        if _device == "cuda":
+            global _slow_batch_count
+            t0 = time.time()
+            try:
+                emb = _encode(texts, batch_size)
+            finally:
+                _release_cuda_cache()
+            elapsed = time.time() - t0
+            if elapsed > SLOW_BATCH_SECONDS:
+                _slow_batch_count += 1
+                log(f"CUDA 单批编码耗时 {elapsed:.1f}s（>{SLOW_BATCH_SECONDS:.0f}s），"
+                    f"疑似共享显存溢出（连续 {_slow_batch_count} 次）")
+                if _slow_batch_count >= 2:
+                    log("连续慢批，主动降级 CPU，避免病态运行...")
+                    fallback_to_cpu("slow-batch")
+            else:
+                _slow_batch_count = 0
+            return emb
+        return _encode(texts, batch_size)
 
 
 def fallback_to_cpu(reason=""):
@@ -822,6 +879,7 @@ def index_vault(vault, incremental=True, full=False):
                 update_progress(chunks_done=end,
                                 message=f"嵌入 {end}/{total_chunks} 块（{changed} 文件变更）...")
             emb = _vstack(emb_batches)
+            _release_cuda_cache()
 
         # 写锁包住全部写操作（delete/upsert/清理/save_meta）
         with write_lock():
