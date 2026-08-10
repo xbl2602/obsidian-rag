@@ -112,5 +112,5 @@ with gzip.open("payload.jsonl.gz", "rt", encoding="utf-8") as f:
 ## 7. 注意事项
 
 - 不要把 `vault_export/` 放在 NFS 挂载盘（fcntl 文件锁在 NFS 上不可靠）
-- `--full` 全量重建耗时 ~30s 且需模型，非必要勿跑
+- `--full` 全量重建耗时 ~40s（155 文件/1544 块实测）且需模型，非必要勿跑
 - 本包为个人笔记数据，请勿再分发或提交到公开仓库
