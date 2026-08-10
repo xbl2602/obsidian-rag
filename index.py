@@ -36,6 +36,10 @@ LOCK_TIMEOUT_SECONDS = CFG["lock_timeout_seconds"]
 LOCK_POLL_SECONDS = CFG["lock_poll_seconds"]
 EMBED_BATCH_SIZE = CFG["embed_batch_size"]
 
+# 切块/清洗逻辑版本：升级后旧索引需重嵌（指纹感知不到代码升级），
+# meta 版本不匹配时 index_vault 自动按全量重建处理。
+META_VERSION = 2
+
 
 class LockBusyError(RuntimeError):
     """写锁被其他存活进程持有且等待超时。"""
@@ -396,6 +400,7 @@ _encode_lock = threading.Lock()
 # Windows WDDM 显存溢出会静默排入共享显存（系统内存）而不抛错，只能靠耗时识别病态
 SLOW_BATCH_SECONDS = 30.0  # CUDA 单批编码超过此值视为疑似共享显存溢出
 _slow_batch_count = 0
+_last_batch_cap = None  # 上次自动批次收紧值（仅变化时打日志，避免刷屏）
 
 
 def _release_cuda_cache():
@@ -414,6 +419,7 @@ def _auto_batch_size(desired):
     经验校准（fp16 + bge-m3，8GB 移动卡实测）：固定开销约 3GB
     （模型+上下文+工作区），长块（1500 字）激活约 0.4GB/块。
     """
+    global _last_batch_cap
     if _device != "cuda":
         return desired
     import torch
@@ -421,8 +427,11 @@ def _auto_batch_size(desired):
     cap = int((free_gb - 3.0) / 0.4)
     cap = max(2, min(32, cap))
     if desired > cap:
-        log(f"可用显存 {free_gb:.1f}GB，批次 {desired} 收紧为 {cap}")
+        if cap != _last_batch_cap:
+            log(f"可用显存 {free_gb:.1f}GB，批次 {desired} 收紧为 {cap}")
+        _last_batch_cap = cap
         return cap
+    _last_batch_cap = None
     return desired
 
 
@@ -575,6 +584,23 @@ def extract_frontmatter(text):
     return meta, body
 
 
+def clean_wikilinks(text):
+    """清洗 wiki 链接（[[...]]）：别名保留、纯导航引用去除、路径垃圾剔除。
+
+    - [[目标|别名]] / [[目标\\|别名]]（表格转义管道）→ 保留别名（读者实际看到的文字）
+    - [[目标]] / [[目标#标题]] / [[目标#^块]] / ![[嵌入]] → 去除
+    在切块前调用，避免纯引用标签污染嵌入与检索（引用方不应因标签被命中）。
+    """
+    def _repl(m):
+        inner = m.group(1).replace(r"\|", "|")  # 表格里 \| 是转义管道，还原为分隔符
+        parts = inner.split("|")
+        if len(parts) > 1:
+            return parts[1].strip()
+        return ""
+
+    return re.sub(r"!?\[\[([^\]]*)\]\]", _repl, text)
+
+
 def load_meta():
     if INDEX_META.exists():
         return json.loads(INDEX_META.read_text(encoding="utf-8"))
@@ -582,10 +608,15 @@ def load_meta():
 
 
 def save_meta(meta):
-    """原子写：先写临时文件再 os.replace，防止写入中断损坏 meta。"""
+    """原子写：先写临时文件再 os.replace，防止写入中断损坏 meta。
+
+    写入切块版本号（_version），下次运行时据此判断旧索引是否需要重嵌。
+    """
     DATA_DIR.mkdir(exist_ok=True)
+    data = dict(meta)
+    data["_version"] = META_VERSION
     tmp = INDEX_META.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, INDEX_META)
 
 
@@ -791,6 +822,10 @@ def index_vault(vault, incremental=True, full=False):
         )
 
         meta = {} if full else load_meta()
+        # 切块/清洗逻辑升级检测：旧索引文本与当前逻辑不一致，强制全量重建
+        if not full and meta.pop("_version", 1) != META_VERSION:
+            log(f"切块逻辑版本升级（v{META_VERSION}），强制全量重建")
+            meta = {}
         # 崩溃自愈（P7）：meta 有数据但 Chroma 空（如 --full 中途被杀在清库窗口）
         # → 增量指纹全命中时 new_ids 为空，普通增量路径无法补数据，需强制全量重嵌。
         if not full and meta and collection.count() == 0:
@@ -821,6 +856,7 @@ def index_vault(vault, incremental=True, full=False):
                 continue
 
             front, body = extract_frontmatter(content)
+            body = clean_wikilinks(body)
             # 两级切块：标题切 → 超长块降级段落切 → 超长段级句子剪（永不剪断句子）
             short_doc = CFG["short_doc_char_limit"]
             chunk_max = CFG["chunk_char_limit"]
