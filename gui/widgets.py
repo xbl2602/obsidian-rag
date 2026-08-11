@@ -514,6 +514,14 @@ class SearchCard:
         ]
 
     def show_results(self, text, colors, elapsed_s=None, show_body=True):
+        self._render_state = {"text": text, "colors": colors,
+                              "show_body": show_body, "expanded": set()}
+        self._render_results()
+
+    def _render_results(self):
+        st = self._render_state
+        text, colors, show_body = st["text"], st["colors"], st["show_body"]
+        expanded = st["expanded"]
         blocks = []
         cur = {"src": None, "body": []}
         for line in text.splitlines():
@@ -540,6 +548,7 @@ class SearchCard:
             conf_color = _conf_color(conf, colors) if conf is not None else colors["t3"]
             body = "\n".join(b["body"][:3]) if show_body else ""
             src = b["src"] if show_body else rel
+            is_open = i in expanded and bool(body)
 
             body_text = ft.Text(body, size=13, font_family=FONT_UI, color=colors["t1"],
                                 height=1.45, max_lines=6,
@@ -554,7 +563,9 @@ class SearchCard:
                 on_click=(lambda e, r=rel, h=heading: self._fire_open(r, h))
                          if self._on_open else None,
             )
-            chevron = ft.Icon(ft.Icons.CHEVRON_RIGHT, size=14, color=colors["t3"],
+            chevron = ft.Icon(ft.Icons.EXPAND_MORE if is_open
+                              else ft.Icons.CHEVRON_RIGHT,
+                              size=14, color=colors["t3"],
                               visible=bool(body))
             header = ft.Row([
                 chevron,
@@ -571,17 +582,16 @@ class SearchCard:
                 open_btn,
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-            card_col = ft.Column(spacing=0)
-
-            def make_toggle(chevron=chevron, body_box=body_box,
-                            column=card_col, colors=colors):
+            def make_toggle(i=i, expanded=expanded, body=bool(body),
+                            colors=colors, chevron=chevron):
                 def _toggle(e):
-                    if body_box in column.controls:
-                        column.controls.remove(body_box)
-                        chevron.icon = ft.Icons.CHEVRON_RIGHT
+                    if not body:
+                        return
+                    if i in expanded:
+                        expanded.discard(i)
                     else:
-                        column.controls.insert(1, body_box)
-                        chevron.icon = ft.Icons.EXPAND_MORE
+                        expanded.add(i)
+                    self._render_results()
                     e.control.page.update()
                 return _toggle
 
@@ -589,9 +599,10 @@ class SearchCard:
                 content=header, padding=0,
                 on_click=make_toggle() if body else None,
             )
-            card_col.controls.append(head_container)
+            card_controls = ([head_container] if not is_open
+                             else [head_container, body_box])
             controls.append(ft.Container(
-                content=card_col,
+                content=ft.Column(card_controls, spacing=0),
                 padding=ft.Padding.all(10),
                 border_radius=SIZE["radius_control"],
                 border=ft.Border.all(1, colors["border_faint"]),
