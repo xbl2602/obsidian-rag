@@ -326,19 +326,24 @@ class App:
             from retriever import hybrid_search
             return hybrid_search(query.strip(), include_body=True)
 
-        def done(fut):
-            self._searching = False
-            self.search.btn.disabled = False
-            try:
-                result = fut.result()
-                self.search.show_results(result, self.colors)
-                self._log_line("── 检索「%s」耗时 %.1fs" % (query.strip(), time.time() - t0))
-            except Exception as ex:
-                self._log_line("ERROR [GUI] 搜索失败：%s" % ex)
-                self._snack("搜索失败：%s" % ex, is_error=True)
-            self.page.update()
+        self._search_t0 = t0
+        self.executor.submit(run).add_done_callback(
+            lambda f: self.page.run_task(self._finish_search, f))
 
-        self.executor.submit(run).add_done_callback(lambda f: self.page.run_task(lambda: done(f)))
+    async def _finish_search(self, fut):
+        """搜索完成回调（必须 async：run_task 仅接受 coroutine function）。"""
+        self._searching = False
+        self.search.btn.disabled = False
+        try:
+            result = fut.result()
+            self.search.show_results(result, self.colors)
+            self._log_line("── 检索「%s」耗时 %.1fs"
+                           % (self.search.input.value.strip(),
+                              time.time() - self._search_t0))
+        except Exception as ex:
+            self._log_line("ERROR [GUI] 搜索失败：%s" % ex)
+            self._snack("搜索失败：%s" % ex, is_error=True)
+        self.page.update()
 
     # ---------- 工具 ----------
 

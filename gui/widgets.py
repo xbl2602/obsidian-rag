@@ -426,7 +426,7 @@ class SearchCard:
             self.status.color = self._colors["t4"]
             self.ring.visible = False
         elif kind == "loading":
-            self.status.value = "正在检索…"
+            self.status.value = "正在检索（首次需加载模型，约 30–60 秒）…"
             self.status.color = self._colors["accent"]
             self.ring.visible = True
         elif kind == "ok":

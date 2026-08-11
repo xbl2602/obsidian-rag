@@ -85,6 +85,26 @@ def main():
         raise AssertionError("中排高度未锚定 %s != %s" % (app.mid_row.height, SIZE["mid_h"]))
     print("    中排高度 = %s px OK" % app.mid_row.height)
 
+    print("5/5 搜索完成/失败回调路径...")
+    import asyncio
+    from concurrent.futures import Future
+
+    f_ok = Future()
+    f_ok.set_result("---\ntest.md\n正文内容\n---")
+    asyncio.run(app._finish_search(f_ok))
+    if app._searching or app.search.btn.disabled:
+        raise AssertionError("完成后按钮未恢复")
+    if not app.search.results.controls:
+        raise AssertionError("完成路径未渲染结果")
+    print("    完成路径 OK")
+
+    f_bad = Future()
+    f_bad.set_exception(RuntimeError("boom"))
+    asyncio.run(app._finish_search(f_bad))
+    if app._searching or app.search.btn.disabled:
+        raise AssertionError("失败后按钮未恢复")
+    print("    失败路径 OK")
+
     print("\n冒烟测试全部通过")
 
 
