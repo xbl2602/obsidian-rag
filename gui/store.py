@@ -1,0 +1,107 @@
+"""store.py — 数据层：读取并解析现有进度/meta/锁状态，判定索引三态与心跳四态。
+
+复用 index.py 的现有函数与数据文件，不加载模型、不碰 Chroma。
+"""
+import os
+import time
+from pathlib import Path
+
+from config import CFG
+from index import (
+    VAULT,
+    kb_stale,
+    load_meta,
+    collect_md_files,
+    read_progress,
+    _pid_alive,
+)
+
+HEARTBEAT_TIMEOUT = CFG["heartbeat_timeout"]   # 心跳停止判定（15s）
+STALL_TIMEOUT = CFG["stall_timeout"]           # 进度停滞判定（25s）
+
+# 索引状态（三态）：ok / stale / none
+# 心跳（四态）：running / dead / stalled / done / idle
+STATE_OK, STATE_STALE, STATE_NONE = "ok", "stale", "none"
+HB_RUNNING, HB_DEAD, HB_STALLED, HB_DONE, HB_IDLE = "running", "dead", "stalled", "done", "idle"
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+
+def meta_stats():
+    """从 index_meta.json 统计：已索引文件数、总块数。损坏/缺失返回 (0, 0)。"""
+    meta = load_meta()
+    files = sum(1 for v in meta.values() if isinstance(v, dict))
+    chunks = sum(v.get("chunks", 0) for v in meta.values() if isinstance(v, dict))
+    return files, chunks
+
+
+def vault_file_count():
+    """应索引的 .md 文件总数（扫描磁盘，与索引同过滤规则）。"""
+    try:
+        return len(collect_md_files(VAULT))
+    except Exception:
+        return 0
+
+
+def index_state():
+    """三态判定：ok=索引最新 / stale=有变更待索引 / none=尚未索引。
+
+    判定依据：meta 有数据 + kb_stale 指纹比对（复用现有逻辑，读盘不加载模型）。
+    """
+    files, chunks = meta_stats()
+    if files == 0:
+        return STATE_NONE, files, chunks
+    try:
+        stale, _ = kb_stale(VAULT)
+    except Exception:
+        stale = True
+    return (STATE_STALE if stale else STATE_OK), files, chunks
+
+
+def heartbeat_state(progress):
+    """心跳四态判定（复用现有双通道规则）。
+
+    running：索引中，心跳新鲜
+    dead：心跳停止超阈值（>15s）
+    stalled：心跳在走但进度停滞超阈值（>25s，假活）
+    done：非运行且已完成
+    idle：非运行且无数据
+    """
+    now = time.time()
+    if not progress.get("running"):
+        return HB_DONE if progress.get("phase") == "done" and progress.get("pid") else HB_IDLE
+    updated = progress.get("updated_at") or 0
+    advanced = progress.get("last_advance_at") or 0
+    if now - updated > HEARTBEAT_TIMEOUT:
+        return HB_DEAD
+    if now - advanced > STALL_TIMEOUT:
+        return HB_STALLED
+    return HB_RUNNING
+
+
+def progress_ratio(progress):
+    """进度条比例：嵌入阶段按块数，其他阶段按文件数。无数据返回 0。"""
+    phase = progress.get("phase")
+    if phase == "embedding":
+        total, done = progress.get("chunks_total"), progress.get("chunks_done")
+    else:
+        total, done = progress.get("files_total"), progress.get("files_done")
+    if isinstance(total, (int, float)) and total and isinstance(done, (int, float)):
+        return min(done / total, 1.0)
+    return 0.0
+
+
+def index_busy():
+    """是否已有索引任务在运行（GUI 自身进程或其他进程，含 MCP 触发的后台索引）。"""
+    prog = read_progress()
+    if prog.get("running"):
+        pid = prog.get("pid")
+        if pid and _pid_alive(pid):
+            return True
+    return False
+
+
+def last_elapsed(progress):
+    """最后索引耗时（秒）。"""
+    el = progress.get("elapsed_s")
+    return el if isinstance(el, (int, float)) else None

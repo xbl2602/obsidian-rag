@@ -637,4 +637,39 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
   （`{"meta": {...}, "_version": 2}`），需迁移兼容旧 meta——当前守卫 + 版本化
   已足够，暂不做。
 
+---
+
+## 问题 17：桌面可视化控制台（GUI）（2026-08-11 完成）
+
+- **目标**：独立桌面窗口（非浏览器）展示索引状态并支持手动触发，新手友好。
+- **技术选型**（与用户三轮讨论敲定）：Flet 0.86（Python + Material 3，
+  纯 Python 免 Node）；方案比对了 Qt（颜值上限低）/Electron（重且需 Node）
+  /Flet（现代 + 全 Python）。
+- **设计**：`docs/specs/2026-08-11-gui-design.md`（经 UI 设计子代理产稿 +
+  用户确认，深色监控台 + Teal 主色）。
+- **架构（零侵入）**：GUI 进程只读现有 progress/meta 文件 + spawn 索引
+  子进程（`python index.py [--full]`），常驻不占显存；仅"搜索测试"临时
+  加载模型（走 encode_safe 降级）。与 MCP server 并存靠现有 index.lock。
+- **功能**：KPI 卡（文件/块/耗时/三态状态）、进度条+心跳灯（复用现有
+  卡死/假活判定）、实时日志（ERROR/WARNING 着色）、增量/全量按钮
+  （全量有确认框、默认焦点取消）、搜索测试（复用 hybrid_search）、
+  设备条、深浅主题切换、打开文件夹。
+- **交付**：`gui/`（app/theme/store/worker/widgets 5 模块）+ 测试
+  （`tests/test_gui_store.py` 7 例 + `tests/smoke_gui.py` 无窗口冒烟）。
+- **踩坑记录**（flet 0.86 API 变化大，均已在 smoke 测试覆盖防回归）：
+  1. `ft.padding.symmetric` → `ft.Padding.symmetric`；
+  2. `CrossAxisAlignment.BOTTOM` → `END`；
+  3. `ft.alignment.center_left` → `ft.Alignment.CENTER_LEFT`；
+  4. `ft.app()` 废弃 → `ft.run(main)`；
+  5. `Page.close()` 不存在 → 对话框用 `open=False + update()`；
+  6. 按钮 `style=None` 时不能赋子属性 → 构造时传 `ButtonStyle(text_style=...)`；
+  7. **教训**：勿用 PowerShell `Get-Content/Set-Content` 批量改含中文的
+     UTF-8 文件（ANSI 解码→乱码→写回=损坏且不可逆，三个文件重建）；
+     中文文件修改一律用 UTF-8 感知的编辑工具。
+- **手动待验证**（自动化难以覆盖）：搜索测试的真实点击流、确认框按钮、
+  全量重建全流程、主题切换观感——由用户跑 `python gui/app.py` 体验。
+- **遗留（Roadmap 候选）**：exe 打包（`flet pack`）、主题持久化
+  （当前会话内切换，未写入 config.json）、显存占用实时展示（progress
+  无该字段，需加后端字段）。
+
 
