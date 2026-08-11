@@ -745,3 +745,44 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
   重排器首次加载需下载模型 ~1.1GB（一次性）。
 
 
+
+## 问题 18：多库支持（一个注册表管理多个 RAG 库，跨库检索）
+
+- **需求**：原系统单 vault → 单索引；用户希望任意 md 文件夹可单独注册为 RAG 库，
+  检索时可选单库 / 多库并查 / 全部（默认）/ 反选（全选排除），且每库独立配置。
+  核心约束：AI agent 可无歧义调用（先枚举再选库，未知库名报错）；暂不做 GUI；
+  PDF/docx 等格式只留扩展位（`extensions` 字段），嵌入模型保持全局（union 检索
+  要求同一向量空间）。
+- **方案**：单 Chroma 实例多 collection（每库一个 collection + 按库 BM25 缓存），
+  否决"每库独立数据目录"（N 个 PersistentClient 开销翻倍、物理隔离本机无用）。
+- **实现**：
+  1. `library.py`（新）：`data/libraries.json` 注册表增删改查（`list/add/remove/config`）
+     + 生效配置合并（null=继承 config.json 全局）+ `resolve_entries` 白名单减法选库
+     （未知库名/空集报错并列出可用库）。
+  2. `index.py`：`_index_core` 参数化（collection/指纹文件/排除/切块/扩展名按库），
+     `index_vault` 保留为 legacy 入口；`index.py --library <名|all>`；进度含 `library` 字段。
+  3. `retriever.py`：BM25 全局单例 → 按 collection 缓存字典；跨库重排池（各库融合
+     top rerank_candidates 进全局池，cross-encoder 纯文本打分统一跨库分数）；
+     重排不可用降级按库归一化合并；结果 `[来源] <库名>/<相对路径>`（同名文件不歧义）；
+     同文件封顶键改 (库, rel)。
+  4. `server.py`：新增 `list_libraries` 工具；`search_knowledge` 加 `libraries`/`exclude`
+     参数（空=全部、"all"=全部、反选=exclude）；`reindex_knowledge(library="")`。
+  5. `export.py`/`import.py`：`--library`（默认 all 逐库独立打包）；manifest 记录库名；
+     导入目标库未注册可 `--create --path` 自动注册。
+  6. 迁移：首次运行自动把旧 vault 合成首个库（collection 沿用 obsidian_kb，
+     `index_meta.json` 改名随行，指纹保留**零重建**）。
+  7. GUI 最小兼容：`_open_result` 剥库名前缀（多库 GUI 属后续迭代）。
+- **踩坑**：① Chroma Collection 对象不可哈希，跨库分组取文档须用库名作键；
+  ② `startswith` 不能收 list（effective_config 输出 list，须 tuple）；
+  ③ collection 派生名原 strip 尾部 `_`，中英文差异的库名会撞 collection，改保留。
+- **测试**：`tests/library_registry_test.py` 8 项（迁移/合并/CRUD/选库语义/空注册表）；
+  双库端到端冒烟 11 项（全库/单库/多库/反选/未知名/空集/folder/置信度）全过；
+  eval 回归 **top1=4/5、top3=5/5、top5=5/5**（基线 3/5·5/5·5/5，无回退）。
+- **文档**：vault 根 AGENTS.md 检索章节 + Obsidian RAG 使用指南加多库选范围；
+  AI_GUIDE.md 导入加 `--library`；config 模板注释改指 libraries.json。
+- **审计修复**（general 子代理审查后）：`--create` 默认路径先 mkdir；损坏注册表备份
+  `.bak` 防覆盖丢失；库路径消失跳过同步保留旧索引（不清库）；BM25 缓存带 count
+  快照自愈（外部索引后自动重建）；zip slip 防护（拒绝绝对路径/`..` 条目）；
+  选库去重；非法库名条目加载时过滤；collection 覆盖值校验；包名加 hash 防撞名；
+  export 单库刷新失败不中断 all 模式；list_summary/_chroma_is_empty 改只读
+  get_collection（不产生创建副作用）。单测 8 → 14 项。

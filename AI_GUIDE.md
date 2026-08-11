@@ -14,7 +14,7 @@
   - `vault/` — 源笔记文件（相对路径）
   - `index_meta.json` — 文件指纹（导入后自动同步，避免误判重建）
   - `manifest.json` — 完整性清单：块数、文件数、sha256（导入时校验依据）
-- 本包信息：包名 `__PACKAGE__`，导出时间 `__EXPORTED_AT__`，
+- 本包信息：包名 `__PACKAGE__`，库名 `__LIBRARY__`，导出时间 `__EXPORTED_AT__`，
   块数 `__CHUNK_COUNT__`，源文件数 `__FILE_COUNT__`，embedding 维度 `__EMBED_DIM__`。
 
 ## 1. 前置检查（全部满足才继续）
@@ -47,6 +47,8 @@ torch 用 `pip install torch==2.11.0+cu128 --index-url https://download.pytorch.
 ```bash
 # --yes 必加：AI 非交互环境，跳过“覆盖确认”询问
 .venv/bin/python import.py --yes <包路径>
+# 多库：导入到指定库；目标库未注册时加 --create --path <目录> 自动注册
+.venv/bin/python import.py --yes --library <库名> --create --path <目录> <包路径>
 ```
 预期输出：解压 → sha256 校验通过 → “导入完成：Chroma <块数> 块，自检通过
 （count 一致 + 抽查 embedding 余弦一致）” → 包移入 `data/archive/` → 临时区清理。
@@ -99,6 +101,7 @@ with gzip.open("payload.jsonl.gz", "rt", encoding="utf-8") as f:
 |---|---|---|
 | import 报 `sha256 不匹配` 或 `CRC 校验失败` | 包传输损坏 | **不落库**，报告“包损坏，需重新下载/传输”，列出失败文件 |
 | import 报 `目标已有 N 块，覆盖需确认` | 未加 `--yes` | 重新执行并带 `--yes`；如需保留旧库先 `mv data/chroma data/chroma.bak` |
+| import 报 `目标库未注册` | 库名不在注册表 | 加 `--library <库名> --create --path <目录>` 自动注册后重跑 |
 | `pip install` 失败 | 依赖解析问题 | 按 requirements.txt 注释重试 torch 平台命令；再试 `pip install --no-cache-dir` |
 | 检索首次调用超时/失败 | 模型未缓存 + 无网络 | 确认网络可达后重试；离线则需单独传输 bge-m3 模型缓存（~2.3GB）与 bge-reranker-v2-m3（~1.1GB）；或把 `data/config.json` 的 `rerank_enabled` 改为 false 关掉重排（纯融合仍可用） |
 | `import index` 报 `No module named 'msvcrt'` | 旧代码（未同步跨平台锁修复） | `git pull` 获取最新代码后重试 |

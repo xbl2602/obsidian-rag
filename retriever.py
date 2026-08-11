@@ -8,16 +8,17 @@ import chromadb
 
 from config import CFG
 from index import CHROMA_DIR, COLLECTION_NAME, encode_safe
+from library import effective_config, resolve_entries
 
 CHUNK_LIMIT = CFG["return_chunk_limit"]  # 检索时返回给 LLM 的单块最大字符
 MAX_CHUNKS_PER_FILE = CFG["max_chunks_per_file"]  # 正文模式下同一文件最多展示块数（防同文件饱和）
 TRUNCATE_MARK = CFG["truncate_mark"]
 
 
-def get_collection():
+def get_collection(collection_name=COLLECTION_NAME):
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     return client.get_or_create_collection(
-        name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+        name=collection_name, metadata={"hnsw:space": "cosine"}
     )
 
 
@@ -98,26 +99,32 @@ class BM25:
         return scores
 
 
-_bm25 = None
-_bm25_ids = None
-_bm25_files = None
+_bm25_cache = {}
 
 
 def get_bm25(collection):
-    global _bm25, _bm25_ids, _bm25_files
-    if _bm25 is None:
-        all_data = collection.get(include=["documents", "metadatas"])  # 一次取齐 ids+documents+file
-        _bm25 = BM25(all_data["documents"])
-        _bm25_ids = all_data["ids"]
-        _bm25_files = [m.get("file", "") for m in all_data["metadatas"]]
-    return _bm25, _bm25_ids, _bm25_files
+    """BM25 缓存按 collection 名隔离（多库各算各的，懒加载）。
+
+    缓存带 collection.count() 快照：检索前先比 count，不一致说明索引被
+    外部进程（index.py 独立跑）重建过，立即重建缓存，防混合新旧结果。
+    """
+    key = collection.name
+    cached = _bm25_cache.get(key)
+    try:
+        cnt = collection.count()
+    except Exception:
+        cnt = None
+    if cached is not None and cached[3] == cnt:
+        return cached[0], cached[1], cached[2]
+    all_data = collection.get(include=["documents", "metadatas"])  # 一次取齐 ids+documents+file
+    cached = (BM25(all_data["documents"]), all_data["ids"],
+              [m.get("file", "") for m in all_data["metadatas"]], cnt)
+    _bm25_cache[key] = cached
+    return cached[0], cached[1], cached[2]
 
 
 def _reset_bm25():
-    global _bm25, _bm25_ids, _bm25_files
-    _bm25 = None
-    _bm25_ids = None
-    _bm25_files = None
+    _bm25_cache.clear()
 
 
 # ---------- 两阶段精排（cross-encoder reranker） ----------
@@ -146,33 +153,38 @@ def _get_reranker():
 
 # ---------- 结果格式化 ----------
 
-def _format_result(collection, cids, include_body=True, file_counts=None, capped=False, scores=None):
-    """一次批量取 top_k 结果（避免 N+1），并剥离首块的中文锚点。
+def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=False,
+                    scores=None):
+    """多库格式化：pairs = [(库名, cid)] 按最终排序；col_map = {库名: collection}。
 
     include_body=False 时只返回 [来源] 清单（文件名+标题+块位置），不返回正文——
     供"先探查全量、再精读个别"的两阶段检索，避免正文整体塞进上下文。
-    来源行带 [块 k/N] 位置标记（N 为该文件总块数，从 BM25 缓存派生——
-    与检索内容同源同生命周期，reindex 后同步重建，不会因缓存不重置而撒谎）：
-    k<N 即提示该文件还有未展示内容，AI 应据题决定是否 Read 源文件。
-    scores 提供时（{cid: 0-1 归一化置信度}），来源行追加 [置信度 0.87] 标记。
-    正文超 CHUNK_LIMIT 时截断并附显式标记，避免"截断当完整"。
+    来源行带 [块 k/N] 位置标记（N 为该文件总块数，从 BM25 缓存派生）与库名前缀
+    （同名文件跨库不歧义）。正文超 CHUNK_LIMIT 时截断并附显式标记。
     """
-    got = collection.get(ids=cids, include=["metadatas", "documents"])
-    # Chroma get() 不保证返回顺序与传入 ids 一致：先按 cid 映射，
-    # 再严格按 cids（排序后）顺序输出——输出顺序 = 检索排序，不得被返回顺序打乱。
-    meta_map = dict(zip(got["ids"], got["metadatas"]))
-    doc_map = dict(zip(got["ids"], got["documents"]))
+    got_map = {}
+    by_lib = {}
+    for name, cid in pairs:
+        by_lib.setdefault(name, []).append(cid)
+    for name, cids in by_lib.items():
+        col = col_map[name]
+        got = col.get(ids=cids, include=["metadatas", "documents"])
+        # Chroma get() 不保证返回顺序与传入 ids 一致：先按 cid 映射，
+        # 再严格按 cids（排序后）顺序输出——输出顺序 = 检索排序，不得被返回顺序打乱。
+        meta_map = dict(zip(got["ids"], got["metadatas"]))
+        doc_map = dict(zip(got["ids"], got["documents"]))
+        for cid in cids:
+            got_map[(name, cid)] = (meta_map.get(cid) or {}, doc_map.get(cid) or "")
     lines = []
-    for cid in cids:
-        meta = meta_map.get(cid) or {}
-        doc = doc_map.get(cid) or ""
+    for name, cid in pairs:
+        meta, doc = got_map[(name, cid)]
         rel = meta.get("file", "")
-        src = f"[来源] {rel} (## {meta.get('heading', '')})"
+        src = f"[来源] {name}/{rel} (## {meta.get('heading', '')})"
         k = meta.get("chunk")
-        n = (file_counts or {}).get(rel)
+        n = (file_counts or {}).get((name, rel))
         if k is not None and n is not None:
             src += f" [块 {int(k) + 1}/{n}]"
-        conf = (scores or {}).get(cid)
+        conf = (scores or {}).get((name, cid))
         if conf is not None:
             src += f" [置信度 {conf:.2f}]"
         if not include_body:
@@ -193,11 +205,15 @@ def _format_result(collection, cids, include_body=True, file_counts=None, capped
 
 # ---------- 混合检索 ----------
 
-def hybrid_search(query, top_k=None, folder="", dense_weight=None, bm25_weight=None,
-                  include_body=True, with_scores=False):
+def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
+                  dense_weight=None, bm25_weight=None, include_body=True, with_scores=False):
     """混合检索：dense 向量 + BM25 关键词，加权融合后取 top_k。
 
-    with_scores=True 时每条来源行附加 [置信度 x.xx]（融合分按本次检索最高分归一化为 0-1）。
+    libraries/exclude 选库（空 = 全部库；"A,B" 指定；exclude 做减法，见 library.resolve_entries）：
+      最终范围 = (libraries 非空 ? libraries : 全部) − exclude。
+    跨库排序：每库融合取 top rerank_candidates 进全局重排池，重排器（纯文本打分）
+    全局精排；重排不可用时按库归一化融合分合并。结果来源行带 <库名>/<相对路径> 前缀。
+    with_scores=True 时每条来源行附加 [置信度 x.xx]（全局最高分归一化为 0-1）。
     """
     if top_k is None:
         top_k = CFG["default_top_k"]
@@ -206,97 +222,151 @@ def hybrid_search(query, top_k=None, folder="", dense_weight=None, bm25_weight=N
     if bm25_weight is None:
         bm25_weight = CFG["fusion_bm25_weight"]
     folder = _norm_folder(folder)
-    collection = get_collection()
 
-    # dense 检索（不带 where：Chroma 的 $startswith 依赖版本、此处验证已失效；
-    # 改为查全库候选后在内存按文件前缀过滤，与 BM25 侧对称）
-    emb = encode_safe([query]).tolist()[0]
-    dense_k = max(top_k * CFG["dense_candidate_factor"], CFG["dense_min_candidates"])  # 无条件放大候选池：过滤在取回后做，候选不足会漏（含 folder 场景）
-    dense_res = collection.query(
-        query_embeddings=[emb],
-        n_results=dense_k,
-        include=["distances"],
-    )
-    dense_ids = [
-        cid for cid in dense_res["ids"][0]
-        if not folder or _in_folder(_chunk_file(cid), folder)
-    ]
-    dense_dists = [
-        d for cid, d in zip(dense_res["ids"][0], dense_res["distances"][0])
-        if not folder or _in_folder(_chunk_file(cid), folder)
-    ]
+    try:
+        entries = resolve_entries(libraries, exclude)
+    except ValueError as e:
+        return f"（{e}）"
 
-    # BM25 检索（与 dense 一样按 folder 过滤，避免越界结果漏入）
-    bm25, bm25_ids, bm25_files = get_bm25(collection)
-    bm25_scores = bm25.score(query)
-    bm25_map = {
-        bm25_ids[i]: bm25_scores[i]
-        for i in range(len(bm25_scores))
-        if bm25_scores[i] > 0 and (not folder or _in_folder(bm25_files[i], folder))
-    }
-    # 每文件总块数：从 BM25 缓存派生（与检索内容同源同生命周期，reindex 后同步重建）
-    file_counts = Counter(bm25_files)
-
-    # 融合打分（dict 查找替代 in/.index() 的 O(M·N) 列表扫描）
-    dense_map = dict(zip(dense_ids, dense_dists))
-    all_cids = set(dense_ids) | set(bm25_map)
-    combined = {}
-    for cid in all_cids:
-        score = 0.0
-        d = dense_map.get(cid)
-        if d is not None:
-            score += dense_weight * (1.0 / (1.0 + d))  # distance 越小越相似，转成 0-1 相似度
-        b = bm25_map.get(cid)
-        if b:
-            score += bm25_weight * (b / (1.0 + b))  # 归一化
-        combined[cid] = score
-
-    ranked_all = [c for c, _ in sorted(combined.items(), key=lambda x: x[1], reverse=True)]
-
-    # 两阶段精排：融合 top rerank_candidates 内用 cross-encoder 对 (query, 块) 逐对精排。
-    # 解决"相关块与无关块融合分太接近导致排序不稳"（实测 top3 命中 3/5 → 5/5）。
-    # 限制在融合高分池内重排而非全局：保住融合已认定的强相关块，只做局部调序
-    # （对"个人能力"这类泛概念查询，重排器会偏好通用论述而压掉用户个人档案）。
     rerank_n = CFG["rerank_candidates"]
     reranker = _get_reranker() if CFG["rerank_enabled"] and rerank_n else None
-    if reranker is not None and ranked_all:
-        pool = ranked_all[:rerank_n]
-        try:
-            got = collection.get(ids=pool, include=["documents"])
-            # Chroma get() 返回顺序不保证与传入 ids 一致，必须按 cid 映射对齐
-            doc_map = dict(zip(got["ids"], got["documents"]))
-            rr_scores = reranker.predict([(query, doc_map[c]) for c in pool], batch_size=16)
-            ranked_top = [c for c, _ in sorted(zip(pool, rr_scores), key=lambda x: -float(x[1]))]
-            ranked_all = ranked_top + ranked_all[rerank_n:]
-        except Exception as e:
-            print(f"[retriever] 重排失败（保持融合顺序）：{e}", file=sys.stderr)
+    col_map = {}
+    file_counts = Counter()
+    lib_results = []  # (name, collection, combined{cid:融合分}, ranked_all[cid...])
+    for entry in entries:
+        cfg = effective_config(entry)
+        name = cfg["name"]
+        collection = get_collection(cfg["collection"])
+        col_map[name] = collection
+
+        # dense 检索（不带 where：Chroma 的 $startswith 依赖版本、此处验证已失效；
+        # 改为查全库候选后在内存按文件前缀过滤，与 BM25 侧对称）
+        emb = encode_safe([query]).tolist()[0]
+        dense_k = max(top_k * CFG["dense_candidate_factor"], CFG["dense_min_candidates"])
+        dense_res = collection.query(
+            query_embeddings=[emb],
+            n_results=dense_k,
+            include=["distances"],
+        )
+        dense_ids = [
+            cid for cid in dense_res["ids"][0]
+            if not folder or _in_folder(_chunk_file(cid), folder)
+        ]
+        dense_dists = [
+            d for cid, d in zip(dense_res["ids"][0], dense_res["distances"][0])
+            if not folder or _in_folder(_chunk_file(cid), folder)
+        ]
+
+        # BM25 检索（与 dense 一样按 folder 过滤，避免越界结果漏入）
+        bm25, bm25_ids, bm25_files = get_bm25(collection)
+        bm25_scores = bm25.score(query)
+        bm25_map = {
+            bm25_ids[i]: bm25_scores[i]
+            for i in range(len(bm25_scores))
+            if bm25_scores[i] > 0 and (not folder or _in_folder(bm25_files[i], folder))
+        }
+        for rel, cnt in Counter(bm25_files).items():
+            file_counts[(name, rel)] = cnt
+
+        # 融合打分（dict 查找替代 in/.index() 的 O(M·N) 列表扫描）
+        dense_map = dict(zip(dense_ids, dense_dists))
+        combined = {}
+        for cid in set(dense_ids) | set(bm25_map):
+            score = 0.0
+            d = dense_map.get(cid)
+            if d is not None:
+                score += dense_weight * (1.0 / (1.0 + d))  # distance 越小越相似，转成 0-1 相似度
+            b = bm25_map.get(cid)
+            if b:
+                score += bm25_weight * (b / (1.0 + b))  # 归一化
+            combined[cid] = score
+
+        ranked_all = [c for c, _ in sorted(combined.items(), key=lambda x: x[1], reverse=True)]
+        lib_results.append((name, collection, combined, ranked_all))
+
+    # 跨库全局排序
+    if reranker is not None and lib_results:
+        # 每库融合 top rerank_candidates 进全局重排池（保留融合已认定的强相关块，只做局部调序）
+        pool = []
+        for name, collection, combined, ranked_all in lib_results:
+            pool.extend((name, collection, cid) for cid in ranked_all[:rerank_n])
+        if pool:
+            try:
+                # 按库名分组批量取文档（Collection 对象不可哈希，用 name 作键），
+                # 再按池顺序构造 (query, 块) 对
+                doc_got = {}
+                by_lib = {}
+                for name, collection, cid in pool:
+                    by_lib.setdefault(name, []).append(cid)
+                for name, cids in by_lib.items():
+                    got = col_map[name].get(ids=cids, include=["documents"])
+                    m = dict(zip(got["ids"], got["documents"]))
+                    for cid in cids:
+                        doc_got[(name, cid)] = m.get(cid, "")
+                rr_scores = reranker.predict([(query, doc_got[(n, c)]) for n, c, _ in pool],
+                                             batch_size=16)
+                ranked_pool = [pair for pair, _ in sorted(zip(pool, rr_scores),
+                                                          key=lambda x: -float(x[1]))]
+                # 全局序 = 重排池（已全局精排）+ 各库池外余量（保持各库融合序）
+                pool_keys = {(n, c) for n, _, c in pool}
+                tails = []
+                for name, collection, combined, ranked_all in lib_results:
+                    tails.extend((name, collection, cid) for cid in ranked_all[rerank_n:])
+                merged = ranked_pool + tails
+            except Exception as e:
+                print(f"[retriever] 重排失败（按库归一化合并）：{e}", file=sys.stderr)
+                merged = _merge_normalized(lib_results)
+        else:
+            merged = []
+    else:
+        merged = _merge_normalized(lib_results)
 
     # 同文件封顶：正文模式下每文件最多 MAX_CHUNKS_PER_FILE 块（按分数保留最高），
-    # 边迭代边计数以填满 top_k；list 模式不封顶（[块 k/N] 标记即完整性提示）
+    # 边迭代边计数以填满 top_k；(库名, 相对路径) 为去重键，同名文件跨库不互封顶；
+    # list 模式不封顶（[块 k/N] 标记即完整性提示）
     capped = False
     if include_body:
-        ranked = []
+        ranked_pairs = []
         per_file = {}
-        for cid in ranked_all:
+        for name, collection, cid in merged:
             rel = _chunk_file(cid)
-            if per_file.get(rel, 0) >= MAX_CHUNKS_PER_FILE:
+            if per_file.get((name, rel), 0) >= MAX_CHUNKS_PER_FILE:
                 capped = True
                 continue
-            ranked.append(cid)
-            per_file[rel] = per_file.get(rel, 0) + 1
-            if len(ranked) >= top_k:
+            ranked_pairs.append((name, cid))
+            per_file[(name, rel)] = per_file.get((name, rel), 0) + 1
+            if len(ranked_pairs) >= top_k:
                 break
     else:
-        ranked = ranked_all[:top_k]
+        ranked_pairs = [(n, c) for n, _, c in merged[:top_k]]
 
     scores = None
-    if with_scores and combined:
-        best = max(combined[c] for c in ranked if c in combined)
-        if best > 0:
-            scores = {c: combined[c] / best for c in ranked}
+    if with_scores:
+        norm = {}
+        for name, collection, combined, ranked_all in lib_results:
+            best = max(combined.values()) if combined else 0.0
+            for cid in ranked_all:
+                if best > 0:
+                    norm[(name, cid)] = combined[cid] / best
+        if norm:
+            gmax = max(norm.values())
+            if gmax > 0:
+                scores = {k: v / gmax for k, v in norm.items()}
 
-    return _format_result(collection, ranked, include_body=include_body,
-                          file_counts=file_counts, capped=capped, scores=scores)
+    return _format_results(col_map, ranked_pairs, file_counts=file_counts,
+                           include_body=include_body, capped=capped, scores=scores)
+
+
+def _merge_normalized(lib_results):
+    """重排不可用时的降级合并：各库融合分按库内最高分归一化后全局排序。"""
+    merged = []
+    for name, collection, combined, ranked_all in lib_results:
+        best = max(combined.values()) if combined else 0.0
+        merged.extend(((name, collection, cid),
+                       combined[cid] / best if best > 0 else 0.0)
+                      for cid in ranked_all)
+    merged.sort(key=lambda x: x[1], reverse=True)
+    return [item for item, _ in merged]
 
 
 def reset_bm25_index():

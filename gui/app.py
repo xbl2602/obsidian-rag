@@ -371,10 +371,16 @@ class App:
     # ---------- 工具 ----------
 
     def _open_result(self, rel, heading=""):
-        """点击搜索结果 → 在 Obsidian 中打开源文件（含标题锚点）。"""
+        """点击搜索结果 → 在 Obsidian 中打开源文件（含标题锚点）。
+
+        多库格式的来源行带 <库名>/ 前缀：库名 == 本 vault 文件夹名时剥掉前缀，
+        保证 obsidian://open 定位到库内相对路径（多库 GUI 属后续迭代）。
+        """
         try:
             import urllib.parse
             vault_name = Path(VAULT_DIR).name
+            if rel.startswith(vault_name + "/"):
+                rel = rel[len(vault_name) + 1:]
             file_part = urllib.parse.quote(rel, safe="/")
             url = "obsidian://open?vault=%s&file=%s" % (
                 urllib.parse.quote(vault_name), file_part)

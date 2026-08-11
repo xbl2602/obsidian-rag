@@ -12,6 +12,7 @@ from pathlib import Path
 import chromadb
 
 from config import CFG
+from library import effective_config, load_registry, meta_path, resolve_entries
 
 # 跨平台文件锁：Windows 用 msvcrt（字节范围锁），Linux/macOS 用 fcntl（flock）。
 # 按平台函数内局部导入：Linux 上 import index 不触碰 msvcrt，反之亦然。
@@ -159,11 +160,11 @@ def _heartbeat_loop():
             log(f"心跳写盘失败（忽略）：{e}")
 
 
-def progress_start(phase, files_total, message=""):
+def progress_start(phase, files_total, message="", library=""):
     """索引开始：重置进度，置 running，启动心跳线程。"""
     global _heartbeat_thread, _heartbeat_stop
     _heartbeat_stop = threading.Event()
-    update_progress(running=True, phase=phase, message=message,
+    update_progress(running=True, phase=phase, message=message, library=library,
                     files_total=files_total, files_done=0,
                     chunks_total=None, chunks_done=0, error=None,
                     last_advance_at=time.time())
@@ -207,6 +208,8 @@ def progress_text(p):
     else:
         lines.append("· 索引空闲（无进行中任务）")
     lines.append(f"  阶段: {p.get('phase', '?')}")
+    if p.get("library"):
+        lines.append(f"  库: {p.get('library')}")
     lines.append(f"  消息: {p.get('message', '')}")
     if p.get("device"):
         dev = p.get("device")
@@ -650,13 +653,13 @@ def clean_wikilinks(text):
     return re.sub(r"!?\[\[([^\]]*)\]\]", _repl, text)
 
 
-def load_meta():
-    if INDEX_META.exists():
-        return json.loads(INDEX_META.read_text(encoding="utf-8"))
+def load_meta(path=INDEX_META):
+    if Path(path).exists():
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     return {}
 
 
-def save_meta(meta):
+def save_meta(meta, path=INDEX_META):
     """原子写：先写临时文件再 os.replace，防止写入中断损坏 meta。
 
     写入切块版本号（_version），下次运行时据此判断旧索引是否需要重嵌。
@@ -664,17 +667,24 @@ def save_meta(meta):
     DATA_DIR.mkdir(exist_ok=True)
     data = dict(meta)
     data["_version"] = META_VERSION
-    tmp = INDEX_META.with_suffix(".json.tmp")
+    p = Path(path)
+    tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, INDEX_META)
+    os.replace(tmp, p)
 
 
-def collect_md_files(vault):
-    """收集应纳入索引的 .md 文件（与索引使用同一套过滤规则）。"""
-    return [p for p in Path(vault).rglob("*.md")
-            if not any(part in EXCLUDE_DIRS for part in p.parts)
-            and p.name not in STRUCTURE_FILES
-            and not p.name.startswith(EXCLUDE_PATTERNS)]
+def collect_md_files(vault, exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_FILES,
+                     exclude_patterns=EXCLUDE_PATTERNS, extensions=None):
+    """收集应纳入索引的文件（与索引使用同一套过滤规则；扩展名白名单，默认 md）。"""
+    if not Path(vault).is_dir():
+        return []
+    exts = [e.lower().lstrip(".") for e in (extensions or ["md"])]
+    pats = tuple(exclude_patterns or ())
+    return [p for p in Path(vault).rglob("*")
+            if p.is_file() and p.suffix.lower().lstrip(".") in exts
+            and not any(part in exclude_dirs for part in p.parts)
+            and p.name not in exclude_files
+            and not p.name.startswith(pats)]
 
 
 def make_anchor(front, body):
@@ -694,29 +704,38 @@ def make_anchor(front, body):
     return "【" + "；".join(zh_parts) + "】\n"
 
 
-def _chroma_count():
+def _chroma_count(collection_name=COLLECTION_NAME):
     """Chroma 实际块数（毫秒级，不加载模型）。失败返回 None（库损坏等）。"""
     try:
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         return client.get_or_create_collection(
-            name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+            name=collection_name, metadata={"hnsw:space": "cosine"}
         ).count()
     except Exception as e:
         log(f"Chroma count 失败（忽略）：{e}")
         return None
 
 
-def kb_stale(vault):
+def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
+             exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_FILES,
+             exclude_patterns=EXCLUDE_PATTERNS, extensions=None):
     """指纹检查：先比 mtime+size（快速路径），变化才读全文 MD5。
 
     只读、不加载模型、不嵌入。返回 (是否过期, 统计)。
     额外校验 Chroma↔meta 一致性（崩溃自愈）：块数不符（如 --full 中途被杀
     导致 0 块）也视为过期，触发重建。
+    库路径不存在：返回 stale=True 且 stats 带 missing=True（调用方据此跳过
+    自动同步并保留旧索引，防止"路径消失 → 判全删 → 清空该库"）。
     """
-    meta = load_meta()
+    if not Path(vault).is_dir():
+        return True, {"changed": 0, "added": 0, "removed": 0, "missing": True}
+    meta = load_meta(meta_file)
     if not meta:
-        return True, {"changed": 0, "added": len(collect_md_files(vault)), "removed": 0}
-    files = collect_md_files(vault)
+        return True, {"changed": 0, "added": len(collect_md_files(vault, exclude_dirs,
+                                                                  exclude_files,
+                                                                  exclude_patterns,
+                                                                  extensions)), "removed": 0}
+    files = collect_md_files(vault, exclude_dirs, exclude_files, exclude_patterns, extensions)
     seen = set()
     changed = 0
     added = 0
@@ -740,7 +759,7 @@ def kb_stale(vault):
     stale = bool(changed or added or removed)
 
     expected = sum(info.get("chunks", 0) for info in meta.values() if isinstance(info, dict))
-    actual = _chroma_count()
+    actual = _chroma_count(collection_name)
     if actual is not None and actual != expected:
         log(f"索引一致性校验失败：Chroma {actual} 块 vs meta {expected} 块，触发重建")
         stale = True
@@ -863,24 +882,47 @@ def write_lock(timeout=LOCK_TIMEOUT_SECONDS):
 
 
 def index_vault(vault, incremental=True, full=False):
-    files = collect_md_files(vault)
-    progress_start(phase="scanning", files_total=len(files), message="扫描 Vault 文件...")
+    """旧单库入口（legacy）：按 config 全局配置索引（GUI/export 兼容）。"""
+    return _index_core(vault, COLLECTION_NAME, INDEX_META,
+                       EXCLUDE_DIRS, STRUCTURE_FILES, EXCLUDE_PATTERNS, ["md"],
+                       CFG["chunk_char_limit"], CFG["short_doc_char_limit"],
+                       library_label="")
+
+
+def index_library(lib, incremental=True, full=False):
+    """按注册表库索引：独立 collection / 指纹文件 / 排除规则 / 切块粒度。lib = effective_config()。"""
+    return _index_core(lib["path"], lib["collection"], meta_path(lib["name"]),
+                       lib["exclude_dirs"], lib["exclude_files"], lib["exclude_patterns"],
+                       lib["extensions"], lib["chunk_char_limit"],
+                       lib["short_doc_char_limit"], library_label=lib["name"])
+
+
+def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
+                exclude_patterns, extensions, chunk_max, short_doc,
+                library_label="", incremental=True, full=False):
+    tag = f"[{library_label}] " if library_label else ""
+    if not Path(vault).is_dir():
+        log(f"{tag}库路径不存在，跳过索引（保留现有索引）：{vault}")
+        return
+    files = collect_md_files(vault, exclude_dirs, exclude_files, exclude_patterns, extensions)
+    progress_start(phase="scanning", files_total=len(files), message="扫描文件...",
+                   library=library_label)
 
     try:
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         collection = client.get_or_create_collection(
-            name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+            name=collection_name, metadata={"hnsw:space": "cosine"}
         )
 
-        meta = {} if full else load_meta()
+        meta = {} if full else load_meta(meta_file)
         # 切块/清洗逻辑升级检测：旧索引文本与当前逻辑不一致，强制全量重建
         if not full and meta.pop("_version", 1) != META_VERSION:
-            log(f"切块逻辑版本升级（v{META_VERSION}），强制全量重建")
+            log(f"{tag}切块逻辑版本升级（v{META_VERSION}），强制全量重建")
             meta = {}
         # 崩溃自愈（P7）：meta 有数据但 Chroma 空（如 --full 中途被杀在清库窗口）
         # → 增量指纹全命中时 new_ids 为空，普通增量路径无法补数据，需强制全量重嵌。
         if not full and meta and collection.count() == 0:
-            log(f"检测到索引库为空（meta 记录 {sum(i.get('chunks', 0) for i in meta.values() if isinstance(i, dict))} 块），自动全量重建")
+            log(f"{tag}检测到索引库为空（meta 记录 {sum(i.get('chunks', 0) for i in meta.values() if isinstance(i, dict))} 块），自动全量重建")
             meta = {}
         current_rels = {str(f.relative_to(vault)).replace("\\", "/") for f in files}
 
@@ -909,8 +951,6 @@ def index_vault(vault, incremental=True, full=False):
             front, body = extract_frontmatter(content)
             body = clean_wikilinks(body)
             # 两级切块：标题切 → 超长块降级段落切 → 超长段级句子剪（永不剪断句子）
-            short_doc = CFG["short_doc_char_limit"]
-            chunk_max = CFG["chunk_char_limit"]
             if len(body) <= short_doc:
                 chunks = [(front.get("title", ""), body)]
             else:
@@ -995,7 +1035,7 @@ def index_vault(vault, incremental=True, full=False):
             total_chunks = len(new_ids)
             update_progress(phase="embedding", message=f"嵌入 0/{total_chunks} 块...",
                             chunks_total=total_chunks, chunks_done=0)
-            log(f"嵌入 {total_chunks} 个新块（{changed} 个文件变更，{unchanged} 个未变）...")
+            log(f"{tag}嵌入 {total_chunks} 个新块（{changed} 个文件变更，{unchanged} 个未变）...")
             emb_batches = []
             for start in range(0, total_chunks, EMBED_BATCH_SIZE):
                 end = min(start + EMBED_BATCH_SIZE, total_chunks)
@@ -1009,16 +1049,16 @@ def index_vault(vault, incremental=True, full=False):
         with write_lock():
             update_progress(phase="writing", message="写库与清理...")
             if full:
-                log("全量重建：清空旧库后写入...")
-                client.delete_collection(COLLECTION_NAME)
+                log(f"{tag}全量重建：清空旧库后写入...")
+                client.delete_collection(collection_name)
                 collection = client.get_or_create_collection(
-                    name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+                    name=collection_name, metadata={"hnsw:space": "cosine"}
                 )
 
             if emb is not None:
                 collection.upsert(ids=new_ids, embeddings=emb.tolist(), documents=new_texts, metadatas=new_metas)
             else:
-                log(f"无变更（{unchanged} 个文件全部命中缓存）")
+                log(f"{tag}无变更（{unchanged} 个文件全部命中缓存）")
 
             # 精确清理：有效 id = meta 中每个文件按记录的块数生成。
             # 已删文件（不在 meta）与幽灵块（块数变少后超出 chunks 的旧 id）都会被清除。
@@ -1032,12 +1072,12 @@ def index_vault(vault, incremental=True, full=False):
             stale = [i for i in all_ids if i not in valid]
             if stale:
                 collection.delete(ids=stale)
-                log(f"清理 {len(stale)} 个失效块")
+                log(f"{tag}清理 {len(stale)} 个失效块")
 
-            save_meta(meta)
+            save_meta(meta, meta_file)
             final_count = collection.count()
         update_progress(phase="done", message=f"完成。Chroma 现有 {final_count} 个块。", running=False)
-        log(f"完成。Chroma 现有 {final_count} 个块。耗时 {time.time() - scan_start:.1f}s。")
+        log(f"{tag}完成。Chroma 现有 {final_count} 个块。耗时 {time.time() - scan_start:.1f}s。")
     except Exception as e:
         progress_error(e)
         raise
@@ -1045,7 +1085,29 @@ def index_vault(vault, incremental=True, full=False):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--vault", default=VAULT)
+    ap.add_argument("--vault", default=None, help="旧单库入口：直接指定路径（legacy）")
+    ap.add_argument("--library", default="all", help="库名（或 all=全部注册库，默认）")
     ap.add_argument("--full", action="store_true", help="全量重建，忽略增量")
     args = ap.parse_args()
-    index_vault(args.vault, incremental=not args.full, full=args.full)
+
+    if args.vault:
+        index_vault(args.vault, incremental=not args.full, full=args.full)
+        sys.exit(0)
+
+    try:
+        if args.library in ("", "all"):
+            entries = load_registry()
+        else:
+            entries = resolve_entries(args.library, "")
+    except ValueError as e:
+        log(f"错误：{e}")
+        sys.exit(1)
+    if not entries:
+        log("错误：没有已注册的库。请先用 library.py add <路径> 注册。")
+        sys.exit(1)
+
+    for entry in entries:
+        cfg = effective_config(entry)
+        log(f"开始索引库：{cfg['name']} → {cfg['path']}")
+        index_library(cfg, incremental=not args.full, full=args.full)
+    log("全部索引任务完成。")

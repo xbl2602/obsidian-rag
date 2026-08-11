@@ -23,7 +23,8 @@ VAULT = os.environ.get("OBSIDIAN_VAULT", r"D:\_STOREROOM\lol\Obsidian Vault")
 sys.path.insert(0, str(ROOT))
 
 PASS, FAIL = [], []
-REPO_FILES = ["index.py", "retriever.py", "server.py", "export.py", "import.py", "AI_GUIDE.md"]
+REPO_FILES = ["index.py", "retriever.py", "server.py", "export.py", "import.py",
+              "library.py", "config.py", "AI_GUIDE.md"]
 
 
 def check(name, cond, detail=""):
@@ -134,21 +135,23 @@ def main():
 
     # ---------- 2. 副本导入组 ----------
     section("2. 副本导入（模拟接收端）")
+    lib = manifest.get("library", "Obsidian Vault")
     copy = make_repo_copy()
     ip = run(["import.py", "--yes", str(pack)], cwd=copy)
     check("import.py 退出码 0", ip.returncode == 0, ip.stderr[-500:])
     check("输出含自检通过", "自检通过" in ip.stderr, ip.stderr[-300:])
     check("副本 chroma count == manifest", count_chunks(copy / "data") == manifest["chunk_count"])
     check("副本 index_meta 与原库一致",
-          (copy / "data" / "index_meta.json").read_text(encoding="utf-8")
-          == (ROOT / "data" / "index_meta.json").read_text(encoding="utf-8"))
+          (copy / "data" / f"index_meta_{lib}.json").read_text(encoding="utf-8")
+          == (ROOT / "data" / f"index_meta_{lib}.json").read_text(encoding="utf-8"))
     vf = [f["rel"] for f in manifest["vault_files"]]
+    lib_vault = copy / "vault_export" / lib
     check("副本 vault_export 文件数一致",
-          len(list((copy / "vault_export").rglob("*.md"))) == len(vf))
-    check("中文文件名往返无损", all((copy / "vault_export" / Path(rel)).exists() for rel in zh_rel[:3]))
+          len(list(lib_vault.rglob("*.md"))) == len(vf))
+    check("中文文件名往返无损", all((lib_vault / Path(rel)).exists() for rel in zh_rel[:3]))
     check("包已归档", (copy / "data" / "archive" / pack.name).exists())
     check("临时区已清理", not (copy / "data" / "import_work").exists())
-    check("bak 已删除", not (copy / "data" / "index_meta.json.bak").exists())
+    check("bak 已删除", not (copy / "data" / f"index_meta_{lib}.json.bak").exists())
     archived_pack = copy / "data" / "archive" / pack.name  # 包已移入副本归档（接收方行为）
 
     # ---------- 3. 覆盖 + 交互取消 ----------

@@ -34,7 +34,7 @@ def run(top_k=5):
     for q, gold in QUERIES:
         text = hybrid_search(q, top_k=top_k, include_body=False)
         files = [m.group(1) for line in text.splitlines()
-                 if (m := re.match(r"\[来源\] (.+?) \(##", line))]
+                 if (m := re.match(r"\[来源\] [^/]+/(.+?) \(##", line))]
         pos = next((i + 1 for i, f in enumerate(files)
                     if any(g in f for g in gold)), None)
         rows.append((q, pos))

@@ -107,7 +107,8 @@ CONFIG_TEMPLATE = """\
   // 影响：决定中文语义检索质量与嵌入维度；bge-m3 为中文场景默认好选择。
   "model_name": "BAAI/bge-m3",
 
-  // Chroma collection 名。一般不改；想并存多个知识库时可以改（各配置档一库）。
+  // Chroma collection 名。多库场景请用 library.py 管理注册表（data/libraries.json），
+  // 本项仅作单库/全局默认；每个库可独立设置 collection。
   "collection_name": "obsidian_kb",
 
   // ----------------------------------------------------------
