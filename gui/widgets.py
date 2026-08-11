@@ -465,7 +465,8 @@ class SearchCard:
         self.status_row = ft.Row([self.status, self.ring], spacing=6,
                                  height=SIZE["chip_h"])
         self.results = ft.ListView(spacing=SIZE["gap_tight"], auto_scroll=False,
-                                   expand=True, padding=0)
+                                   expand=True, padding=0,
+                                   build_controls_on_demand=False)
         content = ft.Column([
             self.title,
             ft.Row([self.input, self.top_k, self.body_switch, self.btn],
@@ -551,7 +552,7 @@ class SearchCard:
             is_open = i in expanded and bool(body)
 
             body_text = ft.Text(body, size=13, font_family=FONT_UI, color=colors["t1"],
-                                height=1.45, max_lines=6,
+                                max_lines=6,
                                 overflow=ft.TextOverflow.ELLIPSIS,
                                 selectable=True)
             body_box = ft.Container(content=body_text,
