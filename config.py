@@ -50,6 +50,9 @@ DEFAULTS = {
     "fusion_dense_weight": 0.6, "fusion_bm25_weight": 0.4,
     "dense_candidate_factor": 8,
     "dense_min_candidates": 200,
+    "rerank_model": "BAAI/bge-reranker-v2-m3",  # 两阶段精排的 cross-encoder 模型
+    "rerank_candidates": 10,   # 融合 top N 候选交给重排器精排
+    "rerank_enabled": True,    # 重排总开关（False = 纯融合排序）
 
     # ---- 工具默认值 ----
     "default_top_k": 5,
@@ -193,6 +196,15 @@ CONFIG_TEMPLATE = """\
   // 先取大量候选再做融合与排序，保证小 top_k 时融合质量；越大越慢更准。
   "dense_candidate_factor": 8,
   "dense_min_candidates": 200,
+
+  // 两阶段精排（cross-encoder reranker）：融合取 top rerank_candidates 后，
+  // 用 BAAI/bge-reranker-v2-m3 对 (query, 块) 逐对精排再取 top_k。
+  // 解决"相关块与无关块融合分太接近导致排序不稳"（实测 top3 命中 3/5 → 5/5）。
+  // rerank_candidates 建议 8~15（越大越慢）；网络首次加载需下载模型 ~1.1GB。
+  // rerank_enabled=false 时回到纯融合排序（模型加载失败也会自动降级）。
+  "rerank_model": "BAAI/bge-reranker-v2-m3",
+  "rerank_candidates": 10,
+  "rerank_enabled": true,
 
   // ----------------------------------------------------------
   // 七、MCP 工具默认值

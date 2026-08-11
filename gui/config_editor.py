@@ -36,6 +36,8 @@ GROUPS = [
         ("truncate_mark", "str"), ("bm25_k1", "float"), ("bm25_b", "float"),
         ("fusion_dense_weight", "float"), ("fusion_bm25_weight", "float"),
         ("dense_candidate_factor", "int"), ("dense_min_candidates", "int"),
+        ("rerank_model", "str"), ("rerank_candidates", "int"),
+        ("rerank_enabled", "bool"),
     ]),
     ("工具默认值", [
         ("default_top_k", "int"),
@@ -103,6 +105,8 @@ def _value_to_json(value, kind):
         if not parts:
             return "[]"
         return "[" + ", ".join(json.dumps(p, ensure_ascii=False) for p in parts) + "]"
+    if kind == "bool":
+        return "true" if str(value).strip().lower() in ("1", "true", "yes", "on") else "false"
     raise ValueError("未知类型: %s" % kind)
 
 

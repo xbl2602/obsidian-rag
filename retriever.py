@@ -1,6 +1,7 @@
-"""retriever.py — 混合检索：BM25 关键词召回 + Dense 向量，加权融合。"""
+"""retriever.py — 混合检索：BM25 关键词召回 + Dense 向量，加权融合 + cross-encoder 精排。"""
 import math
 import re
+import sys
 from collections import Counter
 
 import chromadb
@@ -119,6 +120,30 @@ def _reset_bm25():
     _bm25_files = None
 
 
+# ---------- 两阶段精排（cross-encoder reranker） ----------
+
+_reranker = None
+_reranker_failed = False
+
+
+def _get_reranker():
+    """懒加载 cross-encoder 重排器。加载失败置标记（本次会话不再重试，降级纯融合）。
+
+    reranker 与 embedding 模型独立，检索时才加载（首次 ~10s + 模型 ~1.1GB）。
+    """
+    global _reranker, _reranker_failed
+    if _reranker is not None or _reranker_failed:
+        return _reranker
+    try:
+        from sentence_transformers import CrossEncoder
+        _reranker = CrossEncoder(CFG["rerank_model"], max_length=512)
+    except Exception as e:
+        _reranker_failed = True
+        print(f"[retriever] 重排器加载失败（降级纯融合）：{e}", file=sys.stderr)
+        return None
+    return _reranker
+
+
 # ---------- 结果格式化 ----------
 
 def _format_result(collection, cids, include_body=True, file_counts=None, capped=False, scores=None):
@@ -133,8 +158,14 @@ def _format_result(collection, cids, include_body=True, file_counts=None, capped
     正文超 CHUNK_LIMIT 时截断并附显式标记，避免"截断当完整"。
     """
     got = collection.get(ids=cids, include=["metadatas", "documents"])
+    # Chroma get() 不保证返回顺序与传入 ids 一致：先按 cid 映射，
+    # 再严格按 cids（排序后）顺序输出——输出顺序 = 检索排序，不得被返回顺序打乱。
+    meta_map = dict(zip(got["ids"], got["metadatas"]))
+    doc_map = dict(zip(got["ids"], got["documents"]))
     lines = []
-    for cid, meta, doc in zip(got["ids"], got["metadatas"], got["documents"]):
+    for cid in cids:
+        meta = meta_map.get(cid) or {}
+        doc = doc_map.get(cid) or ""
         rel = meta.get("file", "")
         src = f"[来源] {rel} (## {meta.get('heading', '')})"
         k = meta.get("chunk")
@@ -147,9 +178,9 @@ def _format_result(collection, cids, include_body=True, file_counts=None, capped
         if not include_body:
             lines.append(src)
             continue
-        anchor = meta.get("anchor") or ""
-        if anchor and doc.startswith(anchor):
-            doc = doc[len(anchor):]
+        hp = meta.get("hp") or ""
+        if hp and doc.startswith(hp + "\n"):
+            doc = doc[len(hp) + 1:]
         if len(doc) > CHUNK_LIMIT:
             doc = doc[:CHUNK_LIMIT] + "\n" + TRUNCATE_MARK
         lines.append(src)
@@ -221,6 +252,24 @@ def hybrid_search(query, top_k=None, folder="", dense_weight=None, bm25_weight=N
         combined[cid] = score
 
     ranked_all = [c for c, _ in sorted(combined.items(), key=lambda x: x[1], reverse=True)]
+
+    # 两阶段精排：融合 top rerank_candidates 内用 cross-encoder 对 (query, 块) 逐对精排。
+    # 解决"相关块与无关块融合分太接近导致排序不稳"（实测 top3 命中 3/5 → 5/5）。
+    # 限制在融合高分池内重排而非全局：保住融合已认定的强相关块，只做局部调序
+    # （对"个人能力"这类泛概念查询，重排器会偏好通用论述而压掉用户个人档案）。
+    rerank_n = CFG["rerank_candidates"]
+    reranker = _get_reranker() if CFG["rerank_enabled"] and rerank_n else None
+    if reranker is not None and ranked_all:
+        pool = ranked_all[:rerank_n]
+        try:
+            got = collection.get(ids=pool, include=["documents"])
+            # Chroma get() 返回顺序不保证与传入 ids 一致，必须按 cid 映射对齐
+            doc_map = dict(zip(got["ids"], got["documents"]))
+            rr_scores = reranker.predict([(query, doc_map[c]) for c in pool], batch_size=16)
+            ranked_top = [c for c, _ in sorted(zip(pool, rr_scores), key=lambda x: -float(x[1]))]
+            ranked_all = ranked_top + ranked_all[rerank_n:]
+        except Exception as e:
+            print(f"[retriever] 重排失败（保持融合顺序）：{e}", file=sys.stderr)
 
     # 同文件封顶：正文模式下每文件最多 MAX_CHUNKS_PER_FILE 块（按分数保留最高），
     # 边迭代边计数以填满 top_k；list 模式不封顶（[块 k/N] 标记即完整性提示）

@@ -38,7 +38,7 @@ EMBED_BATCH_SIZE = CFG["embed_batch_size"]
 
 # 切块/清洗逻辑版本：升级后旧索引需重嵌（指纹感知不到代码升级），
 # meta 版本不匹配时 index_vault 自动按全量重建处理。
-META_VERSION = 2
+META_VERSION = 3
 
 
 class LockBusyError(RuntimeError):
@@ -507,10 +507,16 @@ def fallback_to_cpu(reason=""):
 
 
 def split_by_headings(text):
-    """按 Markdown 标题切块，每个 H1/H2/H3 起新块。返回 [(heading_path, content)]"""
+    """按 Markdown 标题切块，每个 H1/H2/H3 起新块，维护嵌套标题路径。
+
+    返回 [(heading_path, content)]；heading_path 形如
+    "FLUENT 配置与求解设置 / 1. 湍流模型与壁面处理（SST k‑ω）"，
+    子标题不脱离父标题（H3 块携带 H1/H2 祖先）。文件开头无标题部分
+    heading_path 为空串。标题行本身不进正文（与历史行为一致）。
+    """
     lines = text.splitlines()
     chunks = []
-    current_heading = ""
+    path = []  # [(level, text)] 标题栈
     current_lines = []
     heading_re = re.compile(r"^(#{1,3})\s+(.+)$")
 
@@ -518,13 +524,17 @@ def split_by_headings(text):
         if current_lines:
             body = "\n".join(current_lines).strip()
             if body:
-                chunks.append((current_heading, body))
+                chunks.append((" / ".join(t for _, t in path), body))
 
     for line in lines:
         m = heading_re.match(line)
         if m:
             flush()
-            current_heading = m.group(2).strip()
+            level = len(m.group(1))
+            htext = m.group(2).strip()
+            while path and path[-1][0] >= level:
+                path.pop()
+            path.append((level, htext))
             current_lines = []
         else:
             current_lines.append(line)
@@ -632,6 +642,7 @@ def make_anchor(front, body):
     """中文锚点：文件 title/summary 含中文且正文以英文为主时，生成中文锚点文本。
 
     仅用于该文件的首块（i==0），避免锚点词频在多块间虚增、降低块级区分度。
+    v3 起标题链已拼入块文本，此函数不再被调用（保留定义仅供历史参考）。
     """
     zh_parts = [front.get("title", ""), front.get("summary", "")]
     zh_parts = [p for p in zh_parts if p and re.search(r"[\u4e00-\u9fff]", p)]
@@ -869,27 +880,58 @@ def index_vault(vault, incremental=True, full=False):
                     if len(text) <= chunk_max:
                         chunks.append((heading, text))
                     else:
-                        # 每个段落独立降级：段落超长才句子剪，短段落保持完整
+                        # 表格绑定上下文（评估选定方案）：表格与直接上文 + 直接下文整组绑定。
+                        # 先并上文（引导句），再并下文（表格后的解释/结论段），保证表格始终
+                        # 携带完整上下文；含表格的合并块整体保留（宁大勿断，避免表格被切断）。
+                        # 评估结论：命中率与表格独立成块持平，但块语义完整性更好。
+                        paras = []
+                        prev = None
                         for p in split_paragraphs(text):
+                            if p.lstrip().startswith("|") and prev is not None:
+                                prev = prev + "\n\n" + p
+                            else:
+                                if prev is not None:
+                                    paras.append(prev)
+                                prev = p
+                        if prev is not None:
+                            paras.append(prev)
+                        # 表格结尾段吞入下一段（下文绑定）
+                        final = []
+                        j = 0
+                        while j < len(paras):
+                            p = paras[j]
+                            lines = p.splitlines()
+                            if (lines and lines[-1].strip().startswith("|")
+                                    and j + 1 < len(paras)):
+                                final.append(p + "\n\n" + paras[j + 1])
+                                j += 2
+                            else:
+                                final.append(p)
+                                j += 1
+                        for p in final:
                             if len(p) <= chunk_max:
+                                chunks.append((heading, p))
+                            elif any(l.strip().startswith("|") for l in p.splitlines()):
                                 chunks.append((heading, p))
                             else:
                                 for s in split_sentences(p):
                                     chunks.append((heading, s))
-            anchor = make_anchor(front, body) if chunks else ""
+            anchor = ""  # v3 起标题链已拼入块文本，中文锚点机制停用
 
             for i, (heading, chunk_text) in enumerate(chunks):
                 cid = f"{rel}::{i}"
                 new_ids.append(cid)
-                # 锚点只加首块：既有中文检索锚点，又不虚增全文件词频
-                new_texts.append(anchor + chunk_text if i == 0 else chunk_text)
+                # v3：标题链拼入每个块的嵌入/BM25 文本（标题是块所属主题的最强锚点；
+                # 实测 FLUENT 文件干货块相似度 0.39→0.59）。metadata 记录 hp 供输出剥离。
+                hp = heading
+                new_texts.append((hp + "\n" if hp else "") + chunk_text)
                 new_metas.append({
                     "file": rel,
                     "heading": heading,
                     "title": front.get("title", ""),
                     "tags": front.get("tags", ""),
                     "chunk": str(i),
-                    "anchor": anchor if i == 0 else "",
+                    "hp": hp,
                 })
             meta[rel] = {"hash": fhash, "chunks": len(chunks), "size": st.st_size, "mtime": st.st_mtime_ns}
             changed += 1

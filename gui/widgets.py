@@ -949,4 +949,5 @@ def _cli_name(key):
 
 
 def _kind_hint(kind):
-    return {"int": "整数", "float": "小数", "list": "逗号分隔的多个值"}[kind]
+    return {"int": "整数", "float": "小数", "list": "逗号分隔的多个值",
+            "bool": "true / false"}[kind]
