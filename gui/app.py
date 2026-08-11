@@ -322,14 +322,15 @@ class App:
         self.page.update()
         t0 = time.time()
         top_k = int(self.search.top_k.value or CFG["default_top_k"])
-        include_body = bool(self.search.body_switch.value)
+        show_body = bool(self.search.body_switch.value)
 
         def run():
             from retriever import hybrid_search
             return hybrid_search(query.strip(), top_k=top_k,
-                                 include_body=include_body)
+                                 include_body=True, with_scores=True)
 
         self._search_t0 = t0
+        self._search_show_body = show_body
         self.executor.submit(run).add_done_callback(
             lambda f: self.page.run_task(self._finish_search, f))
 
@@ -339,7 +340,8 @@ class App:
         self.search.btn.disabled = False
         try:
             result = fut.result()
-            self.search.show_results(result, self.colors)
+            self.search.show_results(result, self.colors,
+                                     show_body=getattr(self, "_search_show_body", True))
             self._log_line("── 检索「%s」耗时 %.1fs"
                            % (self.search.input.value.strip(),
                               time.time() - self._search_t0))

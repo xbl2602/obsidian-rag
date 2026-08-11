@@ -90,7 +90,7 @@ def main():
     from concurrent.futures import Future
 
     f_ok = Future()
-    f_ok.set_result("---\ntest.md\n正文内容\n---")
+    f_ok.set_result("[来源] test.md (## 小节标题) [块 1/3] [置信度 0.87]\n---\n正文内容\n---")
     asyncio.run(app._finish_search(f_ok))
     if app._searching or app.search.btn.disabled:
         raise AssertionError("完成后按钮未恢复")

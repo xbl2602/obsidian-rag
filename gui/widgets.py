@@ -4,6 +4,7 @@
 禁止"自适应容器内套 expand 子项"导致高度链归零。
 """
 import datetime
+import re
 
 import flet as ft
 
@@ -220,29 +221,38 @@ PHASE_COLOR = {"scanning": "scan", "embedding": "accent", "writing": "accent", "
 
 
 def _parse_src(src):
-    """从检索源行解析 (相对路径, 标题)。
+    """从检索源行解析 (相对路径, 标题, 置信度)。
 
-    源行格式：[来源] docs/foo.md (## 小节标题) [块 1/3]
+    源行格式：[来源] docs/foo.md (## 小节标题) [块 1/3] [置信度 0.87]
     - rel：Vault 内相对路径（正斜杠），用于 obsidian://open 定位；
-    - heading：标题（若有），用于 # 锚点跳转；无法解析时回退整行作 rel。
+    - heading：标题（若有），用于 # 锚点跳转；无法解析时回退整行作 rel；
+    - conf：0-1 归一化置信度（无则 None）。
     """
     s = src.strip()
     if s.startswith("[来源] "):
         s = s[len("[来源] "):]
+    conf = None
+    m = re.search(r"\[置信度 ([\d.]+)\]", s)
+    if m:
+        try:
+            conf = float(m.group(1))
+        except ValueError:
+            conf = None
+        s = s[:m.start()].rstrip()
     body = s
     heading = ""
     sep = body.find(" (## ")
-    if sep != -1 and body.rfind(") [") > sep:
+    if sep != -1:
         rel = body[:sep].strip()
         rest = body[sep:]
         close = rest.rfind(")")
         if close != -1:
             heading = rest[4:close].strip()
-        return rel, heading
+        return rel, heading, conf
     if " [" in body:
         rel = body.split(" [")[0].strip()
-        return rel, heading
-    return body.split(" (##")[0].strip(), heading
+        return rel, heading, conf
+    return body.split(" (##")[0].strip(), heading, conf
 
 
 class ProgressCard:
@@ -443,7 +453,7 @@ class SearchCard:
         )
         self.body_switch = ft.Switch(
             value=True,
-            label="包含正文",
+            label="展开正文",
             label_text_style=ft.TextStyle(size=12, font_family=FONT_UI),
             active_color=colors["accent"],
             inactive_thumb_color=colors["t3"],
@@ -503,7 +513,7 @@ class SearchCard:
             )
         ]
 
-    def show_results(self, text, colors, elapsed_s=None):
+    def show_results(self, text, colors, elapsed_s=None, show_body=True):
         blocks = []
         cur = {"src": None, "body": []}
         for line in text.splitlines():
@@ -532,26 +542,33 @@ class SearchCard:
                 bgcolor=ft.Colors.with_opacity(0.12, colors["accent"]),
                 alignment=ft.Alignment.CENTER,
             )
-            body = "\n".join(b["body"][:3])
-            src = b["src"]
-            mark = ""
-            if "[" in src and "]" in src:
-                src, mark = src.rsplit("[", 1)
-                mark = "#块 " + mark.rstrip("]").strip()
-            rel, heading = _parse_src(b["src"])
+            rel, heading, conf = _parse_src(b["src"])
+            conf_txt = _conf_label(conf)
+            conf_color = _conf_color(conf, colors) if conf is not None else colors["t3"]
+            body = "\n".join(b["body"][:3]) if show_body else ""
+            src = b["src"] if show_body else rel
             controls.append(ft.Container(
                 content=ft.Row([
                     badge,
                     ft.Column([
                         ft.Text(body, size=13, font_family=FONT_UI, color=colors["t1"],
                                 height=1.35, max_lines=3,
-                                overflow=ft.TextOverflow.ELLIPSIS),
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                                visible=bool(body)),
                         ft.Row([
                             ft.Text(src, size=11, font_family=FONT_MONO,
                                     color=colors["t3"], expand=True, max_lines=1,
                                     overflow=ft.TextOverflow.ELLIPSIS),
-                            ft.Text(mark, size=11, font_family=FONT_MONO,
-                                    color=colors["accent"]),
+                            ft.Container(
+                                content=ft.Text(conf_txt, size=11,
+                                                weight=ft.FontWeight.W_700,
+                                                color=conf_color,
+                                                font_family=FONT_MONO),
+                                padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                                border_radius=SIZE["radius_badge"],
+                                bgcolor=ft.Colors.with_opacity(0.14, conf_color),
+                                visible=bool(conf_txt),
+                            ),
                         ], spacing=8),
                     ], spacing=3, expand=True),
                 ], vertical_alignment=ft.CrossAxisAlignment.START, spacing=10),
@@ -559,13 +576,11 @@ class SearchCard:
                 border_radius=SIZE["radius_control"],
                 border=ft.Border.all(1, colors["border_faint"]),
                 bgcolor=colors["surface"],
-                on_click=(lambda e, r=rel, h=heading: self._fire_open(r, h)) if self._on_open else None,
+                on_click=(lambda e, r=rel, h=heading: self._fire_open(r, h))
+                         if self._on_open else None,
                 on_hover=self._make_hover(colors["surface"], colors["hover"]),
                 tooltip="点击打开源文件%s" % (("（定位：「%s」）" % heading) if heading else ""),
             ))
-        if len(blocks) > 5:
-            controls.append(ft.Text("还有 %d 条，可缩小问题范围" % (len(blocks) - 5),
-                                    size=11, color=colors["t4"], font_family=FONT_UI))
         self.results.controls = controls
         self.set_status("ok", str(len(controls)))
 
@@ -594,6 +609,21 @@ class SearchCard:
             left=ft.BorderSide(1, colors["border"]),
             right=ft.BorderSide(1, colors["border"]),
         )
+
+
+def _conf_color(conf, colors):
+    """置信度标签配色：≥0.75 绿 / ≥0.5 青 / 其余橙。"""
+    if conf >= 0.75:
+        return colors["success"]
+    if conf >= 0.5:
+        return colors["accent"]
+    return colors["warning"]
+
+
+def _conf_label(conf):
+    if conf is None:
+        return ""
+    return "%d%%" % int(round(conf * 100))
 
 
 class LogView:

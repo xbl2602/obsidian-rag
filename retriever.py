@@ -121,7 +121,7 @@ def _reset_bm25():
 
 # ---------- 结果格式化 ----------
 
-def _format_result(collection, cids, include_body=True, file_counts=None, capped=False):
+def _format_result(collection, cids, include_body=True, file_counts=None, capped=False, scores=None):
     """一次批量取 top_k 结果（避免 N+1），并剥离首块的中文锚点。
 
     include_body=False 时只返回 [来源] 清单（文件名+标题+块位置），不返回正文——
@@ -129,6 +129,7 @@ def _format_result(collection, cids, include_body=True, file_counts=None, capped
     来源行带 [块 k/N] 位置标记（N 为该文件总块数，从 BM25 缓存派生——
     与检索内容同源同生命周期，reindex 后同步重建，不会因缓存不重置而撒谎）：
     k<N 即提示该文件还有未展示内容，AI 应据题决定是否 Read 源文件。
+    scores 提供时（{cid: 0-1 归一化置信度}），来源行追加 [置信度 0.87] 标记。
     正文超 CHUNK_LIMIT 时截断并附显式标记，避免"截断当完整"。
     """
     got = collection.get(ids=cids, include=["metadatas", "documents"])
@@ -140,6 +141,9 @@ def _format_result(collection, cids, include_body=True, file_counts=None, capped
         n = (file_counts or {}).get(rel)
         if k is not None and n is not None:
             src += f" [块 {int(k) + 1}/{n}]"
+        conf = (scores or {}).get(cid)
+        if conf is not None:
+            src += f" [置信度 {conf:.2f}]"
         if not include_body:
             lines.append(src)
             continue
@@ -158,8 +162,12 @@ def _format_result(collection, cids, include_body=True, file_counts=None, capped
 
 # ---------- 混合检索 ----------
 
-def hybrid_search(query, top_k=None, folder="", dense_weight=None, bm25_weight=None, include_body=True):
-    """混合检索：dense 向量 + BM25 关键词，加权融合后取 top_k。"""
+def hybrid_search(query, top_k=None, folder="", dense_weight=None, bm25_weight=None,
+                  include_body=True, with_scores=False):
+    """混合检索：dense 向量 + BM25 关键词，加权融合后取 top_k。
+
+    with_scores=True 时每条来源行附加 [置信度 x.xx]（融合分按本次检索最高分归一化为 0-1）。
+    """
     if top_k is None:
         top_k = CFG["default_top_k"]
     if dense_weight is None:
@@ -232,8 +240,14 @@ def hybrid_search(query, top_k=None, folder="", dense_weight=None, bm25_weight=N
     else:
         ranked = ranked_all[:top_k]
 
+    scores = None
+    if with_scores and combined:
+        best = max(combined[c] for c in ranked if c in combined)
+        if best > 0:
+            scores = {c: combined[c] / best for c in ranked}
+
     return _format_result(collection, ranked, include_body=include_body,
-                          file_counts=file_counts, capped=capped)
+                          file_counts=file_counts, capped=capped, scores=scores)
 
 
 def reset_bm25_index():

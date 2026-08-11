@@ -15,7 +15,8 @@ from gui.store import (  # noqa: E402
     heartbeat_state, progress_ratio,
 )
 from gui.app import format_elapsed, format_mmss  # noqa: E402 纯函数，不触发窗口
-from gui.widgets import _parse_src  # noqa: E402
+from gui.theme import DARK  # noqa: E402
+from gui.widgets import _parse_src, _conf_color, _conf_label  # noqa: E402
 
 
 def make_progress(**kw):
@@ -96,27 +97,63 @@ def test_format_mmss():
 
 
 def test_parse_src_full():
-    rel, heading = _parse_src("[来源] docs/foo.md (## 小节标题) [块 1/3]")
+    rel, heading, conf = _parse_src("[来源] docs/foo.md (## 小节标题) [块 1/3]")
     assert rel == "docs/foo.md"
     assert heading == "小节标题"
+    assert conf is None
+
+
+def test_parse_src_with_confidence():
+    rel, heading, conf = _parse_src(
+        "[来源] docs/foo.md (## 小节标题) [块 1/3] [置信度 0.87]")
+    assert rel == "docs/foo.md"
+    assert heading == "小节标题"
+    assert abs(conf - 0.87) < 1e-9
+
+
+def test_parse_src_confidence_first():
+    rel, heading, conf = _parse_src(
+        "[来源] docs/foo.md (## 小节标题) [置信度 0.5]")
+    assert rel == "docs/foo.md"
+    assert heading == "小节标题"
+    assert abs(conf - 0.5) < 1e-9
 
 
 def test_parse_src_no_heading():
-    rel, heading = _parse_src("[来源] docs/foo.md [块 1/3]")
+    rel, heading, conf = _parse_src("[来源] docs/foo.md [块 1/3]")
     assert rel == "docs/foo.md"
     assert heading == ""
+    assert conf is None
 
 
 def test_parse_src_plain():
-    rel, heading = _parse_src("[来源] docs/foo.md")
+    rel, heading, conf = _parse_src("[来源] docs/foo.md")
     assert rel == "docs/foo.md"
     assert heading == ""
+    assert conf is None
 
 
 def test_parse_src_spacey_path():
-    rel, heading = _parse_src("[来源] Obsidian Vault/我的 笔记/foo.md (## 标题) [块 2/5]")
+    rel, heading, conf = _parse_src(
+        "[来源] Obsidian Vault/我的 笔记/foo.md (## 标题) [块 2/5] [置信度 0.42]")
     assert rel == "Obsidian Vault/我的 笔记/foo.md"
     assert heading == "标题"
+    assert abs(conf - 0.42) < 1e-9
+
+
+def test_conf_color_levels():
+    assert _conf_color(0.9, DARK) == DARK["success"]
+    assert _conf_color(0.75, DARK) == DARK["success"]
+    assert _conf_color(0.6, DARK) == DARK["accent"]
+    assert _conf_color(0.5, DARK) == DARK["accent"]
+    assert _conf_color(0.3, DARK) == DARK["warning"]
+
+
+def test_conf_label():
+    assert _conf_label(None) == ""
+    assert _conf_label(0.874) == "87%"
+    assert _conf_label(0.5) == "50%"
+    assert _conf_label(0.004) == "0%"
 
 
 if __name__ == "__main__":
