@@ -14,6 +14,7 @@ from gui.store import (  # noqa: E402
     HB_DEAD, HB_DONE, HB_IDLE, HB_RUNNING, HB_STALLED,
     heartbeat_state, progress_ratio,
 )
+from gui.app import format_elapsed, format_mmss  # noqa: E402 纯函数，不触发窗口
 
 
 def make_progress(**kw):
@@ -72,6 +73,25 @@ def test_state_constants():
     assert (STATE_OK, STATE_STALE, STATE_NONE) == ("ok", "stale", "none")
     assert (HB_RUNNING, HB_DEAD, HB_STALLED, HB_DONE, HB_IDLE) == \
         ("running", "dead", "stalled", "done", "idle")
+
+
+def test_format_elapsed():
+    assert format_elapsed(38.7) == "38.7s"
+    assert format_elapsed(0.4) == "0.4s"
+    assert format_elapsed(60) == "1分0秒"
+    assert format_elapsed(125) == "2分5秒"
+    assert format_elapsed(None) == "—"
+    assert format_elapsed(0) == "—"
+    assert format_elapsed(-3) == "—"
+    assert format_elapsed("x") == "—"
+
+
+def test_format_mmss():
+    assert format_mmss(0) == "00:00"
+    assert format_mmss(59) == "00:59"
+    assert format_mmss(61) == "01:01"
+    assert format_mmss(3600) == "60:00"
+    assert format_mmss(None) == "00:00"
 
 
 if __name__ == "__main__":

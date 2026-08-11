@@ -668,6 +668,28 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
      中文文件修改一律用 UTF-8 感知的编辑工具。
 - **手动待验证**（自动化难以覆盖）：搜索测试的真实点击流、确认框按钮、
   全量重建全流程、主题切换观感——由用户跑 `python gui/app.py` 体验。
+- **v2 迭代（2026-08-11）**：用户反馈 v1 中排"高度塌陷"（进度卡+搜索卡
+  无高度锚点被压成 0，心跳灯/搜索框/进度不可见）+ 审美不足 → 经 UI 子代理
+  重新设计并实施：
+  - **布局纪律**：全窗口仅日志区弹性，其余区块固定高度锚点——header 48 /
+    KPI 92 / **中排 280**（进度卡+搜索卡 expand 横向均分）/ 设备条 40；
+    冒烟测试新增 `mid_row.height == SIZE["mid_h"]` 断言防回归。
+  - **视觉**：深空灰三层底（#0E1117/#161B23/#11151C）+ 薄荷青
+    `#4BCEB8`（浅色主题同构换色）；三字体体系（YaHei UI/Bahnschrift 大
+    数字/Consolas 等宽）。
+  - **组件重写**（theme.py token 化 + widgets.py 全量重写）：KPI 卡带图标
+    + accent 短横线；心跳胶囊移至 header 右上（运行呼吸/红卡死/橙假活/
+    绿完成/弱空闲）；进度卡 4 阶段 stepper + 36px 百分比 + 双行
+    计时/ETA + 块计数；搜索卡 3 层结构（输入/状态条/结果列表）。
+  - **耗时卡语义修正**（用户确认）：运行中=实时「mm:ss」+ 阶段名；未索引
+    =「—」；其余=上次完成耗时（≥60s「x分y秒」/<60s「x.xs」）+「上次完成
+    HH:MM」。
+  - **踩坑新增**：`ft.Colors.with_opacity(opacity, color)` 参数顺序是
+    **透明度在前**（写反会 `'<=' not supported`，widgets 曾 21 处反序）；
+    Windows 控制台 cp1252 打中文会崩 → smoke 测试入口强制
+    `sys.stdout.reconfigure(encoding="utf-8")`。
+  - **v2 验证**：9 单测（+format_elapsed/format_mmss）+ 无窗口冒烟（含锚点
+    断言）+ 真窗 20s 零 traceback（测试后已关闭）。
 - **遗留（Roadmap 候选）**：exe 打包（`flet pack`）、主题持久化
   （当前会话内切换，未写入 config.json）、显存占用实时展示（progress
   无该字段，需加后端字段）。

@@ -1,71 +1,90 @@
-"""theme.py — 语义搜索控制台的色板、字体与尺寸常量（深浅两套，Material 3）。"""
+"""theme.py — 控制台主题 token 体系（深空灰 + 薄荷青，深浅两套）。
 
-# 深色模式（默认）
+所有组件只引用这里的色值/尺寸，不直接写裸 hex。
+透明度统一用 ft.Colors.with_opacity 生成。
+"""
+
+# ---- 深色（默认）：深空灰三层底 + 薄荷青 ----
 DARK = {
-    "background": "#121212",
-    "surface": "#1E1E1E",
-    "surface_high": "#2B2B2B",
-    "outline": "#333333",
-    "primary": "#4DB6AC",
-    "primary_fill": "#00695C",
-    "primary_hover": "#00796B",
-    "primary_container": "#00695C",
-    "on_primary": "#FFFFFF",
-    "success": "#66BB6A",
-    "warning": "#FFB74D",
-    "danger": "#EF5350",
-    "disabled": "#616161",
-    "text_main": "#E0E0E0",
-    "text_secondary": "#9E9E9E",
-    "text_weak": "#757575",
-    "log_bg": "#131313",
-    "scan": "#64B5F6",
-    "error_bg": "#C62828",
+    "base": "#0E1117",          # 窗口底色
+    "surface": "#161B23",       # 卡片
+    "sunken": "#11151C",        # 输入框 / 日志区内底
+    "hover": "#1C222C",         # 悬停
+    "active": "#212936",        # 按下 / 选中
+    "border": "#232B37",        # 默认 1px 描边
+    "border_light": "#2D3744",  # 卡片上缘高光边
+    "border_faint": "#1A212B",  # 弱分隔 / 结果卡
+    "accent": "#4BCEB8",        # 主色 mint-teal
+    "accent_hover": "#5FDCC7",
+    "accent_soft": "#8CE5D6",   # 强调图标 / 强调文字
+    "on_accent": "#04261F",     # 主按钮上的深字
+    "success": "#3DD68C",
+    "warning": "#F0B24B",
+    "danger": "#F2555A",
+    "scan": "#4FA8E8",          # 扫描阶段
+    "t1": "#E9EDF3",            # 主文字
+    "t2": "#A3ADBD",            # 次级文字
+    "t3": "#667180",            # 弱信息
+    "t4": "#465163",            # 极弱（时间戳/占位）
+    "error_bg": "#F2555A",
+    "tooltip_bg": "#1D222B",
 }
 
-# 浅色模式
+# ---- 浅色：同结构换色 ----
 LIGHT = {
-    "background": "#FAFAFA",
+    "base": "#F4F6F8",
     "surface": "#FFFFFF",
-    "surface_high": "#F1F3F4",
-    "outline": "#E0E0E0",
-    "primary": "#00695C",
-    "primary_fill": "#00695C",
-    "primary_hover": "#00796B",
-    "primary_container": "#B2DFDB",
-    "on_primary": "#FFFFFF",
-    "success": "#2E7D32",
-    "warning": "#EF6C00",
-    "danger": "#C62828",
-    "disabled": "#BDBDBD",
-    "text_main": "#212121",
-    "text_secondary": "#616161",
-    "text_weak": "#9E9E9E",
-    "log_bg": "#FAFAFA",
-    "scan": "#1E88E5",
-    "error_bg": "#C62828",
+    "sunken": "#EEF1F5",
+    "hover": "#F0F3F7",
+    "active": "#E7EBF1",
+    "border": "#D9DEE6",
+    "border_light": "#FFFFFF",
+    "border_faint": "#E4E8EE",
+    "accent": "#2FA896",
+    "accent_hover": "#25947F",
+    "accent_soft": "#0E7A66",
+    "on_accent": "#FFFFFF",
+    "success": "#1E9E6A",
+    "warning": "#C77E10",
+    "danger": "#D94045",
+    "scan": "#2F7FD0",
+    "t1": "#1B212B",
+    "t2": "#57606E",
+    "t3": "#8B94A2",
+    "t4": "#ABB3BF",
+    "error_bg": "#D94045",
+    "tooltip_bg": "#1D222B",
 }
 
-# 尺寸规范
+# ---- 尺寸（新版布局：所有可见区块都有固定高度锚点） ----
 SIZE = {
-    "radius_card": 12,
-    "radius_control": 8,
-    "radius_pill": 16,
-    "gap_card": 16,
-    "pad_card": 16,
-    "gap_element": 12,
+    "pad": 16,                  # 内容区 padding
+    "gap": 12,                  # 区块间距
     "gap_tight": 8,
-    "kpi_height": 104,
-    "btn_height": 40,
-    "input_height": 44,
-    "device_bar_height": 44,
-    "log_min_height": 160,
-    "header_height": 56,
-    "dot_status": 12,
-    "dot_heartbeat": 10,
-    "bar_height": 8,
-    "result_max_lines": 3,
-    "log_max_lines": 1000,
+
+    "radius_panel": 14,         # 面板卡
+    "radius_kpi": 16,           # KPI 卡
+    "radius_control": 10,       # 按钮 / 输入框
+    "radius_badge": 7,
+    "radius_pill": 999,
+
+    "header_h": 48,
+    "kpi_h": 92,
+    "mid_h": 280,               # 中排固定高度（防塌陷关键锚点）
+    "device_h": 40,
+    "log_top_h": 40,
+
+    "kpi_num": 30,
+    "pct_num": 36,
+    "bar_h": 8,
+    "input_h": 44,
+
+    "dot": 8,
+    "pill_h": 30,
+    "pill_pad_x": 10,
+    "chip_h": 22,
+    "log_line_h": 22,
+
     "window_w": 1280,
     "window_h": 800,
     "window_min_w": 1024,
@@ -73,4 +92,5 @@ SIZE = {
 }
 
 FONT_UI = "Microsoft YaHei UI"
-FONT_MONO = "Cascadia Mono"
+FONT_NUM = "Bahnschrift"
+FONT_MONO = "Consolas"

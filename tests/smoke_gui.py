@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "gui"))
@@ -77,9 +79,11 @@ def main():
     app._toggle_theme(None)
     print("    OK")
 
-    print("4/4 模拟确认框...")
-    app._confirm_full(None)
-    print("    OK")
+    print("4/4 中排高度锚点断言（防塌陷关键）：")
+    from theme import SIZE
+    if app.mid_row.height != SIZE["mid_h"]:
+        raise AssertionError("中排高度未锚定 %s != %s" % (app.mid_row.height, SIZE["mid_h"]))
+    print("    中排高度 = %s px OK" % app.mid_row.height)
 
     print("\n冒烟测试全部通过")
 
