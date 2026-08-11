@@ -15,6 +15,7 @@ from gui.store import (  # noqa: E402
     heartbeat_state, progress_ratio,
 )
 from gui.app import format_elapsed, format_mmss  # noqa: E402 纯函数，不触发窗口
+from gui.widgets import _parse_src  # noqa: E402
 
 
 def make_progress(**kw):
@@ -92,6 +93,30 @@ def test_format_mmss():
     assert format_mmss(61) == "01:01"
     assert format_mmss(3600) == "60:00"
     assert format_mmss(None) == "00:00"
+
+
+def test_parse_src_full():
+    rel, heading = _parse_src("[来源] docs/foo.md (## 小节标题) [块 1/3]")
+    assert rel == "docs/foo.md"
+    assert heading == "小节标题"
+
+
+def test_parse_src_no_heading():
+    rel, heading = _parse_src("[来源] docs/foo.md [块 1/3]")
+    assert rel == "docs/foo.md"
+    assert heading == ""
+
+
+def test_parse_src_plain():
+    rel, heading = _parse_src("[来源] docs/foo.md")
+    assert rel == "docs/foo.md"
+    assert heading == ""
+
+
+def test_parse_src_spacey_path():
+    rel, heading = _parse_src("[来源] Obsidian Vault/我的 笔记/foo.md (## 标题) [块 2/5]")
+    assert rel == "Obsidian Vault/我的 笔记/foo.md"
+    assert heading == "标题"
 
 
 if __name__ == "__main__":

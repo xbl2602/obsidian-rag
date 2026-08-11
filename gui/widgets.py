@@ -219,6 +219,32 @@ PHASE_TEXT = {"scanning": "扫描", "embedding": "嵌入", "writing": "写库", 
 PHASE_COLOR = {"scanning": "scan", "embedding": "accent", "writing": "accent", "done": "success"}
 
 
+def _parse_src(src):
+    """从检索源行解析 (相对路径, 标题)。
+
+    源行格式：[来源] docs/foo.md (## 小节标题) [块 1/3]
+    - rel：Vault 内相对路径（正斜杠），用于 obsidian://open 定位；
+    - heading：标题（若有），用于 # 锚点跳转；无法解析时回退整行作 rel。
+    """
+    s = src.strip()
+    if s.startswith("[来源] "):
+        s = s[len("[来源] "):]
+    body = s
+    heading = ""
+    sep = body.find(" (## ")
+    if sep != -1 and body.rfind(") [") > sep:
+        rel = body[:sep].strip()
+        rest = body[sep:]
+        close = rest.rfind(")")
+        if close != -1:
+            heading = rest[4:close].strip()
+        return rel, heading
+    if " [" in body:
+        rel = body.split(" [")[0].strip()
+        return rel, heading
+    return body.split(" (##")[0].strip(), heading
+
+
 class ProgressCard:
     """索引构建卡：阶段 stepper + 36px 百分比 + 进度条 + 双行计数/计时 + 操作按钮。"""
 
@@ -373,9 +399,15 @@ class ProgressCard:
 
 
 class SearchCard:
-    """语义检索卡：输入行(44) + 状态条(20) + 结果列表（三层，父卡高锚定）。"""
+    """语义检索卡：输入行(44) + 状态条(20) + 结果列表（三层，父卡高锚定）。
 
-    def __init__(self, on_search, colors=DARK):
+    on_open(rel, heading)：点击结果项时回调（跳转源文件）。
+    """
+
+    TOP_K_CHOICES = (3, 5, 8, 10, 15)
+
+    def __init__(self, on_search, on_open=None, colors=DARK):
+        self._on_open = on_open
         self.title = ft.Text("语义检索", size=15, weight=ft.FontWeight.W_600,
                              color=colors["t1"], font_family=FONT_UI)
         self.input = ft.TextField(
@@ -397,6 +429,25 @@ class SearchCard:
             ),
             on_click=lambda e: on_search(self.input.value),
         )
+        self.top_k = ft.Dropdown(
+            value="5",
+            options=[ft.DropdownOption(key=str(k), text=str(k))
+                     for k in self.TOP_K_CHOICES],
+            width=80, height=SIZE["input_h"],
+            label="Top K",
+            label_style=ft.TextStyle(size=11, font_family=FONT_UI),
+            filled=True, fill_color=colors["sunken"],
+            border_color=colors["border"],
+            dense=True,
+            text_style=ft.TextStyle(size=13, font_family=FONT_UI),
+        )
+        self.body_switch = ft.Switch(
+            value=True,
+            label="包含正文",
+            label_text_style=ft.TextStyle(size=12, font_family=FONT_UI),
+            active_color=colors["accent"],
+            inactive_thumb_color=colors["t3"],
+        )
         self.status = ft.Text("输入问题开始测试检索", size=11, color=colors["t4"],
                               font_family=FONT_UI)
         self.ring = ft.ProgressRing(width=12, height=12, stroke_width=2,
@@ -407,8 +458,8 @@ class SearchCard:
                                    expand=True, padding=0)
         content = ft.Column([
             self.title,
-            ft.Row([self.input, self.btn], spacing=SIZE["gap_tight"],
-                   height=SIZE["input_h"]),
+            ft.Row([self.input, self.top_k, self.body_switch, self.btn],
+                   spacing=SIZE["gap_tight"], height=SIZE["input_h"]),
             self.status_row,
             self.results,
         ], spacing=SIZE["gap_tight"], expand=True)
@@ -473,7 +524,7 @@ class SearchCard:
             self.set_status("empty")
             return
         controls = []
-        for i, b in enumerate(blocks[:5]):
+        for i, b in enumerate(blocks):
             badge = ft.Container(
                 content=ft.Text(str(i + 1), size=11, weight=ft.FontWeight.W_700,
                                 color=colors["accent"], font_family=FONT_MONO),
@@ -487,6 +538,7 @@ class SearchCard:
             if "[" in src and "]" in src:
                 src, mark = src.rsplit("[", 1)
                 mark = "#块 " + mark.rstrip("]").strip()
+            rel, heading = _parse_src(b["src"])
             controls.append(ft.Container(
                 content=ft.Row([
                     badge,
@@ -507,12 +559,25 @@ class SearchCard:
                 border_radius=SIZE["radius_control"],
                 border=ft.Border.all(1, colors["border_faint"]),
                 bgcolor=colors["surface"],
+                on_click=(lambda e, r=rel, h=heading: self._fire_open(r, h)) if self._on_open else None,
+                on_hover=self._make_hover(colors["surface"], colors["hover"]),
+                tooltip="点击打开源文件%s" % (("（定位：「%s」）" % heading) if heading else ""),
             ))
         if len(blocks) > 5:
             controls.append(ft.Text("还有 %d 条，可缩小问题范围" % (len(blocks) - 5),
                                     size=11, color=colors["t4"], font_family=FONT_UI))
         self.results.controls = controls
-        self.set_status("ok")
+        self.set_status("ok", str(len(controls)))
+
+    @staticmethod
+    def _make_hover(base, hover):
+        def _on_hover(e):
+            e.control.bgcolor = hover if e.data == "true" else base
+        return _on_hover
+
+    def _fire_open(self, rel, heading):
+        if self._on_open:
+            self._on_open(rel, heading)
 
     def set_banner(self, visible, colors):
         pass  # 索引中提示并入状态条，不单独横幅

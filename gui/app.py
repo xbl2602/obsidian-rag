@@ -97,7 +97,7 @@ class App:
         self.progress = ProgressCard()
         self.progress.btn_inc.on_click = lambda e: self._start_index(False)
         self.progress.btn_full.on_click = self._confirm_full
-        self.search = SearchCard(self._do_search)
+        self.search = SearchCard(self._do_search, on_open=self._open_result)
         self.log_view = LogView()
         self.device = DeviceBar(self._open_vault, self._open_logs)
         self.theme_btn = ft.IconButton(
@@ -321,10 +321,13 @@ class App:
         self.search.set_status("loading")
         self.page.update()
         t0 = time.time()
+        top_k = int(self.search.top_k.value or CFG["default_top_k"])
+        include_body = bool(self.search.body_switch.value)
 
         def run():
             from retriever import hybrid_search
-            return hybrid_search(query.strip(), include_body=True)
+            return hybrid_search(query.strip(), top_k=top_k,
+                                 include_body=include_body)
 
         self._search_t0 = t0
         self.executor.submit(run).add_done_callback(
@@ -346,6 +349,27 @@ class App:
         self.page.update()
 
     # ---------- 工具 ----------
+
+    def _open_result(self, rel, heading=""):
+        """点击搜索结果 → 在 Obsidian 中打开源文件（含标题锚点）。"""
+        try:
+            import urllib.parse
+            vault_name = Path(VAULT_DIR).name
+            file_part = urllib.parse.quote(rel, safe="/")
+            url = "obsidian://open?vault=%s&file=%s" % (
+                urllib.parse.quote(vault_name), file_part)
+            if heading:
+                url += "#" + urllib.parse.quote(heading)
+            os.startfile(url)
+            self._log_line("── 打开 %s%s" % (rel, ("（%s）" % heading) if heading else ""))
+        except OSError as ex:
+            fallback = str(Path(VAULT_DIR) / rel)
+            try:
+                os.startfile(fallback)
+                self._log_line("── Obsidian URI 不可用，用系统打开 %s" % fallback)
+            except OSError as ex2:
+                self._snack("无法打开：%s" % ex2, is_error=True)
+                self._log_line("ERROR [GUI] 打开源文件失败：%s" % ex2)
 
     def _open_vault(self, e):
         self._open_dir(VAULT_DIR)

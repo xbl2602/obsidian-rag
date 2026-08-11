@@ -105,6 +105,24 @@ def main():
         raise AssertionError("失败后按钮未恢复")
     print("    失败路径 OK")
 
+    print("6/6 top_k / 正文开关 / 结果点击跳转...")
+    if app.search.top_k.value not in ("3", "5", "8", "10", "15"):
+        raise AssertionError("top_k 下拉异常: %r" % app.search.top_k.value)
+    if app.search.body_switch.value is not True:
+        raise AssertionError("正文开关默认应为开启")
+    import gui.app as appmod
+    opened = []
+    orig_startfile = appmod.os.startfile
+    appmod.os.startfile = lambda u: opened.append(u)
+    try:
+        app._open_result("docs/foo.md", "小节标题")
+        app._open_result("docs/foo.md")
+    finally:
+        appmod.os.startfile = orig_startfile
+    if not opened or "obsidian://open" not in opened[0]:
+        raise AssertionError("点击结果未走 Obsidian URI: %r" % opened)
+    print("    跳转 URI OK: %s" % opened[0])
+
     print("\n冒烟测试全部通过")
 
 
