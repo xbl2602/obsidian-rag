@@ -20,9 +20,9 @@
 ## 1. 前置检查（全部满足才继续）
 
 1. `python3 --version` 可用（≥3.10；3.14 实测通过）
-2. 磁盘剩余 ≥ 500MB（模型缓存 ~2.5GB 若未下载则另需网络）
+2. 磁盘剩余 ≥ 2GB（模型缓存：bge-m3 嵌入 ~2.3GB + bge-reranker-v2-m3 重排 ~1.1GB，未下载则另需网络）
 3. 包文件存在且可读：`ls -l <包路径>`
-4. 网络可达（首次检索需下载 bge-m3 模型；已缓存则无需）
+4. 网络可达（首次检索需下载嵌入模型；启用重排器还需下载重排模型；已缓存则无需）
 
 ## 2. 执行步骤（按序执行）
 
@@ -77,7 +77,9 @@ OBSIDIAN_VAULT="$(pwd)/vault_export" .venv/bin/python server.py
    ```bash
    OBSIDIAN_VAULT="$(pwd)/vault_export" .venv/bin/python -c "from retriever import hybrid_search; print(hybrid_search('免费证书', top_k=3))"
    ```
-   首次调用会下载 bge-m3 模型（数十秒~数分钟），返回含 `[来源]` 与正文即成功。
+   首次调用会下载 bge-m3 嵌入模型（数十秒~数分钟）；默认启用重排器
+   （bge-reranker-v2-m3，~1.1GB）时首次检索再加载一次，之后毫秒级。
+   返回含 `[来源]` 与正文即成功。
 
 ## 4. 只读靶子数据用法（不导入也能用）
 
@@ -98,7 +100,7 @@ with gzip.open("payload.jsonl.gz", "rt", encoding="utf-8") as f:
 | import 报 `sha256 不匹配` 或 `CRC 校验失败` | 包传输损坏 | **不落库**，报告“包损坏，需重新下载/传输”，列出失败文件 |
 | import 报 `目标已有 N 块，覆盖需确认` | 未加 `--yes` | 重新执行并带 `--yes`；如需保留旧库先 `mv data/chroma data/chroma.bak` |
 | `pip install` 失败 | 依赖解析问题 | 按 requirements.txt 注释重试 torch 平台命令；再试 `pip install --no-cache-dir` |
-| 检索首次调用超时/失败 | 模型未缓存 + 无网络 | 确认网络可达后重试；离线则需单独传输 bge-m3 模型缓存（~2.5GB） |
+| 检索首次调用超时/失败 | 模型未缓存 + 无网络 | 确认网络可达后重试；离线则需单独传输 bge-m3 模型缓存（~2.3GB）与 bge-reranker-v2-m3（~1.1GB）；或把 `data/config.json` 的 `rerank_enabled` 改为 false 关掉重排（纯融合仍可用） |
 | `import index` 报 `No module named 'msvcrt'` | 旧代码（未同步跨平台锁修复） | `git pull` 获取最新代码后重试 |
 | 磁盘不足 | 空间不够 | 清理后重试；勿删 `~/.cache/huggingface` 下的 bge-m3 |
 | import 中途断电/被杀 | 半写状态 | 重跑一次 import 即可（幂等）；必要时 `rm -rf data/chroma data/index_meta.json*` 后重跑 |
@@ -112,5 +114,5 @@ with gzip.open("payload.jsonl.gz", "rt", encoding="utf-8") as f:
 ## 7. 注意事项
 
 - 不要把 `vault_export/` 放在 NFS 挂载盘（fcntl 文件锁在 NFS 上不可靠）
-- `--full` 全量重建耗时 ~40s（155 文件/1544 块实测）且需模型，非必要勿跑
+- `--full` 全量重建耗时 ~40s（162 文件/1462 块实测）且需模型，非必要勿跑
 - 本包为个人笔记数据，请勿再分发或提交到公开仓库
