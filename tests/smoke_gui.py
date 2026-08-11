@@ -79,13 +79,24 @@ def main():
     app._toggle_theme(None)
     print("    OK")
 
-    print("4/4 中排高度锚点断言（防塌陷关键）：")
-    from theme import SIZE
-    if app.mid_row.height != SIZE["mid_h"]:
-        raise AssertionError("中排高度未锚定 %s != %s" % (app.mid_row.height, SIZE["mid_h"]))
-    print("    中排高度 = %s px OK" % app.mid_row.height)
+    print("3b/6 模拟设置对话框...")
+    app._open_settings(None)
+    if not app.settings._fields or not app.settings._dlg:
+        raise AssertionError("设置对话框未构建字段")
+    print("    字段数 %d OK" % len(app.settings._fields))
 
-    print("5/5 搜索完成/失败回调路径...")
+    print("4/6 中排布局断言（搜索卡弹性、进度卡固定宽）：")
+    from theme import SIZE
+    if not app.mid_row.expand:
+        raise AssertionError("中排应弹性撑满剩余高度")
+    if not app.search.card.expand:
+        raise AssertionError("搜索卡应横向+纵向 expand")
+    if app.progress.card.width != SIZE["progress_w"]:
+        raise AssertionError("进度卡宽度未固定 %s != %s"
+                             % (app.progress.card.width, SIZE["progress_w"]))
+    print("    中排 expand / 搜索 expand / 进度宽 %s OK" % SIZE["progress_w"])
+
+    print("5/6 搜索完成/失败回调路径...")
     import asyncio
     from concurrent.futures import Future
 

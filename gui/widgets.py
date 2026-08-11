@@ -535,51 +535,67 @@ class SearchCard:
             return
         controls = []
         for i, b in enumerate(blocks):
-            badge = ft.Container(
-                content=ft.Text(str(i + 1), size=11, weight=ft.FontWeight.W_700,
-                                color=colors["accent"], font_family=FONT_MONO),
-                width=22, height=22, border_radius=SIZE["radius_badge"],
-                bgcolor=ft.Colors.with_opacity(0.12, colors["accent"]),
-                alignment=ft.Alignment.CENTER,
-            )
             rel, heading, conf = _parse_src(b["src"])
             conf_txt = _conf_label(conf)
             conf_color = _conf_color(conf, colors) if conf is not None else colors["t3"]
             body = "\n".join(b["body"][:3]) if show_body else ""
             src = b["src"] if show_body else rel
-            controls.append(ft.Container(
-                content=ft.Row([
-                    badge,
-                    ft.Column([
-                        ft.Text(body, size=13, font_family=FONT_UI, color=colors["t1"],
-                                height=1.35, max_lines=3,
+
+            body_text = ft.Text(body, size=13, font_family=FONT_UI, color=colors["t1"],
+                                height=1.45, max_lines=6,
                                 overflow=ft.TextOverflow.ELLIPSIS,
-                                visible=bool(body)),
-                        ft.Row([
-                            ft.Text(src, size=11, font_family=FONT_MONO,
-                                    color=colors["t3"], expand=True, max_lines=1,
-                                    overflow=ft.TextOverflow.ELLIPSIS),
-                            ft.Container(
-                                content=ft.Text(conf_txt, size=11,
-                                                weight=ft.FontWeight.W_700,
-                                                color=conf_color,
-                                                font_family=FONT_MONO),
-                                padding=ft.Padding.symmetric(horizontal=8, vertical=2),
-                                border_radius=SIZE["radius_badge"],
-                                bgcolor=ft.Colors.with_opacity(0.14, conf_color),
-                                visible=bool(conf_txt),
-                            ),
-                        ], spacing=8),
-                    ], spacing=3, expand=True),
-                ], vertical_alignment=ft.CrossAxisAlignment.START, spacing=10),
+                                visible=False, selectable=True)
+            body_box = ft.Container(content=body_text, visible=bool(body),
+                                    padding=ft.Padding.only(top=6))
+            open_btn = ft.IconButton(
+                icon=ft.Icons.OPEN_IN_NEW, icon_size=14,
+                icon_color=colors["t3"], padding=2, width=24, height=24,
+                tooltip="在 Obsidian 中打开源文件",
+                on_click=(lambda e, r=rel, h=heading: self._fire_open(r, h))
+                         if self._on_open else None,
+            )
+            chevron = ft.Icon(ft.Icons.CHEVRON_RIGHT, size=14, color=colors["t3"],
+                              visible=bool(body))
+            header = ft.Row([
+                chevron,
+                ft.Text(src, size=11, font_family=FONT_MONO, color=colors["t3"],
+                        expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Container(
+                    content=ft.Text(conf_txt, size=11, weight=ft.FontWeight.W_700,
+                                    color=conf_color, font_family=FONT_MONO),
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                    border_radius=SIZE["radius_badge"],
+                    bgcolor=ft.Colors.with_opacity(0.14, conf_color),
+                    visible=bool(conf_txt),
+                ),
+                open_btn,
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+            def make_toggle(chevron=chevron, body_text=body_text,
+                            body_box=body_box, colors=colors):
+                def _toggle(e):
+                    body_text.visible = not body_text.visible
+                    body_box.visible = body_text.visible
+                    chevron.icon = (ft.Icons.EXPAND_MORE if body_text.visible
+                                    else ft.Icons.CHEVRON_RIGHT)
+                    e.control.page.update()
+                return _toggle
+
+            head_container = ft.Container(
+                content=header, padding=0,
+                on_click=make_toggle() if body else None,
+            )
+            controls.append(ft.Container(
+                content=ft.Column([
+                    head_container,
+                    body_box,
+                ], spacing=0),
                 padding=ft.Padding.all(10),
                 border_radius=SIZE["radius_control"],
                 border=ft.Border.all(1, colors["border_faint"]),
                 bgcolor=colors["surface"],
-                on_click=(lambda e, r=rel, h=heading: self._fire_open(r, h))
-                         if self._on_open else None,
                 on_hover=self._make_hover(colors["surface"], colors["hover"]),
-                tooltip="点击打开源文件%s" % (("（定位：「%s」）" % heading) if heading else ""),
+                tooltip="点击标题行展开/收起命中片段" if body else None,
             ))
         self.results.controls = controls
         self.set_status("ok", str(len(controls)))
@@ -768,3 +784,155 @@ class DeviceBar:
         self.info.color = colors["t3"]
         self.card.bgcolor = ft.Colors.with_opacity(0.85, colors["surface"])
         self.card.border = ft.Border.all(1, colors["border_faint"])
+
+
+class SettingsDialog:
+    """设置对话框：按 config_editor.GROUPS 分组展示 config.json 字段。
+
+    on_saved(errors)：点保存后回调，errors 为空 dict 表示成功。
+    """
+
+    def __init__(self, on_saved, colors=DARK):
+        self._on_saved = on_saved
+        self._cols = colors
+        self._fields = {}   # key -> 输入控件
+        self._ok = ft.FilledButton(
+            "保存", style=ft.ButtonStyle(
+                bgcolor=colors["accent"], color=colors["on_accent"],
+                shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                text_style=ft.TextStyle(font_family=FONT_UI, weight=ft.FontWeight.W_600),
+            ),
+            on_click=self._save,
+        )
+        self._cancel = ft.OutlinedButton(
+            "取消", style=ft.ButtonStyle(
+                color=colors["t2"],
+                shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                text_style=ft.TextStyle(font_family=FONT_UI),
+            ),
+            on_click=self._cancel_click,
+        )
+        self._status = ft.Text("", size=12, color=colors["warning"],
+                               font_family=FONT_UI, visible=False, expand=True)
+        self._dlg = None
+        self._build()
+
+    # ---- 构建 ----
+
+    def _build(self):
+        import config_editor as ce
+        from config import CFG
+
+        body = ft.ListView(spacing=10, expand=True, padding=0)
+        for group, fields in ce.GROUPS:
+            body.controls.append(ft.Text(group, size=12, weight=ft.FontWeight.W_700,
+                                         color=self._cols["t2"],
+                                         font_family=FONT_UI))
+            for key, kind in fields:
+                cur = CFG.get(key)
+                if kind == "list":
+                    val = ", ".join(str(x) for x in cur) if cur else ""
+                elif cur is None:
+                    val = ""
+                else:
+                    val = str(cur)
+                inp = ft.TextField(
+                    label=_cli_name(key), value=val,
+                    height=46, dense=True,
+                    border_radius=SIZE["radius_control"],
+                    filled=True, fill_color=self._cols["sunken"],
+                    border_color=self._cols["border"],
+                    text_size=13,
+                    text_style=ft.TextStyle(font_family=FONT_UI),
+                    label_style=ft.TextStyle(size=12, font_family=FONT_UI),
+                    helper="" if kind == "str" else _kind_hint(kind),
+                    expand=True,
+                )
+                self._fields[key] = (inp, kind)
+                body.controls.append(inp)
+        body.controls.append(ft.Text(
+            "提示：检索/格式化类改动即时生效；知识库路径、模型名、切块、排除名单"
+            "等改动需要 python index.py --full 全量重建。",
+            size=11, color=self._cols["t4"], font_family=FONT_UI, height=1.4))
+
+        self._dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("设置", size=18, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Container(
+                content=ft.Column([
+                    body,
+                    ft.Row([self._status, ft.Container(expand=True),
+                            self._cancel, self._ok],
+                           spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ], spacing=12, expand=True),
+                width=680, height=540,
+            ),
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+
+    # ---- 交互 ----
+
+    def open(self, page):
+        self.show_status("", None)
+        page.show_dialog(self._dlg)
+
+    def _save(self, e):
+        import config_editor as ce
+        updates = {}
+        for key, (inp, kind) in self._fields.items():
+            updates[key] = (kind, inp.value)
+        errors = ce.apply_updates(updates)
+        if errors:
+            first = next(iter(errors))
+            msg = errors[first]
+            self.show_status("保存失败：%s" % msg, "error")
+        else:
+            self.show_status("已保存到 data/config.json（检索类即时生效；结构类需 --full 重建）", "ok")
+
+    def _cancel_click(self, e):
+        if self._dlg:
+            self._dlg.open = False
+            self._dlg.update()
+
+    def show_status(self, msg, kind):
+        self._status.value = msg
+        self._status.visible = bool(msg)
+        self._status.color = {"ok": self._cols["success"],
+                              "error": self._cols["danger"]}.get(kind,
+                                                                 self._cols["warning"])
+        try:
+            if self._dlg:
+                self._dlg.update()
+        except RuntimeError:
+            pass  # 对话框尚未挂载到页面（冒烟/构造期）
+
+    def apply(self, colors):
+        self._cols = colors
+
+
+def _cli_name(key):
+    """字段显示名：key → 中文友好名（无映射时回退 key）。"""
+    names = {
+        "vault": "知识库路径", "exclude_dirs": "排除目录（逗号分隔）",
+        "exclude_files": "排除文件（逗号分隔）", "exclude_patterns": "排除前缀（逗号分隔）",
+        "model_name": "嵌入模型", "collection_name": "向量库名",
+        "chunk_char_limit": "单块最大字符", "short_doc_char_limit": "短文档整篇阈值",
+        "embed_batch_size": "索引嵌入批次", "encode_batch_size": "查询嵌入批次",
+        "cuda_cooldown_seconds": "CUDA 冷却秒数",
+        "lock_timeout_seconds": "锁等待上限（秒）", "lock_poll_seconds": "锁轮询间隔（秒）",
+        "heartbeat_interval": "心跳间隔（秒）", "heartbeat_timeout": "心跳停止判定（秒）",
+        "stall_timeout": "进度停滞判定（秒）",
+        "return_chunk_limit": "单块返回字符上限", "max_chunks_per_file": "同文件最多块数",
+        "truncate_mark": "截断标记", "bm25_k1": "BM25 k1", "bm25_b": "BM25 b",
+        "fusion_dense_weight": "语义权重", "fusion_bm25_weight": "关键词权重",
+        "dense_candidate_factor": "候选池系数", "dense_min_candidates": "候选池下限",
+        "default_top_k": "默认返回条数", "keep_exports": "保留导出包数",
+        "import_upsert_batch": "导入批量",
+    }
+    return names.get(key, key)
+
+
+def _kind_hint(kind):
+    return {"int": "整数", "float": "小数", "list": "逗号分隔的多个值"}[kind]

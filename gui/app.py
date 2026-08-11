@@ -26,7 +26,8 @@ from store import (  # noqa: E402
 )
 from worker import IndexWorker, read_history  # noqa: E402
 from widgets import (  # noqa: E402
-    KpiCard, StatusCard, HeartbeatPill, ProgressCard, SearchCard, LogView, DeviceBar,
+    KpiCard, StatusCard, HeartbeatPill, ProgressCard, SearchCard, LogView,
+    DeviceBar, SettingsDialog,
 )
 
 MODEL_NAME = CFG["model_name"]
@@ -104,6 +105,11 @@ class App:
             icon=ft.Icons.DARK_MODE_OUTLINED, icon_color=DARK["t2"],
             tooltip="切换深浅色主题", on_click=self._toggle_theme,
         )
+        self.settings_btn = ft.IconButton(
+            icon=ft.Icons.SETTINGS_OUTLINED, icon_color=DARK["t2"],
+            tooltip="设置", on_click=self._open_settings,
+        )
+        self.settings = SettingsDialog(self._on_settings_saved)
 
     def _build_layout(self):
         header = ft.Row([
@@ -111,6 +117,7 @@ class App:
             ft.Text("语义搜索控制台", size=20, weight=ft.FontWeight.W_700,
                     color=DARK["t1"], font_family=FONT_UI),
             ft.Container(expand=True),
+            self.settings_btn,
             self.theme_btn,
             self.heartbeat.card,
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
@@ -125,9 +132,11 @@ class App:
             self.progress.card,
             ft.VerticalDivider(width=1, color=DARK["border_faint"]),
             self.search.card,
-        ], spacing=SIZE["gap"], height=SIZE["mid_h"],
+        ], spacing=SIZE["gap"], expand=True,
            vertical_alignment=ft.CrossAxisAlignment.STRETCH)
         self.mid_row = mid
+        self.progress.card.expand = False
+        self.progress.card.width = SIZE["progress_w"]
 
         self.page.add(
             ft.Column([
@@ -139,7 +148,7 @@ class App:
                 ft.Container(height=SIZE["gap"]),
                 self.device.card,
                 ft.Container(height=SIZE["gap"]),
-                self.log_view.card,
+                ft.Container(content=self.log_view.card, height=SIZE["log_h"]),
             ], expand=True, spacing=0),
         )
 
@@ -296,6 +305,15 @@ class App:
         dlg.open = False
         dlg.update()
 
+    def _open_settings(self, e):
+        self.settings.open(self.page)
+
+    def _on_settings_saved(self, errors):
+        if errors:
+            self._snack("设置保存失败，请检查字段", is_error=True)
+        else:
+            self._snack("已保存 config.json")
+
     def _toggle_theme(self, e):
         self.colors = LIGHT if self.colors is DARK else DARK
         self.page.theme_mode = (ft.ThemeMode.LIGHT if self.colors is LIGHT
@@ -303,7 +321,7 @@ class App:
         self.page.bgcolor = self.colors["base"]
         for w in (self.kpi_files, self.kpi_chunks, self.kpi_time,
                   self.status_card, self.heartbeat, self.progress,
-                  self.search, self.log_view, self.device):
+                  self.search, self.log_view, self.device, self.settings):
             w.apply(self.colors)
         self.theme_btn.icon = (ft.Icons.LIGHT_MODE_OUTLINED if self.colors is LIGHT
                                else ft.Icons.DARK_MODE_OUTLINED)
