@@ -38,7 +38,7 @@ EMBED_BATCH_SIZE = CFG["embed_batch_size"]
 
 # 切块/清洗逻辑版本：升级后旧索引需重嵌（指纹感知不到代码升级），
 # meta 版本不匹配时 index_vault 自动按全量重建处理。
-META_VERSION = 3
+META_VERSION = 4
 
 
 class LockBusyError(RuntimeError):
@@ -578,6 +578,45 @@ def split_sentences(text, max_len=None):
     return chunks
 
 
+_LIST_ITEM_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s")
+
+
+def is_list_block(text):
+    """段落整体是否为列表体：非空行中列表项行（- * + 或 1. 等）占 ≥ 一半。
+
+    用于"列表整体成块 / 按项边界切"，避免列表被段落切拆散或句子切裁断。
+    单行列表项也算列表体（列表项常因空行被拆成单行段落，需跨段落合并）。
+    """
+    lines = [l for l in text.splitlines() if l.strip()]
+    if not lines:
+        return False
+    items = sum(1 for l in lines if _LIST_ITEM_RE.match(l))
+    return items >= 1 and items * 2 >= len(lines)
+
+
+def split_list_block(text, max_len=None):
+    """按列表项边界切分列表块：永不从列表项中间剪断。
+
+    新块只在列表项行处开启（当前块超出 max_len 时），非列表行（正文/空行）
+    跟随当前项；末尾余块保留。max_len 默认 chunk_char_limit。
+    """
+    if max_len is None:
+        max_len = CFG["chunk_char_limit"]
+    chunks = []
+    cur = []
+    for line in text.splitlines():
+        if not line.strip():
+            cur.append(line)
+            continue
+        if _LIST_ITEM_RE.match(line) and cur and len("\n".join(cur)) + len(line) > max_len:
+            chunks.append("\n".join(cur).strip())
+            cur = []
+        cur.append(line)
+    if cur:
+        chunks.append("\n".join(cur).strip())
+    return [c for c in chunks if c]
+
+
 def extract_frontmatter(text):
     """提取 frontmatter 元数据，返回 dict 和去掉 frontmatter 的正文。"""
     meta = {}
@@ -888,7 +927,9 @@ def index_vault(vault, incremental=True, full=False):
                         prev = None
                         for p in split_paragraphs(text):
                             if p.lstrip().startswith("|") and prev is not None:
-                                prev = prev + "\n\n" + p
+                                prev = prev + "\n\n" + p  # 表格并入上文（表格绑定）
+                            elif is_list_block(p) and prev is not None and is_list_block(prev):
+                                prev = prev + "\n\n" + p  # 连续列表项跨空行合并，避免拆散
                             else:
                                 if prev is not None:
                                     paras.append(prev)
@@ -912,7 +953,11 @@ def index_vault(vault, incremental=True, full=False):
                             if len(p) <= chunk_max:
                                 chunks.append((heading, p))
                             elif any(l.strip().startswith("|") for l in p.splitlines()):
-                                chunks.append((heading, p))
+                                chunks.append((heading, p))  # 含表格整体保留
+                            elif is_list_block(p):
+                                # 列表按项边界切（永不从列表项中间剪断）
+                                for sub in split_list_block(p, chunk_max):
+                                    chunks.append((heading, sub))
                             else:
                                 for s in split_sentences(p):
                                     chunks.append((heading, s))
