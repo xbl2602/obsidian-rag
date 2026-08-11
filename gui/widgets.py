@@ -544,8 +544,8 @@ class SearchCard:
             body_text = ft.Text(body, size=13, font_family=FONT_UI, color=colors["t1"],
                                 height=1.45, max_lines=6,
                                 overflow=ft.TextOverflow.ELLIPSIS,
-                                visible=False, selectable=True)
-            body_box = ft.Container(content=body_text, visible=bool(body),
+                                selectable=True)
+            body_box = ft.Container(content=body_text,
                                     padding=ft.Padding.only(top=6))
             open_btn = ft.IconButton(
                 icon=ft.Icons.OPEN_IN_NEW, icon_size=14,
@@ -571,13 +571,17 @@ class SearchCard:
                 open_btn,
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-            def make_toggle(chevron=chevron, body_text=body_text,
-                            body_box=body_box, colors=colors):
+            card_col = ft.Column(spacing=0)
+
+            def make_toggle(chevron=chevron, body_box=body_box,
+                            column=card_col, colors=colors):
                 def _toggle(e):
-                    body_text.visible = not body_text.visible
-                    body_box.visible = body_text.visible
-                    chevron.icon = (ft.Icons.EXPAND_MORE if body_text.visible
-                                    else ft.Icons.CHEVRON_RIGHT)
+                    if body_box in column.controls:
+                        column.controls.remove(body_box)
+                        chevron.icon = ft.Icons.CHEVRON_RIGHT
+                    else:
+                        column.controls.insert(1, body_box)
+                        chevron.icon = ft.Icons.EXPAND_MORE
                     e.control.page.update()
                 return _toggle
 
@@ -585,11 +589,9 @@ class SearchCard:
                 content=header, padding=0,
                 on_click=make_toggle() if body else None,
             )
+            card_col.controls.append(head_container)
             controls.append(ft.Container(
-                content=ft.Column([
-                    head_container,
-                    body_box,
-                ], spacing=0),
+                content=card_col,
                 padding=ft.Padding.all(10),
                 border_radius=SIZE["radius_control"],
                 border=ft.Border.all(1, colors["border_faint"]),
