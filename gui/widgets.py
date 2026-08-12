@@ -547,12 +547,15 @@ class SearchCard:
             rel, heading, conf = _parse_src(b["src"])
             conf_txt = _conf_label(conf)
             conf_color = _conf_color(conf, colors) if conf is not None else colors["t3"]
-            body = "\n".join(b["body"][:3]) if show_body else ""
+            # 收起态 = 前 3 行预览；展开态 = 完整正文（表格/长块不再被 GUI 砍断）
+            body_full = "\n".join(b["body"]) if show_body else ""
+            body_preview = "\n".join(b["body"][:3]) if show_body else ""
             src = b["src"] if show_body else rel
-            is_open = i in expanded and bool(body)
+            is_open = i in expanded and bool(body_full)
 
-            body_text = ft.Text(body, size=13, font_family=FONT_UI, color=colors["t1"],
-                                max_lines=6,
+            body_text = ft.Text(body_full if is_open else body_preview,
+                                size=13, font_family=FONT_UI, color=colors["t1"],
+                                max_lines=None if is_open else 6,
                                 overflow=ft.TextOverflow.ELLIPSIS,
                                 selectable=True)
             body_box = ft.Container(content=body_text,
@@ -567,7 +570,7 @@ class SearchCard:
             chevron = ft.Icon(ft.Icons.EXPAND_MORE if is_open
                               else ft.Icons.CHEVRON_RIGHT,
                               size=14, color=colors["t3"],
-                              visible=bool(body))
+                              visible=bool(body_full))
             header = ft.Row([
                 chevron,
                 ft.Text(src, size=11, font_family=FONT_MONO, color=colors["t3"],
@@ -583,7 +586,7 @@ class SearchCard:
                 open_btn,
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-            def make_toggle(i=i, expanded=expanded, body=bool(body),
+            def make_toggle(i=i, expanded=expanded, body=bool(body_full),
                             colors=colors, chevron=chevron):
                 def _toggle(e):
                     if not body:
@@ -598,7 +601,7 @@ class SearchCard:
 
             head_container = ft.Container(
                 content=header, padding=0,
-                on_click=make_toggle() if body else None,
+                on_click=make_toggle() if body_full else None,
             )
             card_controls = ([head_container] if not is_open
                              else [head_container, body_box])
@@ -609,7 +612,7 @@ class SearchCard:
                 border=ft.Border.all(1, colors["border_faint"]),
                 bgcolor=colors["surface"],
                 on_hover=self._make_hover(colors["surface"], colors["hover"]),
-                tooltip="点击标题行展开/收起命中片段" if body else None,
+                tooltip="点击标题行展开/收起命中片段" if body_full else None,
             ))
         self.results.controls = controls
         self.set_status("ok", str(len(controls)))
