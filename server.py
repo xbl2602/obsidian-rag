@@ -1,9 +1,11 @@
 """server.py — MCP server，暴露 list_libraries / search_knowledge / reindex_knowledge / index_status 工具给 opencode。
 用法：python server.py（stdio 模式，由 opencode 自动拉起）
 
-关键设计（2026-08-07 修复，2026-08-11 多库化）：
+关键设计（2026-08-07 修复，2026-08-11 多库化，2026-08-12 单例守卫）：
 - 多库：注册表 data/libraries.json（library.py 管理）。search_knowledge 的
   libraries/exclude 做白名单减法选库（空=全部库）；list_libraries 先枚举后选库；
+- 单例守卫（data/server.pid）：opencode 启动 MCP 时可能连续拉起多个实例（观察到
+  双实例 = 双份模型常驻 ~4GB + 锁竞争），后启动的实例发现已有存活实例立即退出；
 - reindex 在后台线程执行：reindex_knowledge 立即返回，进度经 data/index_progress.json
   实时落盘，AI 可随时调 index_status 查看进度 / ETA / 卡死判断；
 - 心跳由独立线程每 5s 恒定写盘（与硬件性能无关），卡死判定 = 心跳停 >15s
@@ -23,8 +25,9 @@ from index import (HEARTBEAT_TIMEOUT, LockBusyError, index_library, kb_stale,
 from library import (effective_config, list_summary, load_registry, meta_path,
                      resolve_entries)
 from retriever import hybrid_search, reset_bm25_index
+from singleton import acquire_singleton
 
-server = MCPServer("obsidian-rag", title="Obsidian RAG", version="0.2.0")
+server = MCPServer("obsidian-rag", title="Obsidian RAG", version="0.2.1")
 
 # 进程内后台索引状态（防重复启动；进度详情在 index_progress.json）
 _background = {"thread": None, "pid": None}
@@ -215,4 +218,5 @@ def index_status() -> str:
 
 
 if __name__ == "__main__":
+    acquire_singleton()
     server.run("stdio")

@@ -795,3 +795,9 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
 - **返回截断行边界（表格不拦腰切）**：索引侧"宁大勿断"保留的超长表格块（实测
   OfficeCLI-SKILL.md 单块 4779 字符）返回时被 2000 字符硬切在表格行中间；新增
   `_truncate_at_line`：截断点附近 ±300 字符内找完整行边界收边，行/表格行永不被拦腰切。
+- **单例守卫（2026-08-12）**：实测发现 opencode 启动 MCP 时可能连续拉起多个
+  server 实例（启动后 1s 内双实例，双份模型常驻 ~4GB + 写锁竞争）。新增
+  `singleton.py`：PID 文件 + 存活探测 + atexit 清理，后启动者立即退出。
+  实证：opencode 在场实例存在时，新实例被正确拒绝退出；实例退出自动清理 PID
+  文件（无残留）。单测 5 项；另发现 opencode 环境会向子进程注入 Ctrl+C
+  （KeyboardInterrupt 出现在随机位置，Python 3.14），测试进程 SIG_IGN 免疫。
