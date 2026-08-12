@@ -131,6 +131,7 @@ def _reset_bm25():
 
 _reranker = None
 _reranker_failed = False
+rerank_failures = 0  # 重排执行失败次数（eval 回归据此检测"静默降级"）
 
 
 def _get_reranker():
@@ -152,6 +153,23 @@ def _get_reranker():
 
 
 # ---------- 结果格式化 ----------
+
+def _truncate_at_line(doc):
+    """返回截断：优先落在完整行边界（表格行/段落不拦腰切），最多 ±300 字符。
+
+    索引侧对含表格的超长块"宁大勿断"整块保留（可 >2000），返回侧此前硬切
+    2000 字符会把表格行从中间切断；改为在截断点附近找行尾/行首收边。
+    """
+    cut = doc[:CHUNK_LIMIT]
+    nl = cut.rfind("\n")
+    if nl > 0 and CHUNK_LIMIT - nl <= 300:
+        cut = doc[:nl]
+    else:
+        nxt = doc.find("\n", CHUNK_LIMIT)
+        if nxt != -1 and nxt - CHUNK_LIMIT <= 300:
+            cut = doc[:nxt]
+    return cut + "\n" + TRUNCATE_MARK
+
 
 def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=False,
                     scores=None):
@@ -194,7 +212,7 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
         if hp and doc.startswith(hp + "\n"):
             doc = doc[len(hp) + 1:]
         if len(doc) > CHUNK_LIMIT:
-            doc = doc[:CHUNK_LIMIT] + "\n" + TRUNCATE_MARK
+            doc = _truncate_at_line(doc)
         lines.append(src)
         lines.append(doc)
         lines.append("---")
@@ -303,17 +321,18 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
                     m = dict(zip(got["ids"], got["documents"]))
                     for cid in cids:
                         doc_got[(name, cid)] = m.get(cid, "")
-                rr_scores = reranker.predict([(query, doc_got[(n, c)]) for n, c, _ in pool],
+                rr_scores = reranker.predict([(query, doc_got[(n, c)]) for n, _, c in pool],
                                              batch_size=16)
                 ranked_pool = [pair for pair, _ in sorted(zip(pool, rr_scores),
                                                           key=lambda x: -float(x[1]))]
                 # 全局序 = 重排池（已全局精排）+ 各库池外余量（保持各库融合序）
-                pool_keys = {(n, c) for n, _, c in pool}
                 tails = []
                 for name, collection, combined, ranked_all in lib_results:
                     tails.extend((name, collection, cid) for cid in ranked_all[rerank_n:])
                 merged = ranked_pool + tails
             except Exception as e:
+                global rerank_failures
+                rerank_failures += 1
                 print(f"[retriever] 重排失败（按库归一化合并）：{e}", file=sys.stderr)
                 merged = _merge_normalized(lib_results)
         else:

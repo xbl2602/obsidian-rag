@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import retriever  # noqa: E402
 from retriever import hybrid_search
 
 QUERIES = [
@@ -43,6 +44,10 @@ def run(top_k=5):
     t3 = sum(1 for _, p in rows if p and p <= 3)
     t5 = sum(1 for _, p in rows if p and p <= 5)
     print("\n命中: top1=%d/%d top3=%d/%d top5=%d/%d" % (t1, len(rows), t3, len(rows), t5, len(rows)))
+    # 重排降级检测：retriever.rerank_failures > 0 说明重排路径静默失败（如解包 bug），
+    # 本评估跑的是降级排序，结果不可信——显式警告（不再静默）。
+    if retriever.rerank_failures:
+        print(f"⚠ 重排器执行失败 {retriever.rerank_failures} 次（本次为降级排序结果，请修复重排路径）")
     return t1, t3, t5
 
 

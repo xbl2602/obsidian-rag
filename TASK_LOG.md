@@ -786,3 +786,12 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
   选库去重；非法库名条目加载时过滤；collection 覆盖值校验；包名加 hash 防撞名；
   export 单库刷新失败不中断 all 模式；list_summary/_chroma_is_empty 改只读
   get_collection（不产生创建副作用）。单测 8 → 14 项。
+- **重排器解包 bug（2026-08-12 定位）**：`rr_scores = reranker.predict([(query, doc_got[(n, c)]) for n, c, _ in pool])`
+  中 `pool` 元素是 (name, collection, cid)，解包写成 `n, c, _` 导致 c=Collection 对象
+  （不可哈希）→ 每次重排必抛"cannot use 'tuple' as a dict key"，except 静默降级归一化
+  合并——**自多库重构起重排路径从未真正运行过**。修复：`for n, _, c in pool`。
+  修复后 eval 回到 ADR-7 文档基线 top1=3/5、top3=5/5、top5=5/5（此前 4/5 为降级
+  模式的偶然偏优）。防线：`retriever.rerank_failures` 计数，eval 回归检测到即警告。
+- **返回截断行边界（表格不拦腰切）**：索引侧"宁大勿断"保留的超长表格块（实测
+  OfficeCLI-SKILL.md 单块 4779 字符）返回时被 2000 字符硬切在表格行中间；新增
+  `_truncate_at_line`：截断点附近 ±300 字符内找完整行边界收边，行/表格行永不被拦腰切。
