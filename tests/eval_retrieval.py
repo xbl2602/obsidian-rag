@@ -35,6 +35,17 @@ QUERIES = [
                                     "20-Projects/Summer-2026/ROCKETRY/概念/FLUENT配置与求解设置.md"]),
     ("火箭设计怎么学", ["01-Meta/user-profile/B2_Rocketry.md",
                       "20-Projects/Summer-2026/ROCKETRY/目录.md"]),
+    # 强泛化查询（2026-08-13 步骤6 加）：词面与目标笔记标题几乎零重叠，
+    # 专门检验嵌入模型的语义理解深度（Qwen3 vs bge-m3 的区分测试）。
+    ("我的职业方向怎么规划", ["01-Meta/user-profile/D2_成长路径建议.md",
+                             "01-Meta/user-profile/C3_优势风险盲点.md",
+                             "01-Meta/user-profile/D1_当前阶段与目标.md"]),
+    ("CFD 仿真要做哪些准备工作", ["20-Projects/Summer-2026/ROCKETRY/任务节点/任务流程.md",
+                                "20-Projects/Summer-2026/ROCKETRY/概念/FLUENT配置与求解设置.md"]),
+    ("写报告要注意什么", ["20-Projects/Summer-2026/ROCKETRY/报告/report_checklist.md",
+                        "20-Projects/Summer-2026/ROCKETRY/报告/report_questions.md"]),
+    ("软件许可证和授权问题", ["20-Projects/Summer-2026/ROCKETRY/概念/FLUENT配置与求解设置.md",
+                           "20-Projects/Summer-2026/AI Dev Workflow/附录/OfficeCLI-SKILL.md"]),
 ]
 
 
