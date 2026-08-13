@@ -27,6 +27,14 @@ QUERIES = [
     ("网格无关性", ["10-Areas/Aerospace/概念/网格无关性验证方法.md",
                    "20-Projects/Summer-2026/ROCKETRY/报告/report_checklist.md"]),
     ("OfficeCLI", ["20-Projects/Summer-2026/AI Dev Workflow/附录/OfficeCLI-SKILL.md"]),
+    # 泛化查询（2026-08-13 新增）：词面与目标笔记标题无重叠，检验 dense 语义
+    # 与 RRF 对"语义相近词面不同"查询的召回能力。
+    ("免费在线认证课程", ["20-Projects/Summer-2026/OTHER CERT/论点/免费入门证书清单.md",
+                      "20-Projects/Summer-2026/OTHER CERT/论点/AI证书与学习平台清单.md"]),
+    ("CFD 近壁面网格 湍流 怎么处理", ["20-Projects/Summer-2026/ROCKETRY/概念/y+控制与壁面处理策略.md",
+                                    "20-Projects/Summer-2026/ROCKETRY/概念/FLUENT配置与求解设置.md"]),
+    ("火箭设计怎么学", ["01-Meta/user-profile/B2_Rocketry.md",
+                      "20-Projects/Summer-2026/ROCKETRY/目录.md"]),
 ]
 
 
