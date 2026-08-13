@@ -39,7 +39,7 @@ EMBED_BATCH_SIZE = CFG["embed_batch_size"]
 
 # 切块/清洗逻辑版本：升级后旧索引需重嵌（指纹感知不到代码升级），
 # meta 版本不匹配时 index_vault 自动按全量重建处理。
-META_VERSION = 4
+META_VERSION = 5  # v5: chunk_char_limit 1500→600（小块语义纯净；配合 small-to-big 回填）
 
 
 class LockBusyError(RuntimeError):

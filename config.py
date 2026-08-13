@@ -25,7 +25,7 @@ DEFAULTS = {
     "collection_name": "obsidian_kb",
 
     # ---- 切块（索引粒度）----
-    "chunk_char_limit": 1500,
+    "chunk_char_limit": 600,       # 2026-08-13：1500→600（小块语义纯净，检索粒度细；主流 ~300 token）
     "short_doc_char_limit": 200,
 
     # ---- 嵌入与硬件 ----
@@ -46,6 +46,7 @@ DEFAULTS = {
     "return_chunk_limit": 2000,  # 单块返回最大字符
     "max_chunks_per_file": 3,    # 正文模式每文件最多块数
     "truncate_mark": "… [本块已截断，完整内容见源文件]",
+    "small_to_big": True,        # 命中小块时回填父节全文（v5 小块索引配套）,
     "bm25_k1": 1.5, "bm25_b": 0.75,
     "fusion_dense_weight": 0.6, "fusion_bm25_weight": 0.4,
     "dense_candidate_factor": 8,

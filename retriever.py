@@ -195,14 +195,47 @@ def _truncate_at_line(doc):
     return cut + "\n" + TRUNCATE_MARK
 
 
+def _expand_parent(collection, file, chunk_idx, hp, min_len=300):
+    """small-to-big：取命中块所在父节（同 hp 的连续块）拼接，回填上下文。
+
+    命中块过短或仅为片段时，父节（小节标题下完整内容）比小块更能支撑回答。
+    从 Chroma 取同文件全部块（一次查询），按 chunk 序号找与命中块 hp 相同的
+    连续区间，拼回完整文本。仅当父节含命中块之外的其它块（小节确实被切碎）
+    时才回填，避免小块自身重复。hp 为空（整文件一块）则返回空。
+    """
+    if not hp:
+        return ""
+    try:
+        got = collection.get(where={"file": file}, include=["metadatas", "documents"])
+    except Exception:
+        return ""
+    siblings = []
+    for cid, m, doc in zip(got["ids"], got["metadatas"], got["documents"]):
+        if m.get("hp") == hp:
+            try:
+                siblings.append((int(m.get("chunk", 0)), doc))
+            except (TypeError, ValueError):
+                continue
+    siblings.sort(key=lambda x: x[0])
+    others = [d for i, d in siblings if i != chunk_idx]
+    if not others:
+        return ""
+    parent = "\n\n".join(others)
+    if len(parent) <= min_len:
+        return ""
+    return parent
+
+
 def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=False,
-                    scores=None):
+                    scores=None, small_to_big=False):
     """多库格式化：pairs = [(库名, cid)] 按最终排序；col_map = {库名: collection}。
 
     include_body=False 时只返回 [来源] 清单（文件名+标题+块位置），不返回正文——
     供"先探查全量、再精读个别"的两阶段检索，避免正文整体塞进上下文。
     来源行带 [块 k/N] 位置标记（N 为该文件总块数，从 BM25 缓存派生）与库名前缀
     （同名文件跨库不歧义）。正文超 CHUNK_LIMIT 时截断并附显式标记。
+    small_to_big=True 时，命中块正文末尾追加其父节全文（[父节] 标记），
+    供 LLM 在碎片命中有完整上下文（2026-08-13 v5 小块索引的配套）。
     """
     got_map = {}
     by_lib = {}
@@ -235,6 +268,11 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
         hp = meta.get("hp") or ""
         if hp and doc.startswith(hp + "\n"):
             doc = doc[len(hp) + 1:]
+        if small_to_big and include_body and hp:
+            parent = _expand_parent(col_map[name], rel, int(k) if k is not None else 0,
+                                    hp)
+            if parent:
+                doc = doc + "\n\n[父节全文]\n" + parent
         if len(doc) > CHUNK_LIMIT:
             doc = _truncate_at_line(doc)
         lines.append(src)
@@ -248,7 +286,8 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
 # ---------- 混合检索 ----------
 
 def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
-                  dense_weight=None, bm25_weight=None, include_body=True, with_scores=False):
+                  dense_weight=None, bm25_weight=None, include_body=True, with_scores=False,
+                  small_to_big=None):
     """混合检索：dense 向量 + BM25 关键词，RRF 融合后取 top_k。
 
     libraries/exclude 选库（空 = 全部库；"A,B" 指定；exclude 做减法，见 library.resolve_entries）：
@@ -264,6 +303,8 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
         dense_weight = CFG["fusion_dense_weight"]
     if bm25_weight is None:
         bm25_weight = CFG["fusion_bm25_weight"]
+    if small_to_big is None:
+        small_to_big = CFG["small_to_big"]
     folder = _norm_folder(folder)
 
     try:
@@ -390,7 +431,8 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
                 scores[(name, cid)] = min(1.0, combined[cid] / rrf_max)
 
     return _format_results(col_map, ranked_pairs, file_counts=file_counts,
-                           include_body=include_body, capped=capped, scores=scores)
+                           include_body=include_body, capped=capped, scores=scores,
+                           small_to_big=small_to_big)
 
 
 def _rrf_combine(dense_ids, dense_dists, bm25_map, k=2):
