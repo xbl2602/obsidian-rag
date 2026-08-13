@@ -225,13 +225,14 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
 
 def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
                   dense_weight=None, bm25_weight=None, include_body=True, with_scores=False):
-    """混合检索：dense 向量 + BM25 关键词，加权融合后取 top_k。
+    """混合检索：dense 向量 + BM25 关键词，RRF 融合后取 top_k。
 
     libraries/exclude 选库（空 = 全部库；"A,B" 指定；exclude 做减法，见 library.resolve_entries）：
       最终范围 = (libraries 非空 ? libraries : 全部) − exclude。
-    跨库排序：每库融合取 top rerank_candidates 进全局重排池，重排器（纯文本打分）
+    跨库排序：每库 RRF 融合取 top rerank_candidates 进全局重排池，重排器（纯文本打分）
     全局精排；重排不可用时按库归一化融合分合并。结果来源行带 <库名>/<相对路径> 前缀。
-    with_scores=True 时每条来源行附加 [置信度 x.xx]（全局最高分归一化为 0-1）。
+    with_scores=True 时每条来源行附加 [置信度 x.xx]（RRF 双路一致度归一化 0-1）。
+    dense_weight/bm25_weight 保留仅为 API 兼容，RRF 融合不再使用（排名制天然无权重）。
     """
     if top_k is None:
         top_k = CFG["default_top_k"]
@@ -286,18 +287,11 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
         for rel, cnt in Counter(bm25_files).items():
             file_counts[(name, rel)] = cnt
 
-        # 融合打分（dict 查找替代 in/.index() 的 O(M·N) 列表扫描）
-        dense_map = dict(zip(dense_ids, dense_dists))
-        combined = {}
-        for cid in set(dense_ids) | set(bm25_map):
-            score = 0.0
-            d = dense_map.get(cid)
-            if d is not None:
-                score += dense_weight * (1.0 / (1.0 + d))  # distance 越小越相似，转成 0-1 相似度
-            b = bm25_map.get(cid)
-            if b:
-                score += bm25_weight * (b / (1.0 + b))  # 归一化
-            combined[cid] = score
+        # RRF 融合（2026-08-13 起）：两路按排名贡献分，消除量纲差异。
+        # 原方案 dense_weight·1/(1+d) + bm25_weight·b/(1+b) 中 BM25 无界、b/(1+b)≈1
+        # 恒主导，dense 语义被废——Qdrant 明确"固定 alpha 加权原始分不可靠"。
+        # RRF：score = Σ 1/(k+rank)，rank 从 1 起；dense 按距离升序、BM25 按分数降序。
+        combined = _rrf_combine(dense_ids, dense_dists, bm25_map)
 
         ranked_all = [c for c, _ in sorted(combined.items(), key=lambda x: x[1], reverse=True)]
         lib_results.append((name, collection, combined, ranked_all))
@@ -361,20 +355,40 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
 
     scores = None
     if with_scores:
-        # 绝对置信度：直接用融合分（dense 1/(1+d) 与 BM25 b/(1+b) 均映射到 0-1，
-        # 加权和上限 = dense_weight+bm25_weight），除以权重和封顶到 [0,1]。
-        # 不再除以本轮最高分——弱匹配显示真实低分，避免"矮子里拔将军"。
-        total_w = dense_weight + bm25_weight
+        # 绝对置信度（RRF 版）：RRF 分最大 = 1/(k+1)+1/(k+1)（两路都第一），
+        # 除以该上限归一化到 0-1。语义 = 双路排名的绝对一致度：
+        # 两路都排前 → 高；仅一路靠前 → 中低。不随本轮最高分漂移。
+        k = 2
+        rrf_max = 2.0 / (k + 1)
         scores = {}
         for name, collection, combined, ranked_all in lib_results:
             for cid in ranked_all:
-                if total_w > 0:
-                    scores[(name, cid)] = min(1.0, combined[cid] / total_w)
-                else:
-                    scores[(name, cid)] = combined[cid]
+                scores[(name, cid)] = min(1.0, combined[cid] / rrf_max)
 
     return _format_results(col_map, ranked_pairs, file_counts=file_counts,
                            include_body=include_body, capped=capped, scores=scores)
+
+
+def _rrf_combine(dense_ids, dense_dists, bm25_map, k=2):
+    """RRF 融合两路排名：score = Σ_route 1/(k + rank_route)。
+
+    dense 路 rank 按距离升序（dense_ids 由 Chroma 按距离排好），BM25 路 rank 按
+    分数降序。只在一路出现的候选只贡献单路项。返回 {cid: RRF 分}。
+    """
+    dense_rank = {cid: i + 1 for i, cid in enumerate(dense_ids)}
+    bm25_sorted = sorted(bm25_map.items(), key=lambda x: x[1], reverse=True)
+    bm25_rank = {cid: i + 1 for i, (cid, _) in enumerate(bm25_sorted)}
+    combined = {}
+    for cid in set(dense_ids) | set(bm25_map):
+        s = 0.0
+        r = dense_rank.get(cid)
+        if r:
+            s += 1.0 / (k + r)
+        r = bm25_rank.get(cid)
+        if r:
+            s += 1.0 / (k + r)
+        combined[cid] = s
+    return combined
 
 
 def _merge_normalized(lib_results):

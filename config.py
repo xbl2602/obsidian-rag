@@ -51,7 +51,7 @@ DEFAULTS = {
     "dense_candidate_factor": 8,
     "dense_min_candidates": 200,
     "rerank_model": "BAAI/bge-reranker-v2-m3",  # 两阶段精排的 cross-encoder 模型
-    "rerank_candidates": 10,   # 融合 top N 候选交给重排器精排
+    "rerank_candidates": 50,   # 融合 top N 候选交给重排器精排（2026-08-13：10→50，融合排序有误差，池太小好块进不了决赛）
     "rerank_enabled": True,    # 重排总开关（False = 纯融合排序）
 
     # ---- 工具默认值 ----
