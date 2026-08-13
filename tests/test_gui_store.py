@@ -2,6 +2,7 @@
 
 运行：cd obsidian-rag && .venv\\Scripts\\python tests\\test_gui_store.py
 """
+import json
 import sys
 import time
 from pathlib import Path
@@ -12,11 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui"))
 from gui.store import (  # noqa: E402
     STATE_NONE, STATE_OK, STATE_STALE,
     HB_DEAD, HB_DONE, HB_IDLE, HB_RUNNING, HB_STALLED,
-    heartbeat_state, progress_ratio,
+    heartbeat_state, progress_ratio, meta_stats_for, library_state,
+    library_snapshot, is_library_dir,
 )
-from gui.app import format_elapsed, format_mmss  # noqa: E402 纯函数，不触发窗口
+from gui.app import format_elapsed, format_mmss, App  # noqa: E402 纯函数，不触发窗口
 from gui.theme import DARK  # noqa: E402
 from gui.widgets import _parse_src, _conf_color, _conf_label  # noqa: E402
+from unittest.mock import patch
 
 
 def make_progress(**kw):
@@ -154,6 +157,160 @@ def test_conf_label():
     assert _conf_label(0.874) == "87%"
     assert _conf_label(0.5) == "50%"
     assert _conf_label(0.004) == "0%"
+
+
+# ---- 多库（v3）：不加载模型，用 mock 配置与临时 meta ----
+
+def _fake_cfg(name, path, collection=None):
+    return {
+        "name": name, "path": path,
+        "collection": collection or "kb_%s" % name,
+        "exclude_dirs": [], "exclude_files": set(),
+        "exclude_patterns": (), "extensions": ["md"],
+        "chunk_char_limit": 1500, "short_doc_char_limit": 200,
+    }
+
+
+def _fake_meta(path, files):
+    """写临时 meta：{rel: {"chunks": n, ...}}。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({f: {"chunks": n} for f, n in files.items()}),
+                    encoding="utf-8")
+
+
+def _empty_cfg(name, path):
+    return _fake_cfg(name, path)
+
+
+def test_meta_stats_for():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        mp = Path(td) / "index_meta_A.json"
+        _fake_meta(mp, {"a.md": 3, "b.md": 2, "notdict": 0})
+        cfg = _fake_cfg("A", td)
+        with patch("gui.store.meta_path", return_value=mp):
+            files, chunks = meta_stats_for(cfg)
+        assert (files, chunks) == (3, 5)  # notdict 也是 dict 条目
+
+
+def test_meta_stats_for_missing():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        mp = Path(td) / "nope.json"
+        cfg = _fake_cfg("A", td)
+        with patch("gui.store.meta_path", return_value=mp):
+            files, chunks = meta_stats_for(cfg)
+        assert (files, chunks) == (0, 0)
+
+
+def test_library_state_none_without_meta():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _fake_cfg("A", td)
+        with patch("gui.store.meta_path",
+                   return_value=Path(td) / "index_meta_A.json"), \
+             patch("gui.store.kb_stale", return_value=(False, {})):
+            st, files, chunks = library_state(cfg)
+        assert st == STATE_NONE and files == 0 and chunks == 0
+
+
+def test_library_state_ok_and_stale():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        mp = Path(td) / "index_meta_A.json"
+        _fake_meta(mp, {"a.md": 3})
+        cfg = _fake_cfg("A", td)
+        with patch("gui.store.meta_path", return_value=mp), \
+             patch("gui.store.kb_stale", return_value=(False, {})):
+            assert library_state(cfg)[0] == STATE_OK
+        with patch("gui.store.meta_path", return_value=mp), \
+             patch("gui.store.kb_stale", return_value=(True, {})):
+            assert library_state(cfg)[0] == STATE_STALE
+
+
+def test_library_snapshot_aggregation():
+    """聚合规则：任一 stale → stale；全 none → none；否则 ok。"""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        def mk(name, files):
+            cfg = _fake_cfg(name, str(Path(td) / name))
+            (Path(td) / name).mkdir(exist_ok=True)
+            mp = Path(td) / ("index_meta_%s.json" % name)
+            if files:
+                _fake_meta(mp, {f: 1 for f in files})
+            return cfg
+
+        cfg_ok = mk("A", {"a.md": 1})          # meta 有数据，stale=False → ok
+        cfg_none = mk("B", {})                 # 无 meta → none
+        entries = [cfg_ok, cfg_none]
+
+        def fake_entries():
+            return entries
+
+        def fake_kb_stale(vault, meta_file=None, collection_name=None, **kw):
+            return False, {}
+
+        with patch("gui.store.library_entries", side_effect=fake_entries), \
+             patch("gui.store.meta_path",
+                   side_effect=lambda n: Path(td) / ("index_meta_%s.json" % n)), \
+             patch("gui.store.kb_stale", side_effect=fake_kb_stale):
+            agg, rows = library_snapshot()
+        assert agg == STATE_OK
+        assert {r[0] for r in rows} == {"A", "B"}
+        assert rows[0][3] == 1  # A: 1 块
+        assert rows[1][3] == 0  # B: 0 块
+
+
+def test_library_snapshot_stale_wins():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cfg_ok = _fake_cfg("A", td)
+        cfg_stale = _fake_cfg("B", td)
+        mp = Path(td) / "m.json"
+        _fake_meta(mp, {"a.md": 1})  # 有 meta 才会走到 kb_stale
+        with patch("gui.store.library_entries", return_value=[cfg_ok, cfg_stale]), \
+             patch("gui.store.meta_path", return_value=mp), \
+             patch("gui.store.kb_stale",
+                   side_effect=[(False, {}), (True, {})]):
+            agg, _ = library_snapshot()
+        assert agg == STATE_STALE
+
+
+def test_library_snapshot_all_none():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        with patch("gui.store.library_entries", return_value=[
+                _fake_cfg("A", td), _fake_cfg("B", td)]), \
+             patch("gui.store.meta_path", return_value=Path(td) / "m.json"):
+            agg, rows = library_snapshot()
+        assert agg == STATE_NONE
+        assert len(rows) == 2
+
+
+def test_library_snapshot_empty_registry():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        with patch("gui.store.library_entries", return_value=[]):
+            agg, rows = library_snapshot()
+        assert agg == STATE_NONE and rows == []
+
+
+def test_is_library_dir():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        assert not is_library_dir(td)
+        (Path(td) / ".obsidian").mkdir()
+        assert is_library_dir(td)
+        assert not is_library_dir(str(Path(td) / "nope"))
+    assert not is_library_dir("")
+
+
+def test_split_lib_rel():
+    from gui.app import App
+    assert App._split_lib_rel("Obsidian Vault/docs/foo.md") == \
+        ("Obsidian Vault", "docs/foo.md")
+    assert App._split_lib_rel("a/b/c.md") == ("a", "b/c.md")
+    assert App._split_lib_rel("nested.md") == (None, "nested.md")  # 无斜杠 = 无前缀
 
 
 if __name__ == "__main__":

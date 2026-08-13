@@ -30,11 +30,18 @@ class IndexWorker:
     def running(self):
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, full=False):
-        """启动索引子进程（追加到现有日志文件）。已在运行时返回 False。"""
+    def start(self, full=False, library=""):
+        """启动索引子进程（追加到现有日志文件）。已在运行时返回 False。
+
+        library：空 = 全部库（index.py 默认）；否则 --library <名> 只索引该库。
+        """
         if self.running:
             return False
-        cmd = [str(sys.executable), "index.py", "--full"] if full else [str(sys.executable), "index.py"]
+        cmd = [str(sys.executable), "index.py"]
+        if library:
+            cmd += ["--library", library]
+        if full:
+            cmd += ["--full"]
         if os.name == "nt":
             self.proc = subprocess.Popen(
                 cmd,
@@ -58,7 +65,9 @@ class IndexWorker:
                 errors="replace",
                 bufsize=1,
             )
-        self._stamp(self._fmt("── 索引任务启动（pid=%s, 全量=%s）" % (self.proc.pid, full)))
+        self._stamp(self._fmt("── 索引任务启动（pid=%s, 全量=%s%s）"
+                              % (self.proc.pid, full,
+                                 (", 库=%s" % library) if library else "")))
         threading.Thread(target=self._reader, daemon=True).start()
         threading.Thread(target=self._waiter, daemon=True).start()
         return True

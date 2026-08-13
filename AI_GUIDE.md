@@ -119,3 +119,19 @@ with gzip.open("payload.jsonl.gz", "rt", encoding="utf-8") as f:
 - 不要把 `vault_export/` 放在 NFS 挂载盘（fcntl 文件锁在 NFS 上不可靠）
 - `--full` 全量重建耗时 ~40s（162 文件/1462 块实测）且需模型，非必要勿跑
 - 本包为个人笔记数据，请勿再分发或提交到公开仓库
+
+## 8. 图形控制台（GUI）启动/关闭约定（AI 必须遵守）
+
+**启动**（必须用 pythonw，否则残留 CMD 黑窗）：
+```powershell
+Start-Process -FilePath "C:\Users\xbl26\projects\obsidian-rag\.venv\Scripts\pythonw.exe" -ArgumentList "gui\app.py" -WorkingDirectory "C:\Users\xbl26\projects\obsidian-rag"
+```
+
+**关闭**（必须用 stop.py，禁止 Stop-Process 单杀）：
+```powershell
+C:\Users\xbl26\projects\obsidian-rag\.venv\Scripts\python.exe gui\stop.py
+```
+
+原因：flet 桌面应用是**三层进程**（pythonw 主 → pythonw 子 → flet.exe 渲染窗口）。
+单杀 python 会让 flet.exe 成孤儿残留；stop.py 按命令行匹配 python*+flet.exe 全清，
+并清理 PID 文件。

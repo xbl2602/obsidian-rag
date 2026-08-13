@@ -5,9 +5,11 @@
 
 运行：cd obsidian-rag && .venv\\Scripts\\python tests\\smoke_gui.py
 """
+import os
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -55,12 +57,15 @@ class SimpleNamespace:
 
 
 def main():
+    import sys as _sys
+    _sys.modules.pop("app", None)
     from flet.controls.page import Page  # noqa: F401 确保 flet 可导入
     import flet as ft
 
     ft.run = lambda main: None  # 防误触发
 
-    from app import App
+    import gui.app as appmod
+    App = appmod.App
 
     ns = SimpleNamespace()
     page = FakePage()
@@ -133,6 +138,99 @@ def main():
     if not opened or "obsidian://open" not in opened[0]:
         raise AssertionError("点击结果未走 Obsidian URI: %r" % opened)
     print("    跳转 URI OK: %s" % opened[0])
+
+    print("7/8 多库组件冒烟（库选择胶囊 / 库管理对话框 / 多库打开）：")
+    from widgets import ALL_LIBRARIES
+    if app.lib_picker.value != "":
+        raise AssertionError("全部库默认 value 应为空串: %r" % app.lib_picker.value)
+    if not app.lib_picker.is_all:
+        raise AssertionError("默认应为全部库模式")
+    if app.lib_picker.text.value != "全部库":
+        raise AssertionError("胶囊文本应为全部库: %r" % app.lib_picker.text.value)
+    if not app.lib_picker.card.visible:
+        raise AssertionError("库选择胶囊不可见")
+    if not app.lib_manager._list or app.lib_manager._dlg is None:
+        raise AssertionError("库管理对话框未构建")
+    app._open_library_manager(None)  # FakePage.show_dialog 已实现
+    print("    胶囊默认值 / 库管理对话框构建 OK（库数 %d）" %
+          len(app.lib_picker._names))
+
+    # 库选择对话框：打开 → 勾选 1 个 → 确定 → 白名单并查
+    app.lib_picker._page = page
+    picked = []
+    app.lib_picker._on_change = lambda c: picked.append(c)
+    app.lib_picker._open(None)
+    keys = list(app.lib_picker._boxes)
+    if not keys:
+        raise AssertionError("库选择对话框未构建选项")
+    target = keys[0]
+    for k, b in app.lib_picker._boxes.items():
+        b.value = (k == target)
+    app.lib_picker._sync_from_boxes()
+    app.lib_picker._confirm(None)
+    if app.lib_picker.value != target:
+        raise AssertionError("白名单 value 错误: %r != %r" %
+                             (app.lib_picker.value, target))
+    if not picked or picked[0] != {target}:
+        raise AssertionError("选择回调未触发: %r" % picked)
+    print("    白名单并查选择/回调 OK: %s" % app.lib_picker.value)
+
+    # 反选：全选后取消一个 → value = 其余库
+    app.lib_picker._open(None)
+    app.lib_picker._check_all(None)
+    box0 = app.lib_picker._boxes[keys[0]]
+    box0.value = False
+    app.lib_picker._sync_from_boxes()
+    app.lib_picker._confirm(None)
+    expected = ",".join(sorted(keys[1:]))
+    if app.lib_picker.value != expected:
+        raise AssertionError("反选 value 错误: %r != %r" %
+                             (app.lib_picker.value, expected))
+    app.lib_picker._on_change = app._on_library_selected
+    app.lib_picker._open(None)
+    app.lib_picker._check_all(None)
+    app.lib_picker._confirm(None)
+    if app.lib_picker.value != "":
+        raise AssertionError("恢复全部库失败: %r" % app.lib_picker.value)
+    print("    反选（全选-1）/ 恢复全部库 OK: %s" % expected)
+
+    # 多库打开：注册表内库名 + 非 Obsidian 库 → 系统打开（os.startfile 直开路径）
+    fake_cfg = {"name": "Books", "path": "C:/fake/books"}
+    app._lib_by_name["Books"] = fake_cfg
+    opened = []
+    appmod.os.startfile = lambda u: opened.append(u)
+    try:
+        with patch("gui.app.is_library_dir", return_value=False):
+            app._open_result("Books/notes/a.md")
+        if not opened or os.path.normpath(str(opened[0])) != \
+                os.path.normpath("C:/fake/books/notes/a.md"):
+            raise AssertionError("多库非 Obsidian 库未走系统打开: %r" % opened)
+        with patch("gui.app.is_library_dir", return_value=True):
+            app._open_result("Books/notes/b.md")
+        if not opened or "obsidian://open" not in str(opened[-1]):
+            raise AssertionError("多库 Obsidian 库未走 URI: %r" % opened)
+    finally:
+        appmod.os.startfile = orig_startfile
+    print("    多库打开（系统/URI 两路）OK: %s" % [str(x)[:40] for x in opened])
+
+    print("8/8 按库搜索参数 / 索引参数...")
+    app.lib_picker._open(None)
+    app.lib_picker._boxes = {k: b for k, b in app.lib_picker._boxes.items()}
+    if len(app.lib_picker._names) < 1:
+        raise AssertionError("无库可测")
+    first = app.lib_picker._names[0]
+    for k, b in app.lib_picker._boxes.items():
+        b.value = (k == first)
+    app.lib_picker._sync_from_boxes()
+    app.lib_picker._confirm(None)
+    if app._selected_library_arg() != first:
+        raise AssertionError("选中库参数错误: %r" % app._selected_library_arg())
+    app.lib_picker._open(None)
+    app.lib_picker._check_all(None)
+    app.lib_picker._confirm(None)
+    if app._selected_library_arg() != "":
+        raise AssertionError("全部库参数应为空串: %r" % app._selected_library_arg())
+    print("    选库参数 OK")
 
     print("\n冒烟测试全部通过")
 

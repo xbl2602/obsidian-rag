@@ -116,11 +116,11 @@ class StatusCard:
         self.card.height = SIZE["kpi_h"]
         self._colors = colors
 
-    def set_state(self, state, colors):
+    def set_state(self, state, colors, sub=None):
         self.dot.bgcolor = colors[self.COLOR[state]]
-        main, sub = self.TEXT[state]
+        main, default_sub = self.TEXT[state]
         self.title.value = main
-        self.sub.value = sub
+        self.sub.value = sub if sub is not None else default_sub
 
     def apply(self, colors):
         self._colors = colors
@@ -355,8 +355,9 @@ class ProgressCard:
             text.color = colors["t3"]
             chip.bgcolor = ft.Colors.with_opacity(0.06, colors["t4"])
 
-    def update(self, progress, ratio, colors, elapsed_txt, eta_txt):
+    def update(self, progress, ratio, colors, elapsed_txt, eta_txt, idle_summary=""):
         phase = progress.get("phase") or "idle"
+        lib = progress.get("library")
         self.set_phase(phase, colors)
         self.bar.value = ratio
         self.bar.color = colors[PHASE_COLOR.get(phase, "accent")]
@@ -371,6 +372,11 @@ class ProgressCard:
             self.pct.color = colors["t3"]
         self.timer.value = elapsed_txt
         self.eta.value = eta_txt
+        if not progress.get("running"):
+            # 空闲/完成态：显示全库汇总，而不是上一次任务的统计
+            # （否则会把 148/148 这类任务数字误读成全库总量）
+            self.count.value = idle_summary or ""
+            return
         if phase == "embedding":
             done, total = progress.get("chunks_done"), progress.get("chunks_total")
             self.count.value = "块 %s/%s" % (done, total) if done is not None else ""
@@ -383,6 +389,9 @@ class ProgressCard:
                 self.count.value = "文件 %s/%s · 块 %s/%s" % (done, total, f[0], f[1])
             else:
                 self.count.value = "文件 %s/%s" % (done, total) if done is not None else ""
+        if lib:
+            self.count.value = (self.count.value + " ｜ 库：%s" % lib
+                                if self.count.value else "库：%s" % lib)
 
     def set_last(self, text, colors, running=False):
         self.last_chip.content.value = text
@@ -791,9 +800,10 @@ class DeviceBar:
         )
         self._colors = colors
 
-    def update(self, device, model, files, chunks):
-        self.info.value = "%s · %s ｜ 已索引 %d 文件 / %d 块" % (
-            device or "—", model or "—", files, chunks)
+    def update(self, device, model, files, chunks, library=""):
+        lib_txt = (" ｜ 库：%s" % library) if library and library != ALL_LIBRARIES else ""
+        self.info.value = "%s · %s%s ｜ 已索引 %d 文件 / %d 块" % (
+            device or "—", model or "—", lib_txt, files, chunks)
 
     def apply(self, colors):
         self.btn_vault.icon_color = colors["t2"]
@@ -954,3 +964,599 @@ def _cli_name(key):
 def _kind_hint(kind):
     return {"int": "整数", "float": "小数", "list": "逗号分隔的多个值",
             "bool": "true / false"}[kind]
+
+
+# ---- 库选择下拉 ----
+
+ALL_LIBRARIES = "<全部库>"
+
+
+class LibraryPicker:
+    """库选择胶囊（header）：多选库范围，点击弹勾选对话框。
+
+    - `checked`：None = 全部库（libraries=""，新增库自动纳入）；set = 白名单
+      并查（libraries="A,B"）；反选 = 全勾后取消想排除的库（同一机制）。
+    - `value`：返回可直接传给 hybrid_search 的 libraries 参数字符串。
+    不用 Dropdown（flet 0.86 桌面端 dense 下拉渲染不可靠）；
+    胶囊外观与心跳胶囊同构（已验证可渲染），选择走 AlertDialog + Checkbox。
+    """
+
+    def __init__(self, on_change, colors=DARK):
+        self._on_change = on_change
+        self._colors = colors
+        self._names = []
+        self._checked = None        # None = 全部库；set = 白名单
+        self._boxes = {}            # key -> Checkbox
+        self._page = None
+        self._dlg = None
+        self.icon = ft.Icon(ft.Icons.LIBRARY_BOOKS_OUTLINED, size=14,
+                            color=colors["accent"])
+        self.text = ft.Text("全部库", size=12, weight=ft.FontWeight.W_600,
+                            color=colors["t1"], font_family=FONT_UI)
+        self.chevron = ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=18,
+                               color=colors["t3"])
+        self.card = ft.Container(
+            content=ft.Row([self.icon, self.text, self.chevron], spacing=6,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            height=SIZE["pill_h"],
+            padding=ft.Padding.symmetric(horizontal=SIZE["pill_pad_x"]),
+            border_radius=SIZE["radius_pill"],
+            bgcolor=ft.Colors.with_opacity(0.08, colors["t4"]),
+            border=ft.Border.all(1, colors["border_faint"]),
+            on_click=self._open,
+            tooltip="检索与重建目标：全部库 / 多库并查 / 反选",
+        )
+
+    @property
+    def value(self):
+        """libraries 参数字符串：全部库 → ''；白名单 → 'A,B'（排序）。"""
+        if self._checked is None or not self._names:
+            return ""
+        return ",".join(sorted(self._checked))
+
+    @property
+    def selected_names(self):
+        """当前选中的库名集合（全部库时 = 全部注册库）。"""
+        if self._checked is None:
+            return set(self._names)
+        return set(self._checked)
+
+    @property
+    def is_all(self):
+        return self._checked is None or not self._names
+
+    def _summary_text(self):
+        if self.is_all:
+            return "全部库"
+        checked = self._checked or set()
+        n = len(checked)
+        if n == 0:
+            return "未选库"
+        if n == 1:
+            return next(iter(checked))
+        return "%d 个库" % n
+
+    def _open(self, e):
+        colors = self._colors
+        self._boxes = {}
+        body = ft.Column(spacing=2)
+
+        def make_box(key, title, sub):
+            box = ft.Checkbox(
+                value=(self._checked is None or key in self._checked),
+                active_color=colors["accent"],
+                check_color=colors["on_accent"],
+                on_change=self._box_changed,
+                data=key,
+            )
+            row = ft.Container(
+                content=ft.Row([
+                    box,
+                    ft.Column([
+                        ft.Text(title, size=13, color=colors["t1"],
+                                font_family=FONT_UI),
+                        ft.Text(sub, size=11, color=colors["t3"],
+                                font_family=FONT_UI),
+                    ], spacing=1, expand=True),
+                ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                on_click=lambda _e, k=key: self._toggle(k),
+                padding=ft.Padding.symmetric(horizontal=6, vertical=4),
+                border_radius=SIZE["radius_control"],
+            )
+            self._boxes[key] = box
+            body.controls.append(row)
+
+        for n in self._names:
+            make_box(n, n, "勾选 = 纳入检索与重建范围")
+        self._hint = ft.Text("提示：全选 = 全部库（新增库自动纳入）；取消勾选某库 = 反选排除。",
+                             size=11, color=colors["t4"], font_family=FONT_UI,
+                             height=1.4)
+        self._dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("选择库范围", size=16, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.TextButton("全选", icon=ft.Icons.SELECT_ALL,
+                                      on_click=self._check_all),
+                        ft.TextButton("反选", icon=ft.Icons.FLIP,
+                                      on_click=self._invert),
+                        ft.Container(expand=True),
+                    ]),
+                    ft.Container(
+                        content=ft.ListView([body], spacing=2, padding=0),
+                        height=240, expand=False,
+                    ),
+                    self._hint,
+                ], spacing=6),
+                width=400,
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=self._cancel),
+                ft.FilledButton(
+                    "确定", style=ft.ButtonStyle(
+                        bgcolor=colors["accent"], color=colors["on_accent"],
+                        shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                        text_style=ft.TextStyle(font_family=FONT_UI,
+                                                weight=ft.FontWeight.W_600)),
+                    on_click=self._confirm,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+        if self._page is not None:
+            self._page.show_dialog(self._dlg)
+
+    def _box_changed(self, e):
+        self._sync_from_boxes()
+
+    def _toggle(self, key):
+        box = self._boxes.get(key)
+        if box is None:
+            return
+        box.value = not box.value
+        self._sync_from_boxes()
+        try:
+            box.update()
+        except RuntimeError:
+            pass
+
+    def _sync_from_boxes(self):
+        checked = {k for k, b in self._boxes.items() if b.value}
+        self._checked = None if checked == set(self._names) else checked
+
+    def _check_all(self, e):
+        for b in self._boxes.values():
+            b.value = True
+        self._checked = None
+        self._update_dlg()
+
+    def _invert(self, e):
+        for b in self._boxes.values():
+            b.value = not b.value
+        self._sync_from_boxes()
+        self._update_dlg()
+
+    def _update_dlg(self):
+        try:
+            if self._dlg:
+                self._dlg.update()
+        except RuntimeError:
+            pass
+
+    def _confirm(self, e):
+        self._close_dlg()
+        self.text.value = self._summary_text()
+        if self._on_change:
+            self._on_change(self._checked)
+
+    def _cancel(self, e):
+        self._close_dlg()
+
+    def _close_dlg(self):
+        if self._dlg:
+            self._dlg.open = False
+            try:
+                self._dlg.update()
+            except RuntimeError:
+                pass
+
+    def set_names(self, names):
+        """刷新库名列表（全部库模式保持；白名单模式剔除已注销的库）。"""
+        self._names = list(names)
+        if self._checked is not None:
+            self._checked = set(self._checked) & set(names)
+            if self._checked == set(names):
+                self._checked = None
+            self.text.value = self._summary_text()
+        self.card.disabled = not self._names
+        self.card.visible = True
+
+    def apply(self, colors):
+        self._colors = colors
+        self.icon.color = colors["accent"]
+        self.text.color = colors["t1"]
+        self.chevron.color = colors["t3"]
+        self.card.bgcolor = ft.Colors.with_opacity(0.08, colors["t4"])
+        self.card.border = ft.Border.all(1, colors["border_faint"])
+
+
+# ---- 库管理对话框 ----
+
+_LIB_CONFIG_NAMES = {
+    "exclude_dirs": "排除目录（逗号分隔，相对库路径）",
+    "exclude_files": "排除文件（逗号分隔）",
+    "exclude_patterns": "排除前缀（逗号分隔）",
+    "chunk_char_limit": "单块最大字符",
+    "short_doc_char_limit": "短文档整篇阈值",
+    "extensions": "可索引扩展名（逗号分隔）",
+    "collection": "Chroma collection 名",
+}
+_LIB_LIST_KEYS = ("exclude_dirs", "exclude_files", "exclude_patterns", "extensions")
+_LIB_INT_KEYS = ("chunk_char_limit", "short_doc_char_limit")
+
+
+class LibraryManagerDialog:
+    """库管理对话框：列库（块数/最近索引/覆盖项）、添加、配置、移除、打开文件夹。
+
+    on_changed(rows)：注册表变化后回调（App 刷新下拉与 KPI）。
+    调用 library.py 的既有函数（add_library/remove_library/set_config/unset_config），
+    与 CLI 行为完全一致；块数取自 list_summary()（不加载模型）。
+    """
+
+    def __init__(self, on_changed, colors=DARK):
+        self._on_changed = on_changed
+        self._cols = colors
+        self._page = None
+        self._rows = []            # list_summary() 行
+        self._dlg = None
+        self._list = ft.ListView(spacing=SIZE["gap_tight"], expand=True, padding=0)
+        self._status = ft.Text("", size=12, color=colors["warning"],
+                               font_family=FONT_UI, visible=False, expand=True)
+        self._btn_add = ft.FilledButton(
+            "添加库", icon=ft.Icons.ADD, height=36,
+            style=ft.ButtonStyle(
+                bgcolor=colors["accent"], color=colors["on_accent"],
+                shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                text_style=ft.TextStyle(font_family=FONT_UI, weight=ft.FontWeight.W_600),
+            ),
+            on_click=self._open_add,
+        )
+        self._btn_close = ft.TextButton("关闭", on_click=self._close)
+        self._build()
+
+    # ---- 构建 ----
+
+    def _build(self):
+        body = ft.Column([
+            self._list,
+            ft.Row([self._status, ft.Container(expand=True),
+                    self._btn_close, self._btn_add],
+                   spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ], spacing=SIZE["gap_tight"], expand=True)
+        self._dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("库管理", size=18, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Container(content=body, width=760, height=460),
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+        self._build_rows([])
+
+    def _build_rows(self, rows):
+        colors = self._cols
+        controls = []
+        if not rows:
+            controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.LIBRARY_ADD_OUTLINED, color=colors["t4"], size=36),
+                    ft.Text("尚未注册任何库。点击右上『添加库』注册一个文件夹。",
+                            size=13, color=colors["t2"], font_family=FONT_UI),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+                alignment=ft.Alignment.CENTER, expand=True, padding=40,
+            ))
+        for r in rows:
+            over = r["overrides"] or "全部继承全局"
+            controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.FOLDER_OUTLINED, size=16, color=colors["accent"]),
+                        ft.Text(r["name"], size=14, weight=ft.FontWeight.W_700,
+                                color=colors["t1"], font_family=FONT_UI, expand=True),
+                        ft.Text("块 %s" % r["blocks"], size=12,
+                                font_family=FONT_MONO, color=colors["t3"]),
+                    ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Text(r["path"], size=11, font_family=FONT_MONO,
+                            color=colors["t3"], max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Row([
+                        ft.Text("最近索引：%s" % _fmt_ts(r["last_indexed"]),
+                                size=11, color=colors["t4"], font_family=FONT_MONO),
+                        ft.Text("·", size=11, color=colors["t4"]),
+                        ft.Text("覆盖：%s" % over, size=11, color=colors["t4"],
+                                font_family=FONT_MONO, expand=True, max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.TextButton("打开文件夹", icon=ft.Icons.FOLDER_OPEN,
+                                      style=ft.ButtonStyle(
+                                          text_style=ft.TextStyle(size=11, font_family=FONT_UI)),
+                                      on_click=lambda e, p=r["path"]: self._open_dir(p)),
+                        ft.TextButton("配置", icon=ft.Icons.TUNE,
+                                      style=ft.ButtonStyle(
+                                          text_style=ft.TextStyle(size=11, font_family=FONT_UI)),
+                                      on_click=lambda e, n=r["name"]: self._open_config(n)),
+                        ft.TextButton("移除", icon=ft.Icons.DELETE_OUTLINE,
+                                      style=ft.ButtonStyle(
+                                          text_style=ft.TextStyle(size=11, font_family=FONT_UI),
+                                          color=colors["danger"]),
+                                      on_click=lambda e, n=r["name"]: self._open_remove(n)),
+                    ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ], spacing=4),
+                padding=ft.Padding.all(10),
+                border_radius=SIZE["radius_control"],
+                border=ft.Border.all(1, colors["border_faint"]),
+                bgcolor=colors["surface"],
+            ))
+        self._list.controls = controls
+
+    def _refresh(self):
+        from library import list_summary
+        self._rows = list_summary()
+        self._build_rows(self._rows)
+        self._set_status("")
+        if self._on_changed:
+            self._on_changed([r["name"] for r in self._rows])
+        self._update()
+
+    # ---- 打开 / 关闭 ----
+
+    def open(self, page):
+        self._page = page
+        self._refresh()
+        page.show_dialog(self._dlg)
+
+    def _close(self, e):
+        if self._dlg:
+            self._dlg.open = False
+            self._dlg.update()
+
+    def _update(self):
+        try:
+            if self._dlg:
+                self._dlg.update()
+        except RuntimeError:
+            pass
+
+    def _set_status(self, msg, kind=None):
+        self._status.value = msg
+        self._status.visible = bool(msg)
+        if kind == "ok":
+            self._status.color = self._cols["success"]
+        elif kind == "error":
+            self._status.color = self._cols["danger"]
+        else:
+            self._status.color = self._cols["warning"]
+
+    # ---- 添加 ----
+
+    def _open_add(self, e):
+        colors = self._cols
+        self._path_input = ft.TextField(
+            label="文件夹路径（必填）", hint_text="D:\\...\\笔记文件夹",
+            height=46, dense=True, border_radius=SIZE["radius_control"],
+            filled=True, fill_color=colors["sunken"],
+            border_color=colors["border"], text_size=13, expand=True,
+            text_style=ft.TextStyle(font_family=FONT_UI),
+            label_style=ft.TextStyle(size=12, font_family=FONT_UI),
+        )
+        self._name_input = ft.TextField(
+            label="库名（可空 = 文件夹名）", height=46, dense=True,
+            border_radius=SIZE["radius_control"],
+            filled=True, fill_color=colors["sunken"],
+            border_color=colors["border"], text_size=13, expand=True,
+            text_style=ft.TextStyle(font_family=FONT_UI),
+            label_style=ft.TextStyle(size=12, font_family=FONT_UI),
+        )
+        self._add_status = ft.Text("", size=12, visible=False, font_family=FONT_UI)
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("添加库", size=16, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Container(
+                content=ft.Column([
+                    self._path_input,
+                    self._name_input,
+                    self._add_status,
+                ], spacing=SIZE["gap_tight"], width=480),
+                padding=ft.Padding.only(top=4),
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_sub(dlg)),
+                ft.FilledButton(
+                    "注册", style=ft.ButtonStyle(
+                        bgcolor=colors["accent"], color=colors["on_accent"],
+                        shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                        text_style=ft.TextStyle(font_family=FONT_UI, weight=ft.FontWeight.W_600)),
+                    on_click=lambda _: self._do_add(dlg),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+        self._page_ref = self._current_page()
+        self._show_sub(dlg)
+
+    def _do_add(self, dlg):
+        from library import add_library
+        path = (self._path_input.value or "").strip().strip('"')
+        name = (self._name_input.value or "").strip() or None
+        try:
+            entry = add_library(path, name)
+        except (ValueError, OSError) as ex:
+            self._add_status.value = "添加失败：%s" % ex
+            self._add_status.color = self._cols["danger"]
+            self._add_status.visible = True
+            self._update()
+            return
+        self._close_sub(dlg)
+        self._refresh()
+        self._set_status("已注册库：%s。点击上方『增量重建』开始建索引。" % entry["name"], "ok")
+
+    # ---- 配置 ----
+
+    def _open_config(self, name):
+        from library import effective_config, load_registry
+        colors = self._cols
+        entry = next((e for e in load_registry() if e["name"] == name), None)
+        if entry is None:
+            return
+        cfg = effective_config(entry)
+        self._cfg_name = name
+        self._cfg_fields = {}
+        body = ft.ListView(spacing=10, expand=True, padding=0)
+        for key in ("exclude_dirs", "exclude_files", "exclude_patterns",
+                    "chunk_char_limit", "short_doc_char_limit",
+                    "extensions", "collection"):
+            raw = entry.get(key)
+            if key in _LIB_LIST_KEYS:
+                val = ", ".join(str(x) for x in cfg[key]) if cfg[key] else ""
+            elif raw is None:
+                val = ""
+            else:
+                val = str(raw)
+            inp = ft.TextField(
+                label=_LIB_CONFIG_NAMES[key], value=val,
+                height=46, dense=True, border_radius=SIZE["radius_control"],
+                filled=True, fill_color=colors["sunken"],
+                border_color=colors["border"], text_size=13, expand=True,
+                text_style=ft.TextStyle(font_family=FONT_UI),
+                label_style=ft.TextStyle(size=12, font_family=FONT_UI),
+                helper="（留空 = 继承全局）" if raw is None else
+                       ("当前覆盖值，清空后保存恢复继承全局" if key != "collection" else
+                        "当前覆盖值（仅 collection 不可恢复继承）"),
+            )
+            self._cfg_fields[key] = inp
+            body.controls.append(inp)
+        body.controls.append(ft.Text(
+            "提示：改动在下次索引时生效；collection 改动需先删除旧向量库再全量重建。",
+            size=11, color=colors["t4"], font_family=FONT_UI, height=1.4))
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("库配置 · %s" % name, size=16, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Container(content=ft.Column([body]), width=520, height=430),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_sub(dlg)),
+                ft.FilledButton(
+                    "保存", style=ft.ButtonStyle(
+                        bgcolor=colors["accent"], color=colors["on_accent"],
+                        shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                        text_style=ft.TextStyle(font_family=FONT_UI, weight=ft.FontWeight.W_600)),
+                    on_click=lambda _: self._do_config(dlg),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+        self._show_sub(dlg)
+
+    def _do_config(self, dlg):
+        from library import set_config, unset_config
+        errors = []
+        for key, inp in self._cfg_fields.items():
+            val = (inp.value or "").strip()
+            try:
+                if val:
+                    set_config(self._cfg_name, key, val)
+                elif key != "collection":
+                    unset_config(self._cfg_name, key)
+            except ValueError as ex:
+                errors.append("%s：%s" % (_LIB_CONFIG_NAMES[key], ex))
+        if errors:
+            self._set_status("保存失败：%s" % "；".join(errors), "error")
+            return
+        self._close_sub(dlg)
+        self._refresh()
+        self._set_status("已保存库 %s 的配置（下次索引生效）" % self._cfg_name, "ok")
+
+    # ---- 移除 ----
+
+    def _open_remove(self, name):
+        from library import remove_library
+        colors = self._cols
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("移除库 · %s" % name, size=16, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Text(
+                "从注册表移除该库。\n- 仅注销：保留已建索引与指纹数据（重新注册同路径可恢复）；\n- 删除数据：同时删除该库的全部向量与指纹（不可恢复）。",
+                size=13, font_family=FONT_UI, height=1.6, color=self._cols["t2"]),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_sub(dlg)),
+                ft.TextButton("仅注销", on_click=lambda _: self._do_remove(dlg, name, False)),
+                ft.FilledButton(
+                    "注销并删除数据",
+                    style=ft.ButtonStyle(
+                        bgcolor=colors["danger"], color="#FFFFFF",
+                        shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                        text_style=ft.TextStyle(font_family=FONT_UI, weight=ft.FontWeight.W_600)),
+                    on_click=lambda _: self._do_remove(dlg, name, True),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+        self._show_sub(dlg)
+
+    def _do_remove(self, dlg, name, drop):
+        from library import remove_library
+        try:
+            remove_library(name, drop=drop, yes=True)
+        except (ValueError, RuntimeError, OSError) as ex:
+            self._set_status("移除失败：%s" % ex, "error")
+            return
+        self._close_sub(dlg)
+        self._refresh()
+        self._set_status("已移除库：%s%s" % (name, "（数据已删除）" if drop else "（数据保留）"),
+                         "ok")
+
+    # ---- 子对话框 / 工具 ----
+
+    def _show_sub(self, dlg):
+        """挂载子对话框（添加/配置/移除确认）。真实窗口走 page.show_dialog。"""
+        try:
+            if self._page is not None:
+                self._page.show_dialog(dlg)
+        except Exception:
+            # 冒烟/无窗口环境：不真实挂载
+            pass
+
+    def _close_sub(self, dlg):
+        try:
+            dlg.open = False
+            dlg.update()
+        except RuntimeError:
+            pass
+
+    def _current_page(self):
+        return None
+
+    @staticmethod
+    def _open_dir(path):
+        try:
+            import os
+            os.startfile(path)
+        except OSError:
+            pass
+
+    def apply(self, colors):
+        self._cols = colors
+
+
+def _fmt_ts(ts):
+    if not ts:
+        return "从未"
+    from datetime import datetime
+    return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")

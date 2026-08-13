@@ -801,3 +801,109 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
   实证：opencode 在场实例存在时，新实例被正确拒绝退出；实例退出自动清理 PID
   文件（无残留）。单测 5 项；另发现 opencode 环境会向子进程注入 Ctrl+C
   （KeyboardInterrupt 出现在随机位置，Python 3.14），测试进程 SIG_IGN 免疫。
+
+---
+
+## 问题 19：GUI 多库化（v3）——库下拉 / KPI 双行 / 库管理对话框（2026-08-12 完成）
+
+- **背景**：多库后端（问题 18）落地后 GUI 仍是单库 v2——`store.py` 用单库
+  `load_meta()`/`kb_stale(VAULT)`（旧 `index_meta.json` 已改名，实际已失效），
+  搜索不带 `libraries`、索引不带 `--library`、打开源文件只剥前缀
+  （不同路径的库无法正确定位）。设计文档标注"多库 GUI 属后续迭代"，本次兑现。
+- **设计决策（用户确认）**：库选择 = header 下拉（全部库 + 单库）；KPI =
+  **双行**（大数字=全库汇总，副行=选中库明细）；库管理 = 独立对话框
+  （列库/添加/移除/改配置/打开文件夹），注册/注销走 `library.py` 既有函数，
+  与 CLI 行为完全一致。
+- **实现**：
+  1. `gui/store.py` 重写：按库统计 `meta_stats_for(cfg)`（读 `meta_path(name)`）、
+     按库三态 `library_state(cfg)`（`kb_stale` 传库的 meta/collection/排除/扩展名）、
+     聚合 `library_snapshot()`（任一 stale→stale；全 none→none；否则 ok）；
+     旧 `meta_stats()/index_state()` 改为全部库汇总口径（兼容调用方）。
+  2. `gui/worker.py`：`start(full, library="")` → 子进程 `index.py [--library 名]`，
+     启动日志带库名。
+  3. `gui/widgets.py` 新增 `LibraryPicker`（下拉，全部库+各库名，空注册表禁用）
+     与 `LibraryManagerDialog`（库列表含块数/最近索引/覆盖项，添加库=路径+可选名、
+     配置=7 个覆盖键留空恢复继承、移除=仅注销/注销并删数据双按钮、打开文件夹）；
+     `ProgressCard` 计数行附当前索引库名；`StatusCard` 支持自定义副行；
+     `DeviceBar` 附选中库。
+  4. `gui/app.py`：header 放下拉 + 库管理按钮；KPI 双行（文件/块=选中库明细副行，
+     状态卡=聚合大状态+选中库明细副行，耗时卡附库名）；搜索传 `libraries`；
+     增量/全量按钮作用于选中库（全部库=后端默认全库）；全量确认框按目标库报块数；
+     `_open_result` 多库感知：来源行拆 `<库名>/<rel>` → 查注册表 → 库路径是
+     Obsidian vault（含 `.obsidian`）走 `obsidian://open?vault=<库文件夹名>`，
+     任意 md 文件夹库走系统默认打开，旧格式回退主 vault；`_open_vault` 打开
+     选中库文件夹。
+- **踩坑**：
+  1. flet 0.86 `Dropdown` 无 `on_change`（改用 `on_select`）、`TextButton` 无
+     `icon_size`/`height`（删参数）。
+  2. **双模块陷阱（关键）**：smoke 里 `from app import App` 与 `import gui.app`
+     是两个模块对象（sys.path 同时含根目录和 gui/），`patch("gui.app.xxx")`
+     对 `App` 方法内的名字不生效（方法引用的是顶层 `app` 模块的绑定）。
+     修复：smoke 统一 `import gui.app as appmod; App = appmod.App`。
+  3. 测试默认参数引用函数参数（`collection="kb_%s" % name`）→ NameError，改 None。
+- **测试**：`test_gui_store.py` 27 项（新增 10 项多库：meta_stats_for 含非 dict
+  键、library_state 三态、snapshot 聚合/单 stale/全 none/空注册表、is_library_dir、
+  _split_lib_rel）；`smoke_gui.py` 新增 7/8、8/8 步（下拉默认值/库管理对话框构建/
+  多库打开系统与 URI 两路/选库参数）；真实窗口 15s 零 traceback。
+- **遗留（Roadmap 候选）**：库管理对话框的"添加库"目前为路径文本输入
+  （无系统文件夹选择器）；exe 打包；主题持久化（沿用 v2 遗留）。
+
+---
+
+## 问题 19b：GUI 进程残留 + 单例失效（AI 关闭后窗口/CMD 不消失）（2026-08-12 修复）
+
+- **现象**：用户手动点 X 关闭 GUI 正常；但 AI agent（opencode）启动 GUI 后
+  "关闭"时，GUI 窗口和 CMD 控制台窗口仍残留，需手动清理。
+- **根因**：
+  1. **flet 0.86 桌面模式是双进程**：`python gui/app.py` 实际拉起父子两个
+     python 进程（实测 32200 父 + 9212 子），`__main__` 在子进程执行。
+     AI 只杀父进程 → 渲染子进程 + CMD 控制台残留。
+  2. `os.kill(pid,0)` 对 pythonw 子进程探测**误判"已死"**（实测：进程活着
+     但探测返回 False）→ 旧版单例守卫失效，重复启动出双实例（4 进程并存）。
+  3. 用 `python.exe` 启动必带 CMD 黑窗（控制台程序）；`pythonw.exe` 无窗口。
+- **修复**：
+  1. **启动用 pythonw**：`pythonw gui/app.py`（无 CMD 黑窗，flet 桌面可跑，
+     实测父子双进程同存）。
+  2. **`gui/stop.py`（新）**：两层终止策略——①读 `data/gui.pid` 后
+     `taskkill /T /F` 整树；②**兜底 WMI 扫描命令行含 `gui/app.py` 的
+     全部 python* 进程**（覆盖 PID 文件缺失/误判场景），终止后复查无残留
+     并清理 PID 文件。实测：双进程全部清空，PID 文件删除。
+  3. **单例守卫重写（app.py）**：弃用 PID 探测，改**文件字节锁**
+     （Windows msvcrt / Linux fcntl flock，与 index.py 的 write_lock 同款，
+     锁 fd 全局持有防 GC，进程退出自动释放）→ 新实例拿不到锁立即退出。
+     PID 文件降级为诊断/兜底用途。
+  4. `gui/stop.py` 用法：`python gui/stop.py`（AI 可直接调）。
+- **验证**（真实窗口）：
+  - pythonw 启动 → 双进程 + PID 文件 → `stop.py` 终止 → 进程树全空、PID 文件
+    已清理（实测 6264+23832、32200+9212、34904+36124 三组均全清）。
+  - 单例：第一实例在跑时启动第二实例 → 第二实例 2 秒内自行退出，
+    进程树保持单实例（2 个 pythonw）；stop.py 后干净。
+  - 单测 27 项 + 冒烟 8 步全过。
+- **AI 使用约定**：启动 `pythonw gui/app.py`（或 Start-Process 指 pythonw）；
+  关闭 `python gui/stop.py`。不要 Stop-Process 单杀 PID。
+- **19c 补充（2026-08-12，用户反馈"依旧有进程"）**：残留的其实不是 python，
+  而是 **flet.exe**（Flutter 渲染窗口进程）——flet 桌面实际是**三层进程**
+  （pythonw 主 → pythonw 子 → flet.exe 窗口）。之前 stop.py 只匹配
+  python*/gui/app.py，flet.exe 命令行是 `flet.exe tcp://... <assets>`，父进程
+  死亡后成孤儿残留，且 AI 测试期间用 Stop-Process 单杀 python 会制造它。
+  **修复**：stop.py 的 WMI 匹配加入 `Name='flet.exe' 且命令行含项目根目录`
+  （assets 参数带完整路径）；实测三层进程 22316→24300→20564 一次全清。
+  AI_GUIDE.md 新增 §8 GUI 启动/关闭约定（pythonw 启、stop.py 关、禁单杀）。
+
+---
+
+## 问题 20：置信度虚高——第一名恒为 100%，无关内容也显示高置信度（2026-08-13 修复）
+
+- **现象**：排除 Obsidian Vault 后用 agents/skills/test 库搜"FLUENT 配置"，全文毫不相关的块
+  也显示 `[置信度 1.00]`（实测连 USER_GUIDE 的"配置与数据位置"都 0.72）；用户对检索可信度产生怀疑。
+- **根因**：`retriever.py` 置信度是**相对归一化**——每库融合分除以库内最高分，跨库再除以全局
+  最高分（`scores = {k: v / gmax}`）。第一名恒为 1.00，库内没有真相关内容时"矮子里拔将军"，
+  弱匹配也被包装成确定命中。排序正确（相对最优），但标签误导。
+- **修复**：改为**绝对融合分**：`(dense_weight·1/(1+d) + bm25_weight·b/(1+b)) / (dense_weight + bm25_weight)`。
+  dense 距离与 BM25 原始分本就映射到 (0,1)，加权上限 = 权重和，除以权重和即得绝对 0-1 相似度，
+  不再除以本轮最高分。检索排序仍按融合分取 top_k（排序保持相对最优，标签变诚实）。
+- **验证**：正例（Vault 内搜 FLUENT 配置）召回真内容 `FLUENT配置与求解设置.md` 0.83~0.86、
+  `任务流程.md` 0.81、`B3_CFD能力评估.md` 0.80；反例（无 FLUENT 库）最高 0.72 且内容低相关。
+  正反例分得开，不再虚高。
+- **遗留（认知约束）**：绝对分是"相似度"而非"语义正确性"。0.4~0.7 的块可能只是命中"配置"等
+  高频道用词——需结合文件名/标题判断，不能只看数字。已写入 Vault 决策记录 ADR-10。

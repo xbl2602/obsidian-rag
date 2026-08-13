@@ -1,6 +1,7 @@
-"""store.py — 数据层：读取并解析现有进度/meta/锁状态，判定索引三态与心跳四态。
+"""store.py — 数据层：读取并解析注册表/进度/meta/锁状态，判定索引三态与心跳四态。
 
-复用 index.py 的现有函数与数据文件，不加载模型、不碰 Chroma。
+多库版：所有统计按库读取（meta_path(name) / effective_config），
+并聚合出"全部库"汇总口径。不加载模型、不碰 Chroma 写入。
 """
 import os
 import time
@@ -8,12 +9,16 @@ from pathlib import Path
 
 from config import CFG
 from index import (
-    VAULT,
     kb_stale,
     load_meta,
     collect_md_files,
     read_progress,
     _pid_alive,
+)
+from library import (
+    load_registry,
+    effective_config,
+    meta_path,
 )
 
 HEARTBEAT_TIMEOUT = CFG["heartbeat_timeout"]   # 心跳停止判定（15s）
@@ -26,47 +31,105 @@ HB_RUNNING, HB_DEAD, HB_STALLED, HB_DONE, HB_IDLE = "running", "dead", "stalled"
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
+_ALL = "<全部库>"
 
-def meta_stats():
-    """从 index_meta.json 统计：已索引文件数、总块数。损坏/缺失返回 (0, 0)。"""
-    meta = load_meta()
+
+def library_entries():
+    """注册表条目 → 生效配置列表（含 name/path/collection/excludes/extensions）。"""
+    return [effective_config(e) for e in load_registry()]
+
+
+def meta_stats_for(cfg):
+    """单库 meta 统计：已索引文件数、总块数。损坏/缺失返回 (0, 0)。"""
+    meta = load_meta(meta_path(cfg["name"]))
     files = sum(1 for v in meta.values() if isinstance(v, dict))
     chunks = sum(v.get("chunks", 0) for v in meta.values() if isinstance(v, dict))
     return files, chunks
 
 
-def vault_file_count():
-    """应索引的 .md 文件总数（扫描磁盘，与索引同过滤规则）。"""
+def vault_file_count_for(cfg):
+    """单库应索引的文件总数（扫描磁盘，与索引同过滤规则）。"""
     try:
-        return len(collect_md_files(VAULT))
+        return len(collect_md_files(
+            cfg["path"], cfg["exclude_dirs"], cfg["exclude_files"],
+            cfg["exclude_patterns"], cfg["extensions"]))
     except Exception:
         return 0
 
 
-def index_state():
-    """三态判定：ok=索引最新 / stale=有变更待索引 / none=尚未索引。
+def library_state(cfg):
+    """单库三态：ok=索引最新 / stale=有变更待索引 / none=尚未索引。
 
-    判定依据：meta 有数据 + kb_stale 指纹比对（复用现有逻辑，读盘不加载模型）。
+    判定依据：该库 meta 有数据 + 该库指纹比对（复用现有逻辑，读盘不加载模型）。
     """
-    files, chunks = meta_stats()
+    files, chunks = meta_stats_for(cfg)
     if files == 0:
         return STATE_NONE, files, chunks
     try:
-        stale, _ = kb_stale(VAULT)
+        stale, _ = kb_stale(
+            cfg["path"],
+            meta_file=meta_path(cfg["name"]),
+            collection_name=cfg["collection"],
+            exclude_dirs=cfg["exclude_dirs"],
+            exclude_files=cfg["exclude_files"],
+            exclude_patterns=cfg["exclude_patterns"],
+            extensions=cfg["extensions"],
+        )
     except Exception:
         stale = True
     return (STATE_STALE if stale else STATE_OK), files, chunks
 
 
-def heartbeat_state(progress):
-    """心跳四态判定（复用现有双通道规则）。
+def library_snapshot():
+    """全部库快照：聚合状态 + [(name, state, files, chunks, path)]。
 
-    running：索引中，心跳新鲜
-    dead：心跳停止超阈值（>15s）
-    stalled：心跳在走但进度停滞超阈值（>25s，假活）
-    done：非运行且已完成
-    idle：非运行且无数据
+    聚合规则：任一库 stale → 聚合 stale；全部 none → none；否则 ok。
     """
+    entries = library_entries()
+    out = []
+    states = []
+    for cfg in entries:
+        st, files, chunks = library_state(cfg)
+        states.append(st)
+        out.append((cfg["name"], st, files, chunks, cfg["path"]))
+    if not out:
+        agg = STATE_NONE
+    elif any(s == STATE_STALE for s in states):
+        agg = STATE_STALE
+    elif all(s == STATE_NONE for s in states):
+        agg = STATE_NONE
+    else:
+        agg = STATE_OK
+    return agg, out
+
+
+def meta_stats():
+    """全部库汇总统计（兼容旧名）：已索引文件数、总块数。"""
+    files = chunks = 0
+    for cfg in library_entries():
+        f, c = meta_stats_for(cfg)
+        files += f
+        chunks += c
+    return files, chunks
+
+
+def vault_file_count():
+    """全部库应索引的 .md 文件总数。"""
+    try:
+        return sum(vault_file_count_for(cfg) for cfg in library_entries())
+    except Exception:
+        return 0
+
+
+def index_state():
+    """全部库聚合三态（兼容旧名）：ok / stale / none。"""
+    agg, _ = library_snapshot()
+    files, chunks = meta_stats()
+    return agg, files, chunks
+
+
+def heartbeat_state(progress):
+    """心跳四态判定（复用现有双通道规则，与库无关）。"""
     now = time.time()
     if not progress.get("running"):
         return HB_DONE if progress.get("phase") == "done" and progress.get("pid") else HB_IDLE
@@ -105,3 +168,25 @@ def last_elapsed(progress):
     """最后索引耗时（秒）。"""
     el = progress.get("elapsed_s")
     return el if isinstance(el, (int, float)) else None
+
+
+def progress_library(progress):
+    """当前进度所属库名（进度文件 library 字段，可能缺失）。"""
+    return progress.get("library") or ""
+
+
+def is_library_dir(path):
+    """判断路径是否为 Obsidian vault（含 .obsidian 目录），用于选择打开方式。"""
+    if not path:
+        return False
+    try:
+        return (Path(path) / ".obsidian").is_dir()
+    except OSError:
+        return False
+
+
+def _fmt_ts(ts):
+    if not ts:
+        return "从未"
+    from datetime import datetime
+    return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")

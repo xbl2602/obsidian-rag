@@ -361,16 +361,17 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
 
     scores = None
     if with_scores:
-        norm = {}
+        # 绝对置信度：直接用融合分（dense 1/(1+d) 与 BM25 b/(1+b) 均映射到 0-1，
+        # 加权和上限 = dense_weight+bm25_weight），除以权重和封顶到 [0,1]。
+        # 不再除以本轮最高分——弱匹配显示真实低分，避免"矮子里拔将军"。
+        total_w = dense_weight + bm25_weight
+        scores = {}
         for name, collection, combined, ranked_all in lib_results:
-            best = max(combined.values()) if combined else 0.0
             for cid in ranked_all:
-                if best > 0:
-                    norm[(name, cid)] = combined[cid] / best
-        if norm:
-            gmax = max(norm.values())
-            if gmax > 0:
-                scores = {k: v / gmax for k, v in norm.items()}
+                if total_w > 0:
+                    scores[(name, cid)] = min(1.0, combined[cid] / total_w)
+                else:
+                    scores[(name, cid)] = combined[cid]
 
     return _format_results(col_map, ranked_pairs, file_counts=file_counts,
                            include_body=include_body, capped=capped, scores=scores)
