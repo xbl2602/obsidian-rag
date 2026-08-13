@@ -419,16 +419,21 @@ def _release_cuda_cache():
 def _auto_batch_size(desired):
     """按当前可用显存自动收紧批次（防共享显存溢出），配置值仅作上限。
 
-    经验校准（fp16 + bge-m3，8GB 移动卡实测）：固定开销约 3GB
-    （模型+上下文+工作区），长块（1500 字）激活约 0.4GB/块。
+    2026-08-13 校准教训：不要用固定线性公式猜批次。实测 Qwen3-Embedding-0.6B
+    在长块（~700 字符）下 attention 显存随 batch×seq² 暴涨：
+      bs=8→4.5GB  bs=16→5.9GB  bs=32→7.7GB（8GB 卡满载 → WDDM 溢出排入
+      系统 RAM，页面文件被吃满、GPU 空转低功耗——即"100%但30W"病态）。
+    bge-m3（纯 encoder）同批次仅需一半显存，公式曾对两者一刀切。
+    改为：固定安全上限（8）+ 可用显存二次收紧。慢批看门狗仍兜底。
     """
     global _last_batch_cap
     if _device != "cuda":
         return desired
     import torch
     free_gb = torch.cuda.mem_get_info()[0] / 1024 ** 3
-    cap = int((free_gb - 3.0) / 0.4)
-    cap = max(2, min(32, cap))
+    cap = min(8, desired)  # Qwen 长块 bs=16 已近 6GB，固定 8 保安全
+    if free_gb < 4.5:
+        cap = min(cap, 4)  # 显存紧张再降
     if desired > cap:
         if cap != _last_batch_cap:
             log(f"可用显存 {free_gb:.1f}GB，批次 {desired} 收紧为 {cap}")
@@ -894,7 +899,8 @@ def index_library(lib, incremental=True, full=False):
     return _index_core(lib["path"], lib["collection"], meta_path(lib["name"]),
                        lib["exclude_dirs"], lib["exclude_files"], lib["exclude_patterns"],
                        lib["extensions"], lib["chunk_char_limit"],
-                       lib["short_doc_char_limit"], library_label=lib["name"])
+                       lib["short_doc_char_limit"], library_label=lib["name"],
+                       incremental=incremental, full=full)
 
 
 def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
