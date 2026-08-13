@@ -283,6 +283,93 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
     return "\n".join(lines) if lines else "未找到相关内容。"
 
 
+# ---------- HyDE（查询侧增强，可选） ----------
+
+def hyde_generate(query, url=None, model=None, timeout=30):
+    """调用本地 LLM（LM Studio，OpenAI 兼容）为查询生成一段假设的理想答案文档。
+
+    HyDE 思想（arXiv:2212.10496）：让 LLM 根据查询凭空写一段"如果笔记里有答案，
+    大概长什么样"的文本，再拿它去检索。假设文档里会带出笔记真实存在的术语
+    （如"个人能力"→"ANSYS Fluent、边界条件、阻力系数"），弥补词面鸿沟。
+    失败（LLM 不在线/超时）返回空串，由调用方静默降级为普通检索。
+    """
+    import json
+    import urllib.request
+
+    if url is None:
+        url = CFG["hyde_llm_url"]
+    if model is None:
+        model = CFG["hyde_llm_model"]
+    prompt = (
+        "你是一个航空航天/工程背景的工程师，正在整理自己的个人知识库笔记。"
+        "下面是一个检索查询。请写一段 60~150 字的中文笔记正文，内容是：如果这份笔记里"
+        "记录了这个问题，它大概会包含哪些具体工具、术语、专有名词、清单和要点。"
+        "要具体、贴近工程实际（如软件名、方法名、参数），不要泛泛而谈通用能力。"
+        "直接输出这段笔记正文，不要任何解释、引导语或列表符号外的包装。\n\n"
+        f"查询：{query}"
+    )
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 200,
+        "temperature": 0.7,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["choices"][0]["message"]["content"].strip()
+        return text if text else ""
+    except Exception as e:
+        print(f"[retriever] HyDE 调用失败（降级普通检索）：{e}", file=sys.stderr)
+        return ""
+
+
+def _top1_confidence(query, libraries="", exclude="", folder=""):
+    """快速求首轮 top1 置信度（不加载重排器即可的轻量路径）。
+
+    with_scores 走完整检索会载重排器（慢）；这里用 include_body=False 的融合排序
+    估首名置信度，够触发判断用。失败返回 None（视为高置信度，不触发 HyDE）。
+    """
+    try:
+        text = hybrid_search(query, top_k=1, libraries=libraries, exclude=exclude,
+                             folder=folder, include_body=False, with_scores=True)
+        m = re.search(r"\[置信度 ([\d.]+)\]", text)
+        return float(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+def hybrid_search_hyde(query, top_k=None, libraries="", exclude="", folder="",
+                       hyde_enabled=None, **kwargs):
+    """HyDE 增强版检索：首轮置信度低时用 LLM 假设文档重查。
+
+    标准流程：普通检索 → 若 top1 置信度 < hyde_min_confidence（说明命中弱）→
+    生成假设文档 → 以假设文档为查询重跑 hybrid_search。两轮结果里取置信度更高者。
+    降级链：LLM 失败 → 用原查询结果；配置关闭 → 直接普通检索。
+    """
+    if hyde_enabled is None:
+        hyde_enabled = CFG["hyde_enabled"]
+    if not hyde_enabled:
+        return hybrid_search(query, top_k=top_k, libraries=libraries, exclude=exclude,
+                             folder=folder, **kwargs)
+    first = hybrid_search(query, top_k=top_k, libraries=libraries, exclude=exclude,
+                          folder=folder, **kwargs)
+    conf = _top1_confidence(query, libraries=libraries, exclude=exclude, folder=folder)
+    if conf is None or conf >= CFG["hyde_min_confidence"]:
+        return first
+    print(f"[retriever] 首轮 top1 置信度 {conf:.2f} < {CFG['hyde_min_confidence']}，"
+          f"触发 HyDE 重查：{query}", file=sys.stderr)
+    hypo = hyde_generate(query)
+    if not hypo:
+        return first
+    second = hybrid_search(hypo, top_k=top_k, libraries=libraries, exclude=exclude,
+                           folder=folder, **kwargs)
+    print(f"[retriever] HyDE 假设文档：{hypo[:80]}...", file=sys.stderr)
+    return second
+
+
 # ---------- 混合检索 ----------
 
 def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",

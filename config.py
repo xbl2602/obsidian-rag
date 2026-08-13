@@ -55,6 +55,12 @@ DEFAULTS = {
     "rerank_candidates": 50,   # 融合 top N 候选交给重排器精排（2026-08-13：10→50，融合排序有误差，池太小好块进不了决赛）
     "rerank_enabled": True,    # 重排总开关（False = 纯融合排序）
 
+    # ---- HyDE 查询增强（可选，需本地 LLM）----
+    "hyde_enabled": False,         # 默认关：开启后对泛化查询生成假设文档再检索（需 LM Studio）
+    "hyde_llm_url": "http://localhost:1234/v1/chat/completions",
+    "hyde_llm_model": "qwen2.5-3b-instruct",
+    "hyde_min_confidence": 0.5,    # 首轮 top1 置信度低于此值才触发 HyDE（命中好的查询零开销）
+
     # ---- 工具默认值 ----
     "default_top_k": 5,
 
