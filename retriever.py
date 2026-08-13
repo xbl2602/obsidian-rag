@@ -48,15 +48,39 @@ def _chunk_file(cid):
 
 # ---------- BM25 ----------
 
+# 中文停用词（检索噪声：虚词/泛动词/无区分度词）。配合 jieba 分词过滤。
+# 注意保留"配置/能力"这类实义词（本系统笔记语境下的关键词不应误滤）。
+_CH_STOP = frozenset(
+    "的了是在有和就不太人这那也还我一个要会去与或于及之而但并其们"
+    "对于为了以及根据相关包括如何什么怎么哪些为什么要需要可以应该"
+    "我们你们他们这个那个这样那样时候地方情况问题办法方式途径通过"
+    "进行使用用到做了着过吧吗呢哦啊呀呢因为所以然后接着接下来"
+)
+# 常见中英/编号专名：jieba 精确模式可能切碎的词，2-gram 兜底时已能覆盖；
+# 这里列出需整词保留的高价值术语（进入 BM25 词表，提高 IDF 准确性）。
+_TERMS = frozenset(("y+", "k-ω", "sst", "cfd", "cad", "gpu", "llm", "rag"))
+
+
 def tokenize(text):
-    """简单分词：英文单词 + 中文连续片段（按 2-gram 切，兼顾中英混合）。"""
+    """BM25 分词：jieba 精确分词（滤停用词）+ 中文 2-gram 双通道 + 英文 token。
+
+    jieba 负责词级语义（"火箭发动机"→ 一个词，IDF 更准）；2-gram 兜底召回
+    （jieba 对专名/未登录词切错时 bigram 仍能命中）；英文/数字走原 token 路。
+    双通道并集：精确与召回兼顾（2026-08-13 升级）。
+    """
+    import jieba
+
     text = text.lower()
     tokens = []
     for m in re.finditer(r"[a-z0-9][a-z0-9._+-]{1,}", text):
-        tokens.append(m.group(0))
-    for m in re.finditer(r"[\u4e00-\u9fff]+", text):
-        cn = m.group(0)
-        tokens.extend([cn[i : i + 2] for i in range(len(cn) - 1)])
+        tok = m.group(0)
+        tokens.append(tok)
+    zh_segs = [m.group(0) for m in re.finditer(r"[\u4e00-\u9fff]+", text)]
+    for seg in zh_segs:
+        for w in jieba.lcut(seg):
+            if w.strip() and w not in _CH_STOP:
+                tokens.append(w)
+        tokens.extend([seg[i : i + 2] for i in range(len(seg) - 1)])
     return tokens
 
 
