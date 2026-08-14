@@ -83,3 +83,15 @@ v6（F20）起，笔记**文件名 + frontmatter title + tags** 与正文标题�
 - 标题提取：复用 `index.py` 的 `split_by_headings` 逻辑（或独立轻量实现）
 - wikilink 反向索引：扫描所有 md 的 `[[...]]`，解析目标为文件名（去 `|别名`、去 `#锚点`、去 `folder/` 前缀），建 目标文件名 → 引用来源 映射
 - 命令行：`--json` 可选输出机器可读 JSON
+
+## 2026-08-14 修订（覆盖范围 / 豁免 / 判断原则）
+
+- **默认只扫 Obsidian Vault 主库**：agents/skills/test 是 opencode agent 定义 / skill / 测试文件，
+  非笔记，不按笔记命名规则评判。`--all` 才扫全部注册库。
+- **入链反向索引扫整个 vault**（含被索引排除的 目录/LOG/MOC 等）：改名影响所有引用者，
+  不只可索引文件。示例：Kalman-Filter 入链从 0 修正为 4 处。
+- **豁免增强**：归档区 `90-Archive/`（含 `*-AGENTS.md`/`*-LOG.md` 等加前缀结构变体，
+  归档区命名规范明确支持）、`TODO/`、`任务节点/`、`Clippings/`、`graph-ignore-*`、
+  `README.md` 及变体、`_` 前缀工作流文件。
+- **扫描结果只是候选清单，不是指令**：AI 必须逐条判断文件真实角色再决定是否改名，
+  结构性/功能性文件即使命中规则通常不改。此原则写入 vault 根 AGENTS.md。

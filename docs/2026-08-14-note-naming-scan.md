@@ -1,5 +1,5 @@
 == 笔记命名规范扫描（只读，共 1 库） ==
-硬规则不合规 66 项，软建议 95 项，改名映射 66 条
+硬规则不合规 55 项，软建议 58 项，改名映射 55 条
 
 === 不合规清单 — Obsidian Vault ===
 [R2] 01-Meta/user-profile/A1_认知模型.md  (created 2026-07-29, updated ?)
@@ -38,18 +38,14 @@
        文件名含 _ / : 或连续空格（应为自然短语）
        建议新名: （需人工给出中文主题词）
        入链: 0 处（改名无连锁影响）
-[R1] 10-Areas/Engineering/概念/Kalman-Filter.md  (created 2026-07-31, updated ?)⚠️ 高引用
-       文件名无中文主题词
-       建议新名: 最优状态估计算法 Kalman-Filter
-       入链: 3 处 (10-Areas/Engineering/MOC-Engineering.md, 10-Areas/Engineering/论点/传感器融合姿态追踪-Kalman.md, 90-Archive/Engineering-Projects-目录.md)
 [R1] 10-Areas/Engineering/概念/PID.md  (created 2026-07-31, updated ?)⚠️ 高引用
        文件名无中文主题词
        建议新名: PID（比例-积分-微分）闭环控制算法
-       入链: 3 处 (10-Areas/Engineering/MOC-Engineering.md, 10-Areas/Engineering/论点/自平衡机器人-PID控制.md, 90-Archive/Engineering-Projects-目录.md)
+       入链: 4 处 (10-Areas/Engineering/MOC-Engineering.md, 10-Areas/Engineering/目录.md, 10-Areas/Engineering/论点/自平衡机器人-PID控制.md, 90-Archive/Engineering-Projects-目录.md)
 [R1] 10-Areas/Engineering/概念/TinyML.md  (created 2026-07-31, updated ?)⚠️ 高引用
        文件名无中文主题词
        建议新名: 在微控制器上运行的机器学习（模型 <100KB TinyML
-       入链: 3 处 (10-Areas/Engineering/MOC-Engineering.md, 10-Areas/Engineering/论点/边缘AI手势控制器-TinyML.md, 90-Archive/Engineering-Projects-目录.md)
+       入链: 4 处 (10-Areas/Engineering/MOC-Engineering.md, 10-Areas/Engineering/目录.md, 10-Areas/Engineering/论点/边缘AI手势控制器-TinyML.md, 90-Archive/Engineering-Projects-目录.md)
 [R1] 20-Projects/Obsidian RAG/Obsidian RAG Roadmap.md  (created 2026-08-10, updated 2026-08-14)
        文件名无中文主题词
        建议新名: 待办事项、未决决策、观察项 Obsidian RAG Roadmap
@@ -145,11 +141,11 @@
 [R1] 20-Projects/Summer-2026/OTHER CERT/论点/OpenAI-Student-Collective.md  (created 2026-07-31, updated ?)
        文件名无中文主题词
        建议新名: OpenAI Student Collectiv OpenAI-Student-Collective
-       入链: 1 处 (20-Projects/Summer-2026/OTHER CERT/任务节点/OpenAI-Collective-申请.md)
+       入链: 2 处 (20-Projects/Summer-2026/OTHER CERT/任务节点/OpenAI-Collective-申请.md, 20-Projects/Summer-2026/OTHER CERT/目录.md)
 [R1] 20-Projects/Summer-2026/OTHER CERT/论点/YC-AI-Student-Starter-Pack.md  (created 2026-07-31, updated ?)
        文件名无中文主题词
        建议新名: YC AI Stack（学生版）机会情报 YC-AI-Student-Starter-Pack
-       入链: 0 处（改名无连锁影响）
+       入链: 1 处 (20-Projects/Summer-2026/OTHER CERT/目录.md)
 [R1] 20-Projects/Summer-2026/ROCKETRY/报告/HEBAT3_Technical_Report.md  (created 2026-07-27, updated ?)
        文件名无中文主题词
        建议新名: （需人工给出中文主题词）
@@ -174,10 +170,10 @@
        文件名含 _ / : 或连续空格（应为自然短语）
        建议新名: （需人工给出中文主题词）
        入链: 0 处（改名无连锁影响）
-[R1] 20-Projects/Summer-2026/ROCKETRY/概念/AWT-vs-TransitionalFlows.md  (created 2026-07-29, updated ?)
+[R1] 20-Projects/Summer-2026/ROCKETRY/概念/AWT-vs-TransitionalFlows.md  (created 2026-07-29, updated ?)⚠️ 高引用
        文件名无中文主题词
        建议新名: SST k‑ω 中两个易混淆机制的本质区别 AWT-vs-TransitionalFlows
-       入链: 2 处 (20-Projects/Summer-2026/ROCKETRY/概念/FLUENT配置与求解设置.md, 20-Projects/Summer-2026/ROCKETRY/论点/CFD免费工具-SimScale.md)
+       入链: 3 处 (20-Projects/Summer-2026/ROCKETRY/概念/FLUENT配置与求解设置.md, 20-Projects/Summer-2026/ROCKETRY/目录.md, 20-Projects/Summer-2026/ROCKETRY/论点/CFD免费工具-SimScale.md)
 [R1] 20-Projects/Summer-2026/ROCKETRY/背景/HEBAT3_ORK_Design_Parameters.md  (created 2026-07-28, updated ?)⚠️ 高引用
        文件名无中文主题词
        建议新名: 从 rocket.ork 提取的 HEBAT 3 HEBAT3_ORK_Design_Parameters
@@ -194,30 +190,30 @@
        文件名含 _ / : 或连续空格（应为自然短语）
        建议新名: （需人工给出中文主题词）
        入链: 8 处 (20-Projects/Summer-2026/ROCKETRY/概念/FLUENT配置与求解设置.md, 20-Projects/Summer-2026/ROCKETRY/概念/OpenRocket多目标优化.md, 20-Projects/Summer-2026/ROCKETRY/论点/AI Agent 在航空航天工程中的应用-执行概要.md, 20-Projects/Summer-2026/ROCKETRY/论点/CFD免费工具-SimScale.md, 20-Projects/Summer-2026/ROCKETRY/论点/太空机会-ESA欧洲通道.md…)
-[R1] 20-Projects/Summer-2026/ROCKETRY/附录/ansys-near-wall-treatment-quotes.md  (created 2026-07-29, updated ?)
+[R1] 20-Projects/Summer-2026/ROCKETRY/附录/ansys-near-wall-treatment-quotes.md  (created 2026-07-29, updated ?)⚠️ 高引用
        文件名无中文主题词
        建议新名: ANSYS Fluent 近壁面处理 ansys-near-wall-treatment-quotes
-       入链: 2 处 (20-Projects/Summer-2026/ROCKETRY/概念/FLUENT配置与求解设置.md, 20-Projects/Summer-2026/ROCKETRY/概念/y+控制与壁面处理策略.md)
+       入链: 3 处 (20-Projects/Summer-2026/ROCKETRY/概念/FLUENT配置与求解设置.md, 20-Projects/Summer-2026/ROCKETRY/概念/y+控制与壁面处理策略.md, 20-Projects/Summer-2026/ROCKETRY/目录.md)
 [R1] 20-Projects/Summer-2026/ROCKETRY/附录/y+-wall-treatment-english-report.md  (created 2026-07-29, updated ?)
        文件名无中文主题词
        建议新名: （需人工给出中文主题词）
-       入链: 1 处 (20-Projects/Summer-2026/ROCKETRY/概念/y+控制与壁面处理策略.md)
+       入链: 2 处 (20-Projects/Summer-2026/ROCKETRY/概念/y+控制与壁面处理策略.md, 20-Projects/Summer-2026/ROCKETRY/目录.md)
 [R1] 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/CSWA.md  (created 2026-07-31, updated ?)⚠️ 高引用
        文件名无中文主题词
        建议新名: Certified SOLIDWORKS Ass CSWA
-       入链: 4 处 (20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME加分技能-Cpp与MATLAB.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME核心认证路线-CSWA到CSWP.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME认证-SixSigma与Ansys.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/工程图纸语言-GD&T与ASME-Y14.5.md)
-[R1] 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/CSWP.md  (created 2026-07-31, updated ?)
+       入链: 5 处 (20-Projects/Summer-2026/SOLIDWORK CSWA/目录.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME加分技能-Cpp与MATLAB.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME核心认证路线-CSWA到CSWP.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME认证-SixSigma与Ansys.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/工程图纸语言-GD&T与ASME-Y14.5.md)
+[R1] 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/CSWP.md  (created 2026-07-31, updated ?)⚠️ 高引用
        文件名无中文主题词
        建议新名: Certified SOLIDWORKS Pro CSWP
-       入链: 2 处 (20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME加分技能-Cpp与MATLAB.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME核心认证路线-CSWA到CSWP.md)
-[R1] 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/GD&T.md  (created 2026-07-31, updated ?)
+       入链: 3 处 (20-Projects/Summer-2026/SOLIDWORK CSWA/目录.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME加分技能-Cpp与MATLAB.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME核心认证路线-CSWA到CSWP.md)
+[R1] 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/GD&T.md  (created 2026-07-31, updated ?)⚠️ 高引用
        文件名无中文主题词
        建议新名: 几何尺寸与公差（GD&T）概念卡
-       入链: 2 处 (20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME核心认证路线-CSWA到CSWP.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/工程图纸语言-GD&T与ASME-Y14.5.md)
+       入链: 3 处 (20-Projects/Summer-2026/SOLIDWORK CSWA/目录.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME核心认证路线-CSWA到CSWP.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/工程图纸语言-GD&T与ASME-Y14.5.md)
 [R1] 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/Six-Sigma.md  (created 2026-07-31, updated ?)
        文件名无中文主题词
        建议新名: Six Sigma 概念卡 Six-Sigma
-       入链: 1 处 (20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME认证-SixSigma与Ansys.md)
+       入链: 2 处 (20-Projects/Summer-2026/SOLIDWORK CSWA/目录.md, 20-Projects/Summer-2026/SOLIDWORK CSWA/论点/ME认证-SixSigma与Ansys.md)
 [R1] 30-Resources/Ideas.md  (created ?, updated ?)
        文件名无中文主题词
        建议新名: （需人工给出中文主题词）
@@ -226,46 +222,6 @@
        正文无任何标题（整篇成块，无标题链锚点）
        建议新名: （需人工给出中文主题词）
        入链: 0 处（改名无连锁影响）
-[R1] 90-Archive/Engineering-Projects-AGENTS.md  (created ?, updated ?)
-       文件名无中文主题词
-       建议新名: 1. 入口协议 Engineering-Projects-AGENTS
-       入链: 0 处（改名无连锁影响）
-[R1] 90-Archive/Engineering-Projects-LOG.md  (created ?, updated ?)
-       文件名无中文主题词
-       建议新名: Engineering Projects Engineering-Projects-LOG
-       入链: 0 处（改名无连锁影响）
-[R1] 90-Archive/graph-ignore-rollback-technical-20260731-2140.md  (created 2026-07-31, updated ?)
-       文件名无中文主题词
-       建议新名: 技术日志 graph-ignore-rollback-technical-20260731-2140
-       入链: 0 处（改名无连锁影响）
-[R1] 90-Archive/graph-ignore-rollback-user-20260731-2140.md  (created 2026-07-31, updated ?)
-       文件名无中文主题词
-       建议新名: 用户日志 graph-ignore-rollback-user-20260731-2140
-       入链: 0 处（改名无连锁影响）
-[R1] 90-Archive/graph-ignore-tagging-technical-20260731-2100.md  (created ?, updated ?)
-       文件名无中文主题词
-       建议新名: 技术日志 graph-ignore-tagging-technical-20260731-2100
-       入链: 0 处（改名无连锁影响）
-[R1] 90-Archive/graph-ignore-tagging-user-20260731-2100.md  (created ?, updated ?)
-       文件名无中文主题词
-       建议新名: 用户日志 graph-ignore-tagging-user-20260731-2100
-       入链: 0 处（改名无连锁影响）
-[R1] Clippings/9 Habits for Clearer Speaking (I Wish I Knew Sooner).md  (created 2026-08-10, updated ?)
-       文件名无中文主题词
-       建议新名: （需人工给出中文主题词）
-       入链: 0 处（改名无连锁影响）
-[R1] TODO/TODO.md  (created 2026-08-10, updated 2026-08-10)
-       文件名无中文主题词
-       建议新名: TODO 主台账
-       入链: 2 处 (Home.md, TODO/学习资源清单-解决当前问题.md)
-[R1] 任务节点/NASA-TechRise-2026-27.md  (created ?, updated ?)
-       文件名无中文主题词
-       建议新名: （需人工给出中文主题词）
-       入链: 2 处 (20-Projects/Summer-2026/ROCKETRY/论点/太空机会-亚洲与全球社区.md, 20-Projects/Summer-2026/ROCKETRY/论点/航天竞赛-学生火箭与NASA挑战.md)
-[R3] 任务节点/NASA-TechRise-2026-27.md  (created ?, updated ?)
-       正文无任何标题（整篇成块，无标题链锚点）
-       建议新名: （需人工给出中文主题词）
-       入链: 2 处 (20-Projects/Summer-2026/ROCKETRY/论点/太空机会-亚洲与全球社区.md, 20-Projects/Summer-2026/ROCKETRY/论点/航天竞赛-学生火箭与NASA挑战.md)
 
 === 软规则建议 — Obsidian Vault ===
 [H1] 01-Meta/user-profile/A1_认知模型.md  (created 2026-07-29, updated ?)
@@ -356,8 +312,6 @@
        H1「Simple Brain — 极简第二大脑方案」与文件名「Simple Brain 极简第二大脑方案」不一致
 [H1] 20-Projects/Summer-2026/AI Knowledge System/论点/终身学习AI助教-港大开源项目.md  (created 2026-08-09, updated 2026-08-09)
        H1「终身学习 AI 助教：港大开源项目」与文件名「终身学习AI助教-港大开源项目」不一致
-[H1] 20-Projects/Summer-2026/ROCKETRY/任务节点/任务流程.md  (created 2026-07-26, updated ?)
-       H1「1. CFD 前处理（已完成）」与文件名「任务流程」不一致
 [H1] 20-Projects/Summer-2026/ROCKETRY/报告/HEBAT3_Technical_Report.md  (created 2026-07-27, updated ?)
        H1「HEBAT 3.0 — Aerodynamic Analysis & Flight Performance Reconstruction」与文件名「HEBAT3_Technical_Report」不一致
 [H1] 20-Projects/Summer-2026/ROCKETRY/报告/report_checklist.md  (created 2026-07-29, updated ?)
@@ -386,78 +340,6 @@
        frontmatter 无 title（短文件整篇成块时用它做标题）
 [FM] 30-Resources/Ideas.md  (created ?, updated ?)
        frontmatter 无 title（短文件整篇成块时用它做标题）
-[H1] 90-Archive/2026-08-14-clippings-source/2个skill提升你的AI审美 - rednote - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「状态」与文件名「2个skill提升你的AI审美 - rednote - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/AI Agent专用浏览器来了！内存只有30MB - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「AI Agent专用浏览器来了！内存只有30MB - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/Cloudflare给AI发银行卡了，快去抢注名字！ - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「Cloudflare给AI发银行卡了，快去抢注名字！ - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/GitHub斩获超5万Stars！会议纪要有救了 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「GitHub斩获超5万Stars！会议纪要有救了 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/Obsidian开荒指南-连大模型，知识库好简单 - 2026-08-14 - xiaohongshu (2).md  (created ?, updated ?)
-       H1「转写」与文件名「Obsidian开荒指南-连大模型，知识库好简单 - 2026-08-14 - xiaohongshu (2)」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/Obsidian开荒指南-连大模型，知识库好简单 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「Obsidian开荒指南-连大模型，知识库好简单 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/一个人，也能拥有一家完整的 AI 公司。270 个专业 AI 角色，从产品、设计、开发到测试，让不同专长的 AI 分工协作、接力干活。 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「一个人，也能拥有一家完整的 AI 公司。270 个专业 AI 角色，从产品、设计、开发到测试，让不同专长的 AI 分工协作、接力干活。 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/七种不同的下拉框 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「七种不同的下拉框 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/个人技能包20万星，4个开源建议收藏 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「个人技能包20万星，4个开源建议收藏 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/微软悄悄开源了语音转写项目 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「微软悄悄开源了语音转写项目 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/想要 Vibe Coding？先学会动效描述！！ - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「想要 Vibe Coding？先学会动效描述！！ - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/我开源了高性能的亚托莉！！ - 2026-08-02 - bilibili.md  (created ?, updated ?)
-       H1「转写」与文件名「我开源了高性能的亚托莉！！ - 2026-08-02 - bilibili」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/斯坦福团队把1145个科研技能打包开源了#科研[话题]# #skill[话题]# #人工智能[话题]# #研究生[话题]# #ai[话题]# #论文[话题]# #论文写作[话题]# #科研工具[话题]# - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「斯坦福团队把1145个科研技能打包开源了#科研[话题]# #skill[话题]# #人工智能[话题]# #研究生[话题]# #ai[话题]# #论文[话题]# #论文写作[话题]# #科研工具[话题]# - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/爆火项目 Prime Agent 源码解析 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「爆火项目 Prime Agent 源码解析 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/神奇工具【第十一期】Freellm - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「神奇工具【第十一期】Freellm - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/第234集 AI打造专属AI维基百科,知识库体系 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「第234集 AI打造专属AI维基百科,知识库体系 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/让Obsidian起飞的10个skill! - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「让Obsidian起飞的10个skill! - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/这是一款可以让你终身学习的开源项目 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「这是一款可以让你终身学习的开源项目 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/2026-08-14-clippings-source/🟣Obsidian新手必学：导入小红书笔记 - 2026-08-14 - xiaohongshu.md  (created ?, updated ?)
-       H1「转写」与文件名「🟣Obsidian新手必学：导入小红书笔记 - 2026-08-14 - xiaohongshu」不一致
-[H1] 90-Archive/Engineering-Projects-AGENTS.md  (created ?, updated ?)
-       H1「🛠️ Engineering Projects — Agent Instructions」与文件名「Engineering-Projects-AGENTS」不一致
-[FM] 90-Archive/Engineering-Projects-AGENTS.md  (created ?, updated ?)
-       frontmatter 无 title（短文件整篇成块时用它做标题）
-[H1] 90-Archive/Engineering-Projects-LOG.md  (created ?, updated ?)
-       H1「Engineering Projects — 操作日志」与文件名「Engineering-Projects-LOG」不一致
-[FM] 90-Archive/Engineering-Projects-LOG.md  (created ?, updated ?)
-       frontmatter 无 title（短文件整篇成块时用它做标题）
-[FM] 90-Archive/Engineering-Projects-目录.md  (created ?, updated ?)
-       frontmatter 无 title（短文件整篇成块时用它做标题）
-[H1] 90-Archive/graph-ignore-rollback-technical-20260731-2140.md  (created 2026-07-31, updated ?)
-       H1「技术日志 — graph_ignore 标签批量回滚」与文件名「graph-ignore-rollback-technical-20260731-2140」不一致
-[FM] 90-Archive/graph-ignore-rollback-technical-20260731-2140.md  (created 2026-07-31, updated ?)
-       frontmatter 无 title（短文件整篇成块时用它做标题）
-[H1] 90-Archive/graph-ignore-rollback-user-20260731-2140.md  (created 2026-07-31, updated ?)
-       H1「用户日志 — graph_ignore 标签回滚」与文件名「graph-ignore-rollback-user-20260731-2140」不一致
-[FM] 90-Archive/graph-ignore-rollback-user-20260731-2140.md  (created 2026-07-31, updated ?)
-       frontmatter 无 title（短文件整篇成块时用它做标题）
-[H1] 90-Archive/graph-ignore-tagging-technical-20260731-2100.md  (created ?, updated ?)
-       H1「技术日志 — graph_ignore 标签批量添加」与文件名「graph-ignore-tagging-technical-20260731-2100」不一致
-[FM] 90-Archive/graph-ignore-tagging-technical-20260731-2100.md  (created ?, updated ?)
-       frontmatter 无 title（短文件整篇成块时用它做标题）
-[H1] 90-Archive/graph-ignore-tagging-user-20260731-2100.md  (created ?, updated ?)
-       H1「用户日志 — graph_ignore 标签批量添加」与文件名「graph-ignore-tagging-user-20260731-2100」不一致
-[FM] 90-Archive/graph-ignore-tagging-user-20260731-2100.md  (created ?, updated ?)
-       frontmatter 无 title（短文件整篇成块时用它做标题）
-[H1] Clippings/9 Habits for Clearer Speaking (I Wish I Knew Sooner).md  (created 2026-08-10, updated ?)
-       H1「Transcript」与文件名「9 Habits for Clearer Speaking (I Wish I Knew Sooner)」不一致
-[H1] TODO/TODO.md  (created 2026-08-10, updated 2026-08-10)
-       H1「📋 TODO 主台账」与文件名「TODO」不一致
-[H1] TODO/学习资源清单-解决当前问题.md  (created 2026-08-10, updated 2026-08-10)
-       H1「学习资源清单 · 解决当前问题」与文件名「学习资源清单-解决当前问题」不一致
-[FM] 任务节点/NASA-TechRise-2026-27.md  (created ?, updated ?)
-       frontmatter 无 title（短文件整篇成块时用它做标题）
 
 === 改名映射表（需人工确认）— Obsidian Vault ===
 旧名 | 建议新名 | 入链数 | 风险 | 相对路径
@@ -470,9 +352,8 @@ C2_动机与情绪模式.md | （待定） | 0 | - | 01-Meta/user-profile/C2_动
 C3_优势风险盲点.md | （待定） | 0 | - | 01-Meta/user-profile/C3_优势风险盲点.md
 D1_当前阶段与目标.md | （待定） | 0 | - | 01-Meta/user-profile/D1_当前阶段与目标.md
 D2_成长路径建议.md | （待定） | 0 | - | 01-Meta/user-profile/D2_成长路径建议.md
-Kalman-Filter.md | 最优状态估计算法 Kalman-Filter | 3 | ⚠️ 高引用 | 10-Areas/Engineering/概念/Kalman-Filter.md
-PID.md | PID（比例-积分-微分）闭环控制算法 | 3 | ⚠️ 高引用 | 10-Areas/Engineering/概念/PID.md
-TinyML.md | 在微控制器上运行的机器学习（模型 <100KB TinyML | 3 | ⚠️ 高引用 | 10-Areas/Engineering/概念/TinyML.md
+PID.md | PID（比例-积分-微分）闭环控制算法 | 4 | ⚠️ 高引用 | 10-Areas/Engineering/概念/PID.md
+TinyML.md | 在微控制器上运行的机器学习（模型 <100KB TinyML | 4 | ⚠️ 高引用 | 10-Areas/Engineering/概念/TinyML.md
 Obsidian RAG Roadmap.md | 待办事项、未决决策、观察项 Obsidian RAG Roadmap | 1 | - | 20-Projects/Obsidian RAG/Obsidian RAG Roadmap.md
 AI Agent.md | 具有自主性、记忆和工具使用能力的 AI 系统 AI Agent | 33 | ⚠️ 高引用 | 20-Projects/Summer-2026/AI Dev Workflow/概念/AI Agent.md
 Agent-Evals.md | 智能体评测 Agent-Evals | 8 | ⚠️ 高引用 | 20-Projects/Summer-2026/AI Dev Workflow/概念/Agent-Evals.md
@@ -496,36 +377,26 @@ RAG.md | 检索增强生成 RAG | 13 | ⚠️ 高引用 | 20-Projects/Summer-202
 ReAct.md | ReAct（Reasoning + Acting | 4 | ⚠️ 高引用 | 20-Projects/Summer-2026/AI Knowledge System/概念/ReAct.md
 Second Brain.md | 第二大脑概念 Second Brain | 8 | ⚠️ 高引用 | 20-Projects/Summer-2026/AI Knowledge System/概念/Second Brain.md
 Vector DB.md | Vector DB（向量数据库） | 4 | ⚠️ 高引用 | 20-Projects/Summer-2026/AI Knowledge System/概念/Vector DB.md
-OpenAI-Student-Collective.md | OpenAI Student Collectiv OpenAI-Student-Collective | 1 | - | 20-Projects/Summer-2026/OTHER CERT/论点/OpenAI-Student-Collective.md
-YC-AI-Student-Starter-Pack.md | YC AI Stack（学生版）机会情报 YC-AI-Student-Starter-Pack | 0 | - | 20-Projects/Summer-2026/OTHER CERT/论点/YC-AI-Student-Starter-Pack.md
+OpenAI-Student-Collective.md | OpenAI Student Collectiv OpenAI-Student-Collective | 2 | - | 20-Projects/Summer-2026/OTHER CERT/论点/OpenAI-Student-Collective.md
+YC-AI-Student-Starter-Pack.md | YC AI Stack（学生版）机会情报 YC-AI-Student-Starter-Pack | 1 | - | 20-Projects/Summer-2026/OTHER CERT/论点/YC-AI-Student-Starter-Pack.md
 HEBAT3_Technical_Report.md | （待定） | 0 | - | 20-Projects/Summer-2026/ROCKETRY/报告/HEBAT3_Technical_Report.md
 HEBAT3_Technical_Report.md | （待定） | 0 | - | 20-Projects/Summer-2026/ROCKETRY/报告/HEBAT3_Technical_Report.md
 report_checklist.md | HEBAT 3.0 Technical Repo report_checklist | 0 | - | 20-Projects/Summer-2026/ROCKETRY/报告/report_checklist.md
 report_checklist.md | （待定） | 0 | - | 20-Projects/Summer-2026/ROCKETRY/报告/report_checklist.md
 report_questions.md | 1.1 IREC 2026 and WAU Ro report_questions | 0 | - | 20-Projects/Summer-2026/ROCKETRY/报告/report_questions.md
 report_questions.md | （待定） | 0 | - | 20-Projects/Summer-2026/ROCKETRY/报告/report_questions.md
-AWT-vs-TransitionalFlows.md | SST k‑ω 中两个易混淆机制的本质区别 AWT-vs-TransitionalFlows | 2 | - | 20-Projects/Summer-2026/ROCKETRY/概念/AWT-vs-TransitionalFlows.md
+AWT-vs-TransitionalFlows.md | SST k‑ω 中两个易混淆机制的本质区别 AWT-vs-TransitionalFlows | 3 | ⚠️ 高引用 | 20-Projects/Summer-2026/ROCKETRY/概念/AWT-vs-TransitionalFlows.md
 HEBAT3_ORK_Design_Parameters.md | 从 rocket.ork 提取的 HEBAT 3 HEBAT3_ORK_Design_Parameters | 3 | ⚠️ 高引用 | 20-Projects/Summer-2026/ROCKETRY/背景/HEBAT3_ORK_Design_Parameters.md
 HEBAT3_ORK_Design_Parameters.md | （待定） | 3 | ⚠️ 高引用 | 20-Projects/Summer-2026/ROCKETRY/背景/HEBAT3_ORK_Design_Parameters.md
 HEBAT3_Project_Background.md | （待定） | 8 | ⚠️ 高引用 | 20-Projects/Summer-2026/ROCKETRY/背景/HEBAT3_Project_Background.md
 HEBAT3_Project_Background.md | （待定） | 8 | ⚠️ 高引用 | 20-Projects/Summer-2026/ROCKETRY/背景/HEBAT3_Project_Background.md
-ansys-near-wall-treatment-quotes.md | ANSYS Fluent 近壁面处理 ansys-near-wall-treatment-quotes | 2 | - | 20-Projects/Summer-2026/ROCKETRY/附录/ansys-near-wall-treatment-quotes.md
-y+-wall-treatment-english-report.md | （待定） | 1 | - | 20-Projects/Summer-2026/ROCKETRY/附录/y+-wall-treatment-english-report.md
-CSWA.md | Certified SOLIDWORKS Ass CSWA | 4 | ⚠️ 高引用 | 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/CSWA.md
-CSWP.md | Certified SOLIDWORKS Pro CSWP | 2 | - | 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/CSWP.md
-GD&T.md | 几何尺寸与公差（GD&T）概念卡 | 2 | - | 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/GD&T.md
-Six-Sigma.md | Six Sigma 概念卡 Six-Sigma | 1 | - | 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/Six-Sigma.md
+ansys-near-wall-treatment-quotes.md | ANSYS Fluent 近壁面处理 ansys-near-wall-treatment-quotes | 3 | ⚠️ 高引用 | 20-Projects/Summer-2026/ROCKETRY/附录/ansys-near-wall-treatment-quotes.md
+y+-wall-treatment-english-report.md | （待定） | 2 | - | 20-Projects/Summer-2026/ROCKETRY/附录/y+-wall-treatment-english-report.md
+CSWA.md | Certified SOLIDWORKS Ass CSWA | 5 | ⚠️ 高引用 | 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/CSWA.md
+CSWP.md | Certified SOLIDWORKS Pro CSWP | 3 | ⚠️ 高引用 | 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/CSWP.md
+GD&T.md | 几何尺寸与公差（GD&T）概念卡 | 3 | ⚠️ 高引用 | 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/GD&T.md
+Six-Sigma.md | Six Sigma 概念卡 Six-Sigma | 2 | - | 20-Projects/Summer-2026/SOLIDWORK CSWA/概念/Six-Sigma.md
 Ideas.md | （待定） | 0 | - | 30-Resources/Ideas.md
 Ideas.md | （待定） | 0 | - | 30-Resources/Ideas.md
-Engineering-Projects-AGENTS.md | 1. 入口协议 Engineering-Projects-AGENTS | 0 | - | 90-Archive/Engineering-Projects-AGENTS.md
-Engineering-Projects-LOG.md | Engineering Projects Engineering-Projects-LOG | 0 | - | 90-Archive/Engineering-Projects-LOG.md
-graph-ignore-rollback-technical-20260731-2140.md | 技术日志 graph-ignore-rollback-technical-20260731-2140 | 0 | - | 90-Archive/graph-ignore-rollback-technical-20260731-2140.md
-graph-ignore-rollback-user-20260731-2140.md | 用户日志 graph-ignore-rollback-user-20260731-2140 | 0 | - | 90-Archive/graph-ignore-rollback-user-20260731-2140.md
-graph-ignore-tagging-technical-20260731-2100.md | 技术日志 graph-ignore-tagging-technical-20260731-2100 | 0 | - | 90-Archive/graph-ignore-tagging-technical-20260731-2100.md
-graph-ignore-tagging-user-20260731-2100.md | 用户日志 graph-ignore-tagging-user-20260731-2100 | 0 | - | 90-Archive/graph-ignore-tagging-user-20260731-2100.md
-9 Habits for Clearer Speaking (I Wish I Knew Sooner).md | （待定） | 0 | - | Clippings/9 Habits for Clearer Speaking (I Wish I Knew Sooner).md
-TODO.md | TODO 主台账 | 2 | - | TODO/TODO.md
-NASA-TechRise-2026-27.md | （待定） | 2 | - | 任务节点/NASA-TechRise-2026-27.md
-NASA-TechRise-2026-27.md | （待定） | 2 | - | 任务节点/NASA-TechRise-2026-27.md
 
 == 完成：脚本只读，未修改任何文件。改名需人工确认后手动执行。 ==

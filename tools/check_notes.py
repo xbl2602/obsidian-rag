@@ -52,23 +52,34 @@ def split_target(target):
 
 
 def is_exempt(name, rel):
-    """豁免集：命中即不报。"""
+    """豁免集：命中即不报。
+
+    覆盖（2026-08-14 增强）：
+    - 结构文件：AGENTS/LOG/目录/Home/README 及其变体、MOC-*、_ 前缀工作流
+    - 目录型豁免：templates、00-Inbox、90-Archive（归档区命名规范支持加前缀变体）、
+      TODO、任务节点、Clippings（剪藏）
+    - 代码/数值命名、纯日期命名、graph-ignore-*（图谱忽略文件）、session/会话/临时
+    """
     stem = Path(name).stem
     low = name.lower()
-    if low in ("log.md", "目录.md", "home.md", "agents.md"):
+    if low in ("log.md", "目录.md", "home.md", "agents.md", "readme.md"):
         return True
     if low.startswith("_"):
         return True  # Obsidian 隐藏/工作流文件惯例（如 _workflow-*.md）
     if low.startswith("moc-"):
         return True
+    if re.match(r"^(log|agents|readme)-.+", low) and "90-Archive" in rel:
+        return True  # 归档区的加前缀结构文件变体（归档区 AGENTS.md 规范支持）
     if DATE_NAME_RE.match(stem):
         return True
     if CODE_NAME_RE.match(stem):
         return True
-    parts = Path(rel).parts
-    if any(p == "templates" for p in parts):
+    if low.startswith("graph-ignore-"):
         return True
-    if parts and parts[0] == "00-Inbox":
+    parts = Path(rel).parts
+    if any(p in ("templates", "TODO", "任务节点", "Clippings") for p in parts):
+        return True
+    if parts and parts[0] in ("00-Inbox", "90-Archive"):
         return True
     return False
 
@@ -244,7 +255,10 @@ def fmt_suggest(suggest, inlinks):
 
 def main():
     ap = argparse.ArgumentParser(description="笔记命名规范只读扫描")
-    ap.add_argument("library", nargs="?", default="", help="库名（默认全部注册库）")
+    ap.add_argument("library", nargs="?", default="",
+                    help="库名（默认 Obsidian Vault 主库）")
+    ap.add_argument("--all", action="store_true",
+                    help="扫描全部注册库（默认只扫主库；agents/skills/test 非笔记库需显式指定）")
     ap.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     args = ap.parse_args()
 
@@ -255,8 +269,14 @@ def main():
             avail = ", ".join(str(e.get("name", "?")) for e in reg)
             print(f"库不存在：{args.library}。可用：{avail}", file=sys.stderr)
             sys.exit(1)
-    else:
+    elif args.all:
         entries = reg
+    else:
+        # 默认只扫主库：agents/skills/test 是 opencode agent 定义/skill/测试文件，
+        # 不是笔记，不按笔记命名规则评判（需显式指定才会扫）
+        entries = [e for e in reg if e["name"] == "Obsidian Vault"]
+        if not entries:
+            entries = reg[:1]  # 主库未注册时兜底用第一个库
 
     all_data = []
     for e in entries:
