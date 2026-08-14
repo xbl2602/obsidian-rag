@@ -24,7 +24,7 @@ from index import (HEARTBEAT_TIMEOUT, LockBusyError, index_library, kb_stale,
                    log, progress_text, read_progress)
 from library import (effective_config, list_summary, load_registry, meta_path,
                      resolve_entries)
-from retriever import hybrid_search, reset_bm25_index
+from retriever import hybrid_search_hyde, reset_bm25_index
 from singleton import acquire_singleton
 
 server = MCPServer("obsidian-rag", title="Obsidian RAG", version="0.2.1")
@@ -121,6 +121,17 @@ def ensure_fresh():
             if stats.get("missing"):
                 parts.append(f"{cfg['name']} 路径不存在，跳过自动同步（保留旧索引）")
                 continue
+            if stats.get("emptied"):
+                # 目录还在但一个文件都扫不到：几乎总是"源文件没放回去"而不是
+                # "用户真的删光了"。此时同步 = 清空该库索引，代价不可逆，故跳过。
+                # （典型场景：import.py --create 建了空目录，见 index.kb_stale）
+                parts.append(f"{cfg['name']} 目录为空（扫不到任何文件），"
+                             f"跳过自动同步以免清空索引；确认源文件已放回该路径后可手动重建")
+                continue
+            if stats.get("version_upgrade"):
+                parts.append(f"{cfg['name']} 切块逻辑版本升级，需重建索引")
+                stale_libs.append(cfg)
+                continue
             if stats.get("changed"):
                 parts.append(f"{cfg['name']} {stats['changed']} 个文件变更")
             if stats.get("added"):
@@ -178,9 +189,11 @@ def search_knowledge(query: str, top_k: int = None, libraries: str = "", exclude
     """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 全部库；"A" 只搜单库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 全部) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径] 与 [块 k/N] 位置标记。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
     try:
         note = ensure_fresh()
-        return note + hybrid_search(query, top_k=top_k, libraries=libraries,
-                                    exclude=exclude, folder=folder,
-                                    include_body=include_body)
+        # hybrid_search_hyde：hyde_enabled=false（默认）时就是普通 hybrid_search，
+        # 零额外开销。2026-08-14 接线——此前 HyDE 整个特性没有任何调用方。
+        return note + hybrid_search_hyde(query, top_k=top_k, libraries=libraries,
+                                         exclude=exclude, folder=folder,
+                                         include_body=include_body)
     except Exception as e:
         log(f"search_knowledge 失败：{e}")
         return f"（检索失败：{e}；请稍后重试或检查 Vault/索引状态）"

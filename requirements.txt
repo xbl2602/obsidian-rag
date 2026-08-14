@@ -13,4 +13,7 @@
 chromadb==1.5.9
 mcp==2.0.0
 sentence-transformers==5.6.1
+jieba==0.42.1       # BM25 中文分词。缺失时 retriever 会降级为纯 2-gram（召回略降），
+                    # 但此前它不在本文件里且是裸 import，新机器部署后一检索就报
+                    # "No module named 'jieba'" 导致检索 100% 不可用。
 flet==0.86.5        # 桌面控制台（gui/app.py，可选安装：不装不影响 CLI/MCP）

@@ -39,7 +39,7 @@ EMBED_BATCH_SIZE = CFG["embed_batch_size"]
 
 # 切块/清洗逻辑版本：升级后旧索引需重嵌（指纹感知不到代码升级），
 # meta 版本不匹配时 index_vault 自动按全量重建处理。
-META_VERSION = 5  # v5: chunk_char_limit 1500→600（小块语义纯净；配合 small-to-big 回填）
+META_VERSION = 6  # v6: 围栏内伪标题修复 + 裸 wikilink 保留 + 文件名/title/tags 入嵌入 + 长段落守上限
 
 
 class LockBusyError(RuntimeError):
@@ -72,10 +72,56 @@ _heartbeat_stop = threading.Event()
 
 
 def _pid_alive(pid):
-    """进程是否存活（signal 0 探测）。"""
+    """进程是否存活。
+
+    ⚠️ 不能用 os.kill(pid, 0)：Windows 上 CPython 的 os.kill 对除 CTRL_C_EVENT /
+    CTRL_BREAK_EVENT 以外的任何 sig 都执行 OpenProcess + TerminateProcess，
+    sig=0 也不例外——那是"杀掉目标进程"，不是"探测存活"。
+    本项目有三处依赖它（单例守卫、锁持有者判定、GUI 每秒轮询索引进程），
+    在 Windows 上会分别导致：杀掉正在服务的 server、在 Chroma 写一半时杀掉
+    持锁进程、GUI 把自己刚拉起的索引子进程杀掉（2026-08-14 审计 F5）。
+
+    Windows 走 OpenProcess(SYNCHRONIZE) + WaitForSingleObject(0)：
+    已退出的进程句柄是 signaled 态，未退出则 WAIT_TIMEOUT。纯只读，无副作用。
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if _IS_WINDOWS:
+        import ctypes
+        from ctypes import wintypes
+        SYNCHRONIZE = 0x00100000
+        WAIT_TIMEOUT = 0x00000102
+        ERROR_ACCESS_DENIED = 5
+        try:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            k32.WaitForSingleObject.restype = wintypes.DWORD
+            k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            h = k32.OpenProcess(SYNCHRONIZE, False, pid)
+            if not h:
+                # 拿不到句柄：ACCESS_DENIED 说明进程确实存在（只是无权限），
+                # 其余（典型 ERROR_INVALID_PARAMETER=87）说明该 PID 不存在。
+                return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+            try:
+                return k32.WaitForSingleObject(h, 0) == WAIT_TIMEOUT
+            finally:
+                k32.CloseHandle(h)
+        except Exception as e:  # ctypes 不可用等极端情况：宁可报"存活"，不误杀
+            log(f"进程存活探测失败（视为存活）：{e}")
+            return True
     try:
         os.kill(pid, 0)
         return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # 进程存在，只是不属于当前用户
     except OSError:
         return False
 
@@ -521,12 +567,19 @@ def split_by_headings(text):
     "FLUENT 配置与求解设置 / 1. 湍流模型与壁面处理（SST k‑ω）"，
     子标题不脱离父标题（H3 块携带 H1/H2 祖先）。文件开头无标题部分
     heading_path 为空串。标题行本身不进正文（与历史行为一致）。
+
+    2026-08-14：跳过 ``` / ~~~ 围栏代码块内的 # 行。此前 Python/Shell 注释
+    会被当成标题，不只是多切一节——它会成为其后所有真实小节的"父标题"，
+    而标题路径是要拼进嵌入文本的，等于把代码注释混进了正文向量（审计 F8）。
     """
     lines = text.splitlines()
     chunks = []
     path = []  # [(level, text)] 标题栈
     current_lines = []
     heading_re = re.compile(r"^(#{1,3})\s+(.+)$")
+    fence_re = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+    fence_char = ""      # 当前围栏的字符（` 或 ~），空 = 不在围栏内
+    fence_len = 0        # 开栏标记长度；闭栏须同字符且不短于它
 
     def flush():
         if current_lines:
@@ -535,6 +588,18 @@ def split_by_headings(text):
                 chunks.append((" / ".join(t for _, t in path), body))
 
     for line in lines:
+        fm = fence_re.match(line)
+        if fm:
+            marker = fm.group(1)
+            if not fence_char:
+                fence_char, fence_len = marker[0], len(marker)
+            elif marker[0] == fence_char and len(marker) >= fence_len:
+                fence_char, fence_len = "", 0
+            current_lines.append(line)
+            continue
+        if fence_char:
+            current_lines.append(line)  # 围栏内一律当正文
+            continue
         m = heading_re.match(line)
         if m:
             flush()
@@ -625,35 +690,81 @@ def split_list_block(text, max_len=None):
     return [c for c in chunks if c]
 
 
+def _clean_scalar(s):
+    return s.strip().strip('"').strip("'").strip()
+
+
 def extract_frontmatter(text):
-    """提取 frontmatter 元数据，返回 dict 和去掉 frontmatter 的正文。"""
+    """提取 frontmatter 元数据，返回 dict 和去掉 frontmatter 的正文。
+
+    支持三种写法（值一律规整成逗号分隔的扁平字符串）：
+        title: 火箭发动机笔记        → "火箭发动机笔记"
+        aliases: [发动机, 引擎]      → "发动机, 引擎"
+        tags:                        → "航天, CFD"
+          - 航天
+          - CFD
+    2026-08-14：此前只认平铺标量，Obsidian 最常见的多行 tags 会解析成空串（审计 F19）。
+    """
     meta = {}
     body = text
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end != -1:
-            fm = text[3:end]
-            body = text[end + 4 :]
-            for line in fm.splitlines():
-                m = re.match(r"^([\w]+):\s*(.*)$", line)
-                if m:
-                    meta[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    if not text.startswith("---"):
+        return meta, body
+    end = text.find("\n---", 3)
+    if end == -1:
+        return meta, body
+    fm = text[3:end]
+    body = text[end + 4:]
+    cur_key = None
+    for line in fm.splitlines():
+        if not line.strip():
+            continue  # 空行不打断当前列表
+        item = re.match(r"^\s+-\s+(.*)$", line)
+        if item and cur_key:
+            v = _clean_scalar(item.group(1))
+            if v:
+                meta[cur_key] = f"{meta[cur_key]}, {v}" if meta.get(cur_key) else v
+            continue
+        m = re.match(r"^([\w-]+):\s*(.*)$", line)
+        if m:
+            cur_key = m.group(1)
+            val = _clean_scalar(m.group(2))
+            if val.startswith("[") and val.endswith("]"):
+                val = ", ".join(_clean_scalar(p) for p in val[1:-1].split(",")
+                                if _clean_scalar(p))
+            meta[cur_key] = val
+        else:
+            cur_key = None  # 无法识别的行：结束当前键，避免误吞后续列表项
     return meta, body
 
 
 def clean_wikilinks(text):
-    """清洗 wiki 链接（[[...]]）：别名保留、纯导航引用去除、路径垃圾剔除。
+    """清洗 wiki 链接（[[...]]）：保留读者实际看到的文字，剥掉路径与锚点。
 
-    - [[目标|别名]] / [[目标\\|别名]]（表格转义管道）→ 保留别名（读者实际看到的文字）
-    - [[目标]] / [[目标#标题]] / [[目标#^块]] / ![[嵌入]] → 去除
-    在切块前调用，避免纯引用标签污染嵌入与检索（引用方不应因标签被命中）。
+    - [[目标|别名]] / [[目标\\|别名]]（表格转义管道）→ 别名
+    - [[目标]]                                    → 目标
+    - [[folder/目标#标题]] / [[目标#^块id]]        → 目标（去路径、去锚点）
+    - [[#标题]]（本文件锚点）                      → 标题
+    - ![[嵌入]]（图片/附件嵌入）                    → 去除
+    在切块前调用。
+
+    2026-08-14：此前裸 [[目标]] 被整个删掉（返回空串）。Obsidian 里裸链接是
+    主流写法，而链接目标恰恰是笔记里最高信号的概念词——等于把关键词同时从
+    嵌入文本和 BM25 词表里抹掉（审计 F9）。
     """
     def _repl(m):
+        if m.group(0).startswith("!"):
+            return ""  # ![[...]] 是附件嵌入，不是正文
         inner = m.group(1).replace(r"\|", "|")  # 表格里 \| 是转义管道，还原为分隔符
         parts = inner.split("|")
         if len(parts) > 1:
             return parts[1].strip()
-        return ""
+        target = parts[0].strip()
+        head, _, anchor = target.partition("#")
+        head = head.strip()
+        if head:
+            return head.rsplit("/", 1)[-1].strip()  # 去掉 folder/ 路径前缀
+        anchor = anchor.strip()
+        return "" if anchor.startswith("^") else anchor  # ^块id 无语义，标题保留
 
     return re.sub(r"!?\[\[([^\]]*)\]\]", _repl, text)
 
@@ -731,16 +842,25 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
     导致 0 块）也视为过期，触发重建。
     库路径不存在：返回 stale=True 且 stats 带 missing=True（调用方据此跳过
     自动同步并保留旧索引，防止"路径消失 → 判全删 → 清空该库"）。
+    库路径存在但一个文件都扫不到、而 meta 里有记录：带 emptied=True，同样跳过
+    （2026-08-14 审计 F16：import.py --create 会主动建一个空目录，
+    "空目录"不带 missing 标志，于是下一次检索的自动同步会判"文件全删"，
+    把刚导入的索引清空。import.py:291 的警告正是这个场景，而 --create 结构性
+    地保证了它成立）。
+    切块逻辑版本（META_VERSION）变化：带 version_upgrade=True（审计 F14——
+    此前 kb_stale 从不看 _version，版本号提升不会主动触发重建，要等到碰巧
+    有文件改动才顺带生效）。
     """
     if not Path(vault).is_dir():
         return True, {"changed": 0, "added": 0, "removed": 0, "missing": True}
     meta = load_meta(meta_file)
-    if not meta:
-        return True, {"changed": 0, "added": len(collect_md_files(vault, exclude_dirs,
-                                                                  exclude_files,
-                                                                  exclude_patterns,
-                                                                  extensions)), "removed": 0}
     files = collect_md_files(vault, exclude_dirs, exclude_files, exclude_patterns, extensions)
+    if meta and not files:
+        return True, {"changed": 0, "added": 0, "removed": 0, "emptied": True}
+    if meta.pop("_version", 1) != META_VERSION:
+        return True, {"changed": 0, "added": 0, "removed": 0, "version_upgrade": True}
+    if not meta:
+        return True, {"changed": 0, "added": len(files), "removed": 0}
     seen = set()
     changed = 0
     added = 0
@@ -891,7 +1011,8 @@ def index_vault(vault, incremental=True, full=False):
     return _index_core(vault, COLLECTION_NAME, INDEX_META,
                        EXCLUDE_DIRS, STRUCTURE_FILES, EXCLUDE_PATTERNS, ["md"],
                        CFG["chunk_char_limit"], CFG["short_doc_char_limit"],
-                       library_label="")
+                       library_label="",
+                       incremental=incremental, full=full)  # 2026-08-14：此前两个参数都没往下传
 
 
 def index_library(lib, incremental=True, full=False):
@@ -1005,24 +1126,55 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                                 for sub in split_list_block(p, chunk_max):
                                     chunks.append((heading, sub))
                             else:
-                                for s in split_sentences(p):
+                                # 2026-08-14：此前这里漏传 chunk_max（相邻的
+                                # split_list_block 传了），长无标点段落会突破块上限
+                                for s in split_sentences(p, chunk_max):
                                     chunks.append((heading, s))
             anchor = ""  # v3 起标题链已拼入块文本，中文锚点机制停用
+
+            # v6：文件级语义锚点 = 文件名 + frontmatter title + tags。
+            # Obsidian 里文件名往往就是概念本体，此前这三样只写进 metadata，
+            # 完全没进向量、也没进 BM25 词表（BM25 建在 documents 上）——
+            # 与"裸 wikilink 被删"叠加后，笔记的概念层信息基本没进索引（审计 F20）。
+            title = front.get("title", "")
+            tags = front.get("tags", "")
+            doc_parts = [Path(rel).stem, title, tags]
+
+            def _ctx_for(heading):
+                """文件级锚点 + 标题路径，逐段去重。
+
+                去重是必要的：短文档走整篇成块时 heading 直接取 title，
+                文件名与 title 也常常相同，不去重会得到
+                "火箭发动机 / 火箭发动机设计笔记 / 航天 / 火箭发动机设计笔记"
+                这种重复串，白占 token 还会让该词在块内词频虚高、扭曲 BM25。
+                """
+                out, seen = [], set()
+                for part in doc_parts + (heading.split(" / ") if heading else []):
+                    part = (part or "").strip()
+                    key = part.lower()
+                    if part and key not in seen:
+                        seen.add(key)
+                        out.append(part)
+                return " / ".join(out)
 
             for i, (heading, chunk_text) in enumerate(chunks):
                 cid = f"{rel}::{i}"
                 new_ids.append(cid)
                 # v3：标题链拼入每个块的嵌入/BM25 文本（标题是块所属主题的最强锚点；
-                # 实测 FLUENT 文件干货块相似度 0.39→0.59）。metadata 记录 hp 供输出剥离。
+                # 实测 FLUENT 文件干货块相似度 0.39→0.59）。
+                # v6：前面再拼文件级锚点。metadata 记录完整前缀 ctx 供输出剥离
+                # （hp 仍单独保留，_expand_parent 按它分组父节）。
                 hp = heading
-                new_texts.append((hp + "\n" if hp else "") + chunk_text)
+                ctx = _ctx_for(hp)
+                new_texts.append((ctx + "\n" if ctx else "") + chunk_text)
                 new_metas.append({
                     "file": rel,
                     "heading": heading,
-                    "title": front.get("title", ""),
-                    "tags": front.get("tags", ""),
+                    "title": title,
+                    "tags": tags,
                     "chunk": str(i),
                     "hp": hp,
+                    "ctx": ctx,
                 })
             meta[rel] = {"hash": fhash, "chunks": len(chunks), "size": st.st_size, "mtime": st.st_mtime_ns}
             changed += 1

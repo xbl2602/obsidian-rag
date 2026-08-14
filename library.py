@@ -15,6 +15,7 @@ null = 继承 config.json 全局值。embedding 模型保持全局（跨库并�
   未知库名 / 结果为空集 → 抛 ValueError（含可用库名清单）。
 """
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -48,16 +49,30 @@ def validate_name(name):
 
 
 def collection_for(name, override=None):
-    """库的 Chroma collection 名：显式 override 优先，否则派生 kb_<sanitized name>。
+    """库的 Chroma collection 名：显式 override 优先，否则由库名派生。
 
-    非 [a-zA-Z0-9._-] 字符（中文/空格等）替换为 _ 且保留（不 strip 尾部，
-    避免中英文差异的库名撞 collection）；首字符由 kb_ 前缀保证合法；
-    撞名由 add/set_config 时的唯一性校验兜底。
+    非 [a-zA-Z0-9._-] 字符（中文/空格等）替换为 _。若替换后的名字仍然"干净"
+    （以字母数字开头结尾、无连续下划线），沿用历史派生结果 kb_<sanitized>，
+    保证既有库的 collection 名不变、已建索引不被孤立。
+
+    否则（典型：纯中文库名）追加库名的 md5 前 8 位：
+        '火箭笔记' -> 'kb_' + hash   （旧规则会得到 'kb_____'）
+    2026-08-14（审计 F15）：旧规则把所有非 ASCII 字符压成下划线，导致
+      - 任意两个等长纯中文库名派生出完全相同的 collection（'火箭笔记' 与
+        '工程日志' 都是 'kb_____'），第二个库注册时被硬性挡住；
+      - 名字以下划线结尾，不符合 Chroma 经典命名规则
+        ^[a-zA-Z0-9][a-zA-Z0-9._-]*[a-zA-Z0-9]$。
+    新规则同时解决唯一性与合法性，且对已有的 ASCII 系库名完全向后兼容。
     """
     if override:
         return override
     base = re.sub(r"[^a-zA-Z0-9._-]", "_", name.lower())
-    return f"kb_{base}"[:63]
+    legacy = f"kb_{base}"[:63]
+    if re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*[a-zA-Z0-9]", legacy) and "__" not in legacy:
+        return legacy
+    digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+    stem = re.sub(r"_+", "_", base).strip("._-")[:45]
+    return f"kb_{stem}_{digest}" if stem else f"kb_{digest}"
 
 
 def meta_path(name):

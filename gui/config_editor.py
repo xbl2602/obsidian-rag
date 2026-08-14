@@ -37,7 +37,11 @@ GROUPS = [
         ("fusion_dense_weight", "float"), ("fusion_bm25_weight", "float"),
         ("dense_candidate_factor", "int"), ("dense_min_candidates", "int"),
         ("rerank_model", "str"), ("rerank_candidates", "int"),
-        ("rerank_enabled", "bool"),
+        ("rerank_enabled", "bool"), ("small_to_big", "bool"),
+    ]),
+    ("HyDE 查询增强（需本地 LLM，默认关）", [
+        ("hyde_enabled", "bool"), ("hyde_llm_url", "str"),
+        ("hyde_llm_model", "str"), ("hyde_min_confidence", "float"),
     ]),
     ("工具默认值", [
         ("default_top_k", "int"),
@@ -50,7 +54,19 @@ GROUPS = [
 ALL_KEYS = [k for _, fields in GROUPS for k, _ in fields]
 
 # 主设置页不展示尖括号反斜杠的 vault，避免误改路径类长文本
-TEXT_EDITABLE = {"vault", "model_name", "collection_name", "truncate_mark"}
+TEXT_EDITABLE = {"vault", "model_name", "collection_name", "truncate_mark",
+                 "hyde_llm_url", "hyde_llm_model"}
+
+
+def missing_keys():
+    """DEFAULTS 里有、而设置页没有暴露的配置项（应为空）。
+
+    2026-08-14（审计 F12）：2026-08-13 新增的 small_to_big / hyde_* 五个键
+    只改了 DEFAULTS，既没进 CONFIG_TEMPLATE 也没进这里，于是既不能在
+    config.json 里看到、也不能在 GUI 里调——"快速调参"对它们完全失效。
+    tests/test_config_editor.py 据此做回归。
+    """
+    return [k for k in DEFAULTS if k not in ALL_KEYS]
 
 
 def _split_field(text):

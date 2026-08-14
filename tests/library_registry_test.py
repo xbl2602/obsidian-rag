@@ -2,6 +2,7 @@
 
 运行：cd obsidian-rag && .venv\\Scripts\\python tests\\library_registry_test.py
 """
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -58,10 +59,22 @@ def test_meta_rename_on_migration():
 def test_collection_derivation():
     with tempfile.TemporaryDirectory() as td:
         make_isolated(td)
+        # 干净的 ASCII 系库名沿用历史派生结果（既有库的 collection 不能改名，
+        # 否则已建索引被孤立）
         assert library.collection_for("Obsidian Vault") == "kb_obsidian_vault"
-        # 中文/空格等非 [a-zA-Z0-9._-] 字符替换为 _ 且保留（尾部不剥，防撞名）
-        assert library.collection_for("Rocketry 项目") == "kb_rocketry___"
         assert library.collection_for("any", "custom_col") == "custom_col"
+
+        # 2026-08-14（审计 F15）：旧规则把非 ASCII 全压成下划线并原样保留，
+        # 结果 ①任意两个等长纯中文库名派生出同一个 collection ②名字以下划线
+        # 结尾，不符合 Chroma 的 ^[a-zA-Z0-9]...[a-zA-Z0-9]$ 命名规则。
+        # 新规则：这类退化名字追加库名 md5 前 8 位。
+        assert library.collection_for("Rocketry 项目") == "kb_rocketry_" + \
+            __import__("hashlib").md5("Rocketry 项目".encode("utf-8")).hexdigest()[:8]
+        names = ["火箭笔记", "工程日志", "笔记", "日志"]
+        cols = [library.collection_for(n) for n in names]
+        assert len(set(cols)) == len(names), "等长中文库名仍然撞名：%s" % cols
+        for c in cols:
+            assert re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,61}[a-zA-Z0-9]", c), c
 
 
 def test_add_and_validation():

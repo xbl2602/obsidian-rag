@@ -931,3 +931,78 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
   重建耗时 bge-m3 38s/@1GB 显存 vs Qwen3 ~320s/@4.5-7.7GB → **保留 bge-m3**（重建快、显存安全，评估无差异）。
   失败查询 个人能力（抽象词面零重叠 + B3 笔记缺概括关键词）属笔记质量问题，HyDE 3b 模型生成不稳未能救回。
 - **遗留**：bge-m3 → Qwen3 可切换（改 model_name + --full 重建），留了评估对比数据；HyDE 默认关（需 LM Studio）。
+
+---
+
+## 问题 22：深度审计 + 20 项修复——配置回退 / os.kill 杀进程 / 向量污染 / 死键死代码（2026-08-14）
+
+- **背景**：用户要求（1）检查检索、切块、向量化，在约束内提高索引质量；（2）深入 audit 找潜在致命问题，
+  先验证真实存在再给清单，不急于修。当前在 Linux 虚拟机（无 GPU、无依赖、9.5GB 磁盘），
+  目标工况是 Windows+GPU，需评估验证方式以免搞坏虚拟机。
+- **验证手段**：零依赖 stub 沙箱——仓库副本（去 .git/data）+ 注入 chromadb/mcp 最小 stub，
+  真实执行仓库代码。切块/分词/BM25/融合/配置/锁/meta 全是纯逻辑，0MB 成本即可验证。
+  不装 torch（527MB）、不下模型（bge-m3 2.3GB + reranker 1.1GB），装齐峰值逼近磁盘上限且本机无 GPU。
+  Windows/CUDA/GUI 相关结论一律标注"无法在本机验证"。审计报告见 `docs/2026-08-14-index-quality-audit.md`。
+- **致命问题（已全部修复，F 编号对应审计报告）**：
+  1. **F2 v5 大改被静默回退（最严重）**：`DEFAULTS` 与 `CONFIG_TEMPLATE` 是两份互相矛盾的默认值
+     （chunk 600 vs 1500、候选池 50 vs 10）。`load_config` 缺文件时写模板但**返回 DEFAULTS**，
+     于是首跑 600/50、第二跑起 1500/10——问题 21 的收益从第二次启动就没了。
+     且 `small_to_big` 不在模板里反而一直取 DEFAULTS 的 True，得到最坏组合：1500 大块 + 小块专用的父节回填。
+     导出包不含 config.json，**每一份分发副本必然踩中**。
+     修：模板值/注释对齐 DEFAULTS（保留全部手写注释）、`template_consistency_errors()` 断言出厂种子、
+     `load_config` 对既有 config.json 幂等补写缺键（老机器永远拿不到新键的问题一并解决）。
+  2. **F5 `os.kill(pid,0)` 在 Windows 上是终止进程，不是探测存活**：CPython 对非 CTRL_* 信号一律
+     `OpenProcess`+`TerminateProcess`。三个调用点：单例守卫会杀掉正在服务的 server 然后自己也退出（一个不剩）；
+     锁超时会在 Chroma 写一半时杀掉持锁进程；**GUI 主循环每 1 秒调 `index_busy()`**，会杀掉自己拉起的索引子进程。
+     `gui/app.py:47` 早有注释"实测 os.kill 对 pythonw 误判已死导致重复实例"——双实例正是这个 bug 造成的，
+     不是它在解决的问题（另一分支 OpenProcess 失败 → 误判已死 → 两个都跑）。
+     修：Windows 改 `OpenProcess(SYNCHRONIZE)`+`WaitForSingleObject(0)` 只读探测，singleton 复用同一实现。
+  3. **F1 jieba 不在 requirements.txt**：`tokenize` 内裸 import，新机器按 AI_GUIDE 部署后一检索就
+     ImportError，被 server 宽 except 吞成"（检索失败：No module named 'jieba'）"，**检索 100% 不可用**。
+     修：加 `jieba==0.42.1` + 缺失时降级纯 2-gram。
+  4. **F8 代码围栏内的 # 污染向量**：不只是多切一节——伪标题会成为其后所有真实小节的父标题，
+     而标题路径要拼进嵌入文本，等于把 Python 注释混进正文向量。修：跟踪 ```/~~~ 围栏状态。
+  5. **F9 裸 `[[wikilink]]` 被整个删除**：`[[火箭发动机]]` → `见  一节`。Obsidian 里裸链接是主流写法，
+     链接目标恰是最高信号的概念词，被同时从嵌入文本和 BM25 词表抹掉。修：保留目标词，去路径与 #锚点，仅 `![[]]` 删除。
+  6. **F20 文件名/title/tags 从不进嵌入**：只写 metadata。与 F9 叠加后概念层信息基本没进索引。
+     修：文件级锚点拼进待嵌入文本（逐段去重——短文档 heading 取 title、文件名常与 title 同名，
+     不去重会产生重复串、扭曲 BM25），完整前缀存 metadata `ctx` 供检索侧剥离。
+  7. **F6 置信度与排序不同源**：排序用重排分、置信度用 RRF 分。实测输出 0.21/0.25/0.30/0.38/1.00——
+     声称降序却单调递增，默认配置下的常态，直接误导消费输出的 LLM。修：重排生效时用 sigmoid(重排 logit)。
+  8. **F7 BM25 缓存永不失效**：指纹只比 `count()`，而"改一段文字"通常不改块数。GUI 把 index.py 当
+     独立子进程拉起，server 里的 `reset_bm25_index()` 根本不会被调用 → 关键词侧一直用旧文本。
+     修：指纹改 `(count, index_meta 的 mtime_ns)`。
+  9. **F16 `--create` 导入后下一次检索清空索引**：import.py 主动建空目录，而 `kb_stale` 对"空目录"
+     不带 missing 标志 → 自动同步判"文件全删" → 清空刚导入的数据。import.py:291 的警告正是这个场景，
+     而 `--create` 结构性保证了它成立。修：返回 `emptied` 标志，优先于 version_upgrade（宁可不重建也不清空）。
+  10. **F10/F11 死键与死代码**：`fusion_dense_weight`/`fusion_bm25_weight` 赋值后从不读取（AST 确认），
+      却挂在 GUI"实时生效"分组下；`hybrid_search_hyde` 零调用方，问题 21 的 HyDE 是未接线的死代码。
+      修：权重接进 RRF（DEFAULTS 改 1.0/1.0 保持等权，现有排序不变）；HyDE 由 server 接入，
+      新增 `return_top_confidence` 让首轮直接带回置信度，去掉原来"开 HyDE = 2 倍检索开销"。
+  11. **其余**：F3 转义引号打断注释剥离致整份配置静默回退（GUI 里 truncate_mark 打个双引号即触发）；
+      F4 配置零类型校验（`rerank_enabled:"false"` 是真值，重排照开）；F12 模板与 GUI 各缺同样 5 个键；
+      F13 `index_vault` 不转发 incremental/full（问题 21 修了孪生的 `index_library`，漏了这个）；
+      F14 `kb_stale` 从不看 `_version`，版本号提升不主动触发重建；F15 等长中文库名派生同一 collection
+      且以下划线结尾不合 Chroma 命名规则；F17 `split_sentences` 收不到每库 chunk_max；
+      F18 "父节全文"缺命中块、顺序打乱（命中第3块输出 3,1,2）、每段带重复前缀；F19 多行 YAML tags 解析成空串。
+- **验证**：新增 `tests/audit_regression_test.py` 19/19 通过；既有套件 `library_registry_test` 13/14
+  （唯一失败 numpy 缺失，HEAD 上同样）、`server_singleton_test` 5/5、`test_config_editor` 全绿。
+  另跑了完整 E2E（真实 _index_core + 假编码器 + stub Chroma）：切块、ctx 组装、small-to-big 回填全部正确。
+- **过程中的额外发现**：
+  1. **仓库自带的 `test_config_editor.test_groups_cover_all_defaults` 在 HEAD 上就是红的**，
+     报的正是 F12 那 5 个键——这条回归测试早就存在、早就失败，只是没人跑（用 git archive HEAD 复现确认）。
+  2. **F17 性质更正**：不是"长段落突破块上限"（单句超限"宁大勿断"是既定设计），
+     而是每库 chunk_char_limit 覆盖传不到句子层，会回落到全局配置。
+  3. E2E 抓到我自己在 F20 引入的 ctx 重复串 bug，已修并补测试。
+- **遗留 / 上线前须知**：
+  - **META_VERSION 5→6，必须一次全量重建**（切块规则与嵌入文本都变了）。修好的 F14 会让 ensure_fresh
+    自动发现版本变化并触发；也可 `python index.py --library <名> --full`。
+  - **重建前先确认 `data/config.json` 的 `chunk_char_limit` 实际值**。补写逻辑不改已存在的键值，
+    若它现在是 1500 则重建出来仍是 v4 大块，600+small-to-big 的配套设计拿不到收益。
+  - 若 config.json 里已有 `fusion_*_weight: 0.6/0.4`，它们现在是**真生效**的了（等价于给 dense 加权）。
+    要保持与此前完全一致的排序需手动改成 1.0/1.0。
+  - 中文库名的 collection 会改名（当前唯一注册库 `Obsidian Vault` → `kb_obsidian_vault` 不受影响）。
+  - **未审计面**：`gui/widgets.py`(1562 行)、`gui/app.py` 其余部分、CUDA 降级状态机、Windows msvcrt 锁、
+    心跳/进度写入原子性、export.py 完整数据完整性路径。
+  - **无法在本机验证**：F5 三个 Windows 调用点（Linux 上 os.kill(pid,0) 是良性探测，本机测试全绿）、
+    Chroma 1.5.9 Rust 后端是否拒绝退化 collection 名（校验规则在 segment.py，而 PersistentClient 已走 Rust 后端）。

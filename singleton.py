@@ -16,18 +16,21 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from index import DATA_DIR
+from index import DATA_DIR, _pid_alive
 
 SERVER_PID_FILE = DATA_DIR / "server.pid"
 
 
 def pid_alive(pid):
-    """进程是否存活（signal 0 探测，与 index.py 同一策略）。"""
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    """进程是否存活（复用 index._pid_alive 的跨平台安全探测）。
+
+    2026-08-14（审计 F5）：这里原本自己写了一份 os.kill(pid, 0)。在 Windows 上
+    CPython 的 os.kill 对非 CTRL_* 信号一律 OpenProcess + TerminateProcess，
+    于是"单例守卫"会先杀掉正在服务的那个 server，然后本进程再 sys.exit(0)——
+    两个都没了，MCP 直接不可用。改为复用 index 里的只读探测（Windows 走
+    OpenProcess(SYNCHRONIZE) + WaitForSingleObject）。
+    """
+    return _pid_alive(pid)
 
 
 def release_singleton(pid_file=SERVER_PID_FILE):
