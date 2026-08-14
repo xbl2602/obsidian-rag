@@ -1006,3 +1006,15 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
     心跳/进度写入原子性、export.py 完整数据完整性路径。
   - **无法在本机验证**：F5 三个 Windows 调用点（Linux 上 os.kill(pid,0) 是良性探测，本机测试全绿）、
     Chroma 1.5.9 Rust 后端是否拒绝退化 collection 名（校验规则在 segment.py，而 PersistentClient 已走 Rust 后端）。
+
+### Windows 实机验证结果（2026-08-14，问题 22 补）
+
+在 Windows 目标机（8GB RTX 5060、32GB RAM、Python 3.14）上按 AGENTS.md 完成全部验证，结论：**全部通过，已 fast-forward 合并到 main（bc34202）**。
+
+- **阶段 1 纯逻辑测试**：audit_regression 19/19、library_registry 14/14、server_singleton 5/5、test_config_editor 0 failures、test_gui_store 0 failures、verify_export_import 39/39。
+- **阶段 2 F5**：新写法 _pid_alive 实测 自身=True / 999999999=False / -1=False / 'x'=False；未做双 server 实例实测（GUI/服务当时未在跑）。
+- **阶段 3 F2**：真实 config.json 为 chunk_char_limit=600、rerank_candidates=50、small_to_big=true、fusion_*_weight=0.6/0.4（手动改过，未踩首跑陷阱）；补写行为正常——只新增 hyde_enabled/hyde_llm_url/hyde_llm_model/hyde_min_confidence 四个键，既有值与注释未被改动。fusion 0.6/0.4 现已真生效（dense 偏重），已记录待用户决定是否改 1.0/1.0。
+- **阶段 4 真实索引**：主库在验证时被 ensure_fresh 自动重建为 v6（1763 块）；test/agents/skills 三个库手动 --full 补建（163/42/137 块），四库全部 _version=6。重建耗时 22-24s/库。
+- **评估**：v6 重建后 eval_retrieval 12 组 **top1=5/12、top3=10/12、top5=10/12**（基线 6/9/9）。top3/top5 各 +1；CFD 查询 top1 从 y+ 变为同相关的 ansys 引用集（重排器判断）。
+- **可见效果逐条确认**：置信度严格降序（0.73/0.72/0.72，F6 生效）；来源行出现 [已回填父节全文]（F18 生效）；v6 文档带文件级锚点 ctx（F20 生效）；缺失 jieba 时降级日志路径已在代码确认。
+- **遗留**：三小库重建完成；Vault 文档（主页/使用指南/架构/决策记录/Roadmap/操作手册）已同步置信度与 small-to-big 语义；retriever.py _format_results docstring 已修正。
