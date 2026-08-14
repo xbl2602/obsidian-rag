@@ -162,11 +162,21 @@ def suggest_name(stem, front, body):
     return head.strip()
 
 
-def build_backlinks(files):
-    """建全库 wikilink 反向索引：目标文件名（无扩展名）→ [来源相对路径...]。"""
+def build_backlinks(vault_root, files):
+    """建全库 wikilink 反向索引：目标文件名（无扩展名）→ [来源相对路径...]。
+
+    扫描整个 vault 的全部 md（含被索引排除的 目录.md/LOG.md/MOC 等）——
+    改名会影响所有引用者，不只影响可索引文件。files 为当前库的可索引文件集
+    （相对路径 → 绝对路径），用于排除"来源 == 目标文件自身"的判断。
+    """
     back: dict[str, list[str]] = {}
-    for rel in files:
-        p = Path(files[rel])
+    for p in Path(vault_root).rglob("*.md"):
+        if not p.is_file():
+            continue
+        try:
+            rel = p.relative_to(vault_root).as_posix()
+        except ValueError:
+            continue
         try:
             text = p.read_text(encoding="utf-8")
         except OSError:
@@ -185,7 +195,7 @@ def scan_library(entry):
     files = {p.relative_to(vault).as_posix(): p
              for p in collect_md_files(vault, cfg["exclude_dirs"], cfg["exclude_files"],
                                        cfg["exclude_patterns"], cfg["extensions"])}
-    back = build_backlinks(files)
+    back = build_backlinks(vault, files)
 
     hard_rows, soft_rows, mapping = [], [], []
     for rel in sorted(files):
