@@ -95,3 +95,16 @@ v6（F20）起，笔记**文件名 + frontmatter title + tags** 与正文标题�
   `README.md` 及变体、`_` 前缀工作流文件。
 - **扫描结果只是候选清单，不是指令**：AI 必须逐条判断文件真实角色再决定是否改名，
   结构性/功能性文件即使命中规则通常不改。此原则写入 vault 根 AGENTS.md。
+- **CODE_NAME_RE 补丁**：AGENTS.md 豁免清单示例 `HEBAT3_ORK_*`（字母+数字+下划线的代码/数值命名）
+  未被原正则匹配而误报；补一个「纯 ASCII + 含数字 + 含下划线」分支修复（不可含 CJK，避免误伤
+  `A1_认知模型` 这类中文名）。补丁后硬违规 55 → 49。
+
+## 2026-08-14 改名落地（39 项）
+
+- 逐条判断后执行 **39 项改名 + 10 项不动**（功能性/结构性：Roadmap 台账、OfficeCLI-SKILL、
+  report_checklist/questions 清单、ansys/y+ 附录引用集、空文件 Ideas、user-profile B2-B5 代码命名）。
+- 全部 `git mv` + 全库 wikilink/`related` 精确基名替换（含 90-Archive/目录/LOG/MOC），正文零改动，
+  frontmatter `updated` 同步为 2026-08-14，区 LOG + 01-Meta/LOG 记录。
+- 两个 `AI Agent.md`（AI Dev Workflow / AI Knowledge System）语义接近但分属两项目，
+  保留同名新名 `AI Agent 智能体`，与改名前的裸链接解析行为一致。
+- 落地后重扫：硬违规 49 → **10**，剩余全部为上述判定不动的功能性文件（预期内）。

@@ -29,7 +29,7 @@ HEADING_RE = re.compile(r"^(#{1,3})\s+(.+?)\s*$", re.MULTILINE)
 PURE_NUM_HEADING_RE = re.compile(r"^\d+(\.\d+)*$")
 WIKILINK_RE = re.compile(r"!?\[\[([^\]]*)\]\]")
 BAD_NAME_RE = re.compile(r"[_:]| {2,}")
-CODE_NAME_RE = re.compile(r"^[A-Za-z]?\d+[._-][A-Za-z0-9_.-]|^.*?[A-Z]{2,}.*?_\d|^[A-Z0-9]+_[A-Z0-9_]+$")
+CODE_NAME_RE = re.compile(r"^[A-Za-z]?\d+[._-][A-Za-z0-9_.-]|^.*?[A-Z]{2,}.*?_\d|^[A-Z0-9]+_[A-Z0-9_]+$|^(?=[^一-龥]*$)(?=.*\d)(?=.*_)[A-Za-z0-9_]+$")
 DATE_NAME_RE = re.compile(r"^\d{4}[-_.]\d{2}[-_.]\d{2}")
 HIGH_LINK_THRESHOLD = 3
 
