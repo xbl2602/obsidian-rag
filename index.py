@@ -958,12 +958,20 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
         return True, {"changed": 0, "added": 0, "removed": 0, "missing": True}
     meta = load_meta(meta_file)
     files = collect_md_files(vault, exclude_dirs, exclude_files, exclude_patterns, extensions)
-    if meta and not files:
+    # 判空基准 = 真实条目（剔除 _version 哨兵与非 dict 脏数据）：
+    # 只剩版本号的 meta 不是"有记录"，否则全删/清空后的收敛态会被 emptied 分支
+    # 永远误报 stale。
+    real_meta = {k: v for k, v in meta.items() if isinstance(v, dict)}
+    if real_meta and not files:
         return True, {"changed": 0, "added": 0, "removed": 0, "emptied": True}
     if meta.pop("_version", 1) != META_VERSION:
         return True, {"changed": 0, "added": 0, "removed": 0, "version_upgrade": True}
-    if not meta:
-        return True, {"changed": 0, "added": len(files), "removed": 0}
+    if not real_meta:
+        # 从未索引过：有文件则全部待建；条目与文件双空 = 已收敛（如库内文件
+        # 被全部删除后的稳态，不得每轮误报 stale 触发无效重建）
+        if files:
+            return True, {"changed": 0, "added": len(files), "removed": 0}
+        return False, {"changed": 0, "added": 0, "removed": 0}
     seen = set()
     changed = 0
     added = 0

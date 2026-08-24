@@ -514,6 +514,77 @@ def test_agent_gate_freezes_unapproved_binaries():
             iso.cleanup()
 
 
+def test_unchecked_format_auto_purges_its_content():
+    """用户取消勾选某格式（如 docx/pdf）→ 下轮索引自动清掉该格式的条目与块，
+    回到「没有该文档类型」的版本；重新勾选后凭提取缓存快速恢复。"""
+    with _IsoEnv() as iso:
+        try:
+            (iso.vault / "n.md").write_text("# N\ncontent here.\n", encoding="utf-8")
+            pdf = iso.vault / "doc.pdf"
+            _make_text_pdf(pdf)
+            _run_index(iso)
+            meta = _load_meta(iso)
+            assert meta["doc.pdf"]["chunks"] >= 1 and meta["n.md"]["chunks"] >= 1
+
+            # 用户取消勾选 pdf：extensions 收窄为 md → 该格式自动出局
+            index._index_core(str(iso.vault), "col_test", iso.meta_file,
+                              set(), set(), (), ["md"],
+                              600, 200, library_label="t",
+                              incremental=True, full=False, tbd_ratio=0.1)
+            meta2 = _load_meta(iso)
+            assert "doc.pdf" not in meta2, "取消格式后其指纹条目必须被清除"
+            assert "n.md" in meta2
+            import chromadb as _ch
+            col = _ch.PersistentClient(path=str(index.CHROMA_DIR)) \
+                .get_or_create_collection("col_test")
+            assert col.count() == meta2["n.md"]["chunks"], \
+                f"pdf 的块必须被清理（实存 {col.count()} 块）"
+            stale, stats = index.kb_stale(str(iso.vault), meta_file=iso.meta_file,
+                                          collection_name="col_test",
+                                          extensions=["md"])
+            assert not stale, f"收窄后必须收敛（stats={stats}）"
+
+            # 重新勾选 pdf：内容字节未变 → 提取缓存命中，无需重新解析
+            _run_index(iso)
+            meta3 = _load_meta(iso)
+            assert meta3["doc.pdf"].get("chunks", 0) >= 1, "重新启用应恢复该格式入索引"
+        finally:
+            iso.cleanup()
+
+
+def test_deleted_binary_cleans_up_even_in_agent_restricted_view():
+    """物理删除二进制文件：连 Agent 受限视角也会正常裁剪清理——
+    冻结只作用于「仍存在于磁盘」的未授权文件，不给已删文件续命。"""
+    allowed_md = {"md", "txt"}
+    with _IsoEnv() as iso:
+        try:
+            good = iso.vault / "gone.pdf"
+            _make_text_pdf(good)
+            _run_index(iso)
+            assert "gone.pdf" in _load_meta(iso)
+            n_calls = len(iso.encoder.calls)
+
+            good.unlink()  # 用户删除文件
+            index._index_core(str(iso.vault), "col_test", iso.meta_file,
+                              set(), set(), (), ["md", "pdf", "docx"],
+                              600, 200, library_label="t",
+                              incremental=True, full=False, tbd_ratio=0.1,
+                              agent_allowed=allowed_md)
+            assert "gone.pdf" not in _load_meta(iso), "已删文件的条目应被裁剪"
+            assert len(iso.encoder.calls) == n_calls, "清理不得触发嵌入"
+            import chromadb as _ch
+            col = _ch.PersistentClient(path=str(index.CHROMA_DIR)) \
+                .get_or_create_collection("col_test")
+            assert col.count() == 0, "已删文件的块必须被清理"
+            stale, _ = index.kb_stale(str(iso.vault), meta_file=iso.meta_file,
+                                      collection_name="col_test",
+                                      extensions=["md", "pdf", "docx"],
+                                      agent_allowed=allowed_md)
+            assert not stale
+        finally:
+            iso.cleanup()
+
+
 # ---------- 静态断言与白名单 ----------
 
 def test_static_single_source_of_truth():
