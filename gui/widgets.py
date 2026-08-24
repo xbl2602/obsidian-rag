@@ -1654,14 +1654,15 @@ def _fmt_ts(ts):
 class ExtractLabDialog:
     """转换试验台：选一个文件，走与索引完全相同的提取管线（含缓存与 OCR 后端），
     就地预览产出质量。顶部控制行（含后端单次覆盖下拉）+ 活动指示（不确定进度条
-    + 秒表）+ 整幅结果区（渲染/源码页签）。不做左右分栏——输入是二进制文件没有
-    可展示的"原文"，整幅留给产出最省空间。
+    + 秒表）+ 整幅结果区（渲染/源码页签自绘切换）。不做左右分栏——输入是二进制
+    文件没有可展示的"原文"，整幅留给产出最省空间。
 
-    中断与收尾语义：
-    - 提取跑在 daemon 线程：关闭对话框/GUI 时线程随进程消亡，无守护进程残留；
-    - 缓存写入是 tmp+os.replace 原子操作，中断至多留孤儿 tmp（启动清扫回收），
-      绝不产生半截缓存；
-    - 预览不写 meta/Chroma/终态，任何时刻中断都无需回滚。
+    执行模型（2026-08-24 修订）：提取跑在**独立子进程**——
+    - pymupdf4llm 重转换是纯 Python 计算，线程模型会被 GIL 饿死 UI（实测按钮秒级延迟）；
+    - 进程隔离后 UI 零争抢，且超时/取消可 terminate() 即时强杀；
+    - 缓存写入是 tmp+os.replace 原子操作，强杀至多留孤儿 tmp（启动清扫回收），
+      预览不写 meta/Chroma/终态，任何时刻中断都无需回滚。
+    UI 更新全部控件级定向刷新，不整页 page.update（防会话销毁连锁异常）。
     """
 
     def __init__(self, colors=DARK):
@@ -1673,6 +1674,7 @@ class ExtractLabDialog:
         self._busy = False
         self._stop = threading.Event()
         self._t0 = 0.0
+        self._proc = None
 
     # ---- 打开 / 构建 ----
 
@@ -1709,7 +1711,6 @@ class ExtractLabDialog:
                 text_style=ft.TextStyle(font_family=FONT_UI, weight=ft.FontWeight.W_600)),
             on_click=self._run)
 
-        # 后端单次覆盖下拉："跟随全局" = 不覆盖，其余仅影响本次预览
         self._dd_backend = ft.Dropdown(
             value="auto", width=270,
             options=[ft.DropdownOption(key="auto", text="跟随全局设置"),
@@ -1732,7 +1733,6 @@ class ExtractLabDialog:
                                       text_size=12, expand=True,
                                       text_style=ft.TextStyle(
                                           font_family="Consolas", size=12))
-        # 自绘页签（版本免疫，不依赖具体 Tabs 控件签名）
         self._btn_render_tab = ft.TextButton("渲染预览",
                                              on_click=lambda _e: self._switch(0))
         self._btn_src_tab = ft.TextButton("Markdown 源码",
@@ -1744,7 +1744,6 @@ class ExtractLabDialog:
                                      visible=False)
         self._chips = ft.Row([], spacing=8, wrap=True)
 
-        # 活动指示：不确定进度条 + 运行秒表（心跳），完成即隐藏
         self._progress = ft.ProgressBar(value=None, visible=False,
                                         bar_height=4, color=c["accent"],
                                         bgcolor=c["sunken"])
@@ -1784,7 +1783,8 @@ class ExtractLabDialog:
     def _switch(self, idx):
         self._render_box.visible = idx == 0
         self._src_box.visible = idx == 1
-        self._update()
+        self._safe_update(self._render_box, self._src_box,
+                          self._btn_render_tab, self._btn_src_tab)
 
     @staticmethod
     def _current_backend_label():
@@ -1814,23 +1814,26 @@ class ExtractLabDialog:
     def _refresh_hint(self):
         if getattr(self, "_hint", None) is not None:
             self._hint.value = self._hint_text()
+            self._safe_update(self._hint)
         self._refresh_backend_ui()
 
     def _refresh_backend_ui(self):
         if getattr(self, "_backend_chip", None) is not None:
-            self._backend_chip.content.value =                 f"全局后端：{self._current_backend_label()}"
-        self._update()
+            self._backend_chip.content.value = \
+                f"全局后端：{self._current_backend_label()}"
+        self._safe_update(self._backend_chip)
 
     def _reset_idle_ui(self):
         """打开/复用实例时确保处于干净待命态（如上次被中途关闭）。"""
         if not self._busy and getattr(self, "_btn_run", None) is not None:
             self._btn_run.disabled = False
             self._btn_run.content = "开始提取"
+            self._btn_pick.disabled = False
             self._progress.visible = False
             self._live_row.visible = False
 
     async def _pick(self, _e=None):
-        if self._page is None or self._picker is None:
+        if self._busy or self._page is None or self._picker is None:
             return
         try:
             if self._picker not in getattr(self._page, "overlay", []):
@@ -1846,9 +1849,9 @@ class ExtractLabDialog:
         self._file_path = files[0].path
         self._file_text.value = self._file_path
         self._set_chips([])
-        self._update()
+        self._safe_update(self._file_text, self._chips)
 
-    # ---- 提取执行 ----
+    # ---- 提取执行（独立子进程） ----
 
     @staticmethod
     def _budget_for(backend):
@@ -1863,9 +1866,11 @@ class ExtractLabDialog:
     def _run(self, _e=None):
         if self._busy or not self._file_path:
             return  # 防重入：进行中/未选文件一律忽略
+        import multiprocessing as mp
         self._busy = True
         self._btn_run.disabled = True
         self._btn_run.content = "提取中…"
+        self._btn_pick.disabled = True  # 运行中锁定文件选择，防状态错乱
         self._stop.clear()
         self._t0 = time.monotonic()
         backend = self._dd_backend.value
@@ -1874,44 +1879,87 @@ class ExtractLabDialog:
         self._live_row.visible = True
         self._live_text.value = self._live_label(budget)
         self._set_chips([])
-        self._update()
-        threading.Thread(target=self._ticker, args=(budget,), daemon=True,
-                         name="extract-lab-ticker").start()
-        threading.Thread(target=self._work, daemon=True,
-                         args=(None if backend == "auto" else backend,),
-                         name="extract-lab-work").start()
+
+        q = mp.Queue()
+        from extractors import _preview_job
+        self._proc = mp.Process(target=_preview_job,
+                                args=(q, str(self._file_path),
+                                      None if backend == "auto" else backend),
+                                daemon=True)
+        self._proc.start()
+        threading.Thread(target=self._poll, args=(q, budget), daemon=True,
+                         name="extract-lab-poll").start()
+        self._safe_update(self._btn_run, self._btn_pick,
+                          self._live_row, self._chips)
 
     def _live_label(self, budget):
         return (f"⏱ {time.monotonic() - self._t0:.0f}s 运行中"
                 f" · 超时预算 ~{int(budget)}s")
 
-    def _ticker(self, budget):
-        """活动秒表（心跳）：每 0.7s 刷新运行时长，让用户确信没死机。"""
-        while not self._stop.wait(0.7):
+    def _poll(self, q, budget):
+        """轮询子进程结果 + 秒表心跳；超时/取消即 terminate 强杀。"""
+        import queue as _q
+        deadline = time.monotonic() + max(30.0, budget) + 15  # 宽限 15s 给下载收尾
+        payload = None
+        outcome = "done"
+        while True:
+            try:
+                payload = q.get(timeout=0.5)
+                break
+            except _q.Empty:
+                pass
+            except Exception as e:
+                payload = {"ok": False, "error": f"queue:{e.__class__.__name__}"}
+                break
+            if self._stop.is_set():
+                outcome = "cancelled"
+                break
+            if time.monotonic() > deadline:
+                outcome = "timeout"
+                break
             try:
                 self._live_text.value = self._live_label(budget)
-                self._update()
+                self._live_text.update()
             except RuntimeError:
-                return
-
-    def _work(self, backend):
-        import extractors as ex
-        try:
-            info = ex.extract_preview(self._file_path, backend=backend)
-        except Exception as e:  # 双保险：契约之外的异常也不允许线程悬死无反馈
-            info = {"md": None, "reason": f"internal:{e.__class__.__name__}",
-                    "route": "-", "cached": False, "elapsed": 0.0, "chars": 0}
+                return  # 页面销毁：随 daemon 进程退出
+        proc = getattr(self, "_proc", None)
+        if proc is not None and proc.is_alive():
+            try:
+                proc.terminate()
+                proc.join(timeout=5)
+            except Exception:
+                pass
+        if outcome != "done" and self._stop.is_set():
+            return  # 用户主动关闭对话框：静默，_close 已复位 UI
         self._stop.set()
         self._busy = False
         try:
             self._btn_run.disabled = False
             self._btn_run.content = "开始提取"
+            self._btn_pick.disabled = False
             self._progress.visible = False
-            self._render(info)
+            if outcome == "timeout":
+                self._render({"md": None, "reason": "extract-failed",
+                              "route": "-", "cached": False,
+                              "elapsed": round(time.monotonic() - self._t0, 2),
+                              "chars": 0})
+                self._set_chips([("✗ 超时被终止 · 可直接重试", "danger")])
+            elif outcome == "done":
+                if payload.get("ok"):
+                    self._render(payload["info"])
+                else:
+                    self._set_chips([(f"✗ 子进程异常：{payload.get('error', '?')}",
+                                      "danger")])
+            else:
+                self._render({"md": None, "reason": "extract-failed",
+                              "route": "-", "cached": False, "elapsed": 0.0,
+                              "chars": 0})
             self._live_row.visible = False
-            self._update()
+            self._safe_update(self._btn_run, self._btn_pick, self._progress,
+                              self._live_row, self._chips,
+                              self._md_view, self._src_view)
         except RuntimeError:
-            pass  # 窗口已关闭：daemon 线程自然结束，无任何需回收的状态
+            pass  # 窗口已关闭
 
     def _render(self, info):
         c = self._cols
@@ -1932,8 +1980,6 @@ class ExtractLabDialog:
             self._src_view.value = ""
         else:
             chips.insert(0, (f"路由 {info['route']}", "accent"))
-            # 渲染视图做内联标签净化（<u> 等 flet Markdown 不渲染的裸 HTML）；
-            # 源码页保持原样，以源码为准
             import extractors as ex
             self._md_view.value = ex.sanitize_render_md(md or "")
             self._src_view.value = md or ""
@@ -1949,19 +1995,28 @@ class ExtractLabDialog:
                          bgcolor=ft.Colors.with_opacity(0.10, c.get(key, c["t4"])))
             for txt, key in items]
 
-    def _update(self):
-        try:
-            if self._page is not None:
-                self._page.update()
-        except RuntimeError:
-            pass  # 页面已销毁（GUI 关闭）：静默放弃 UI 更新
+    def _safe_update(self, *controls):
+        """控件级定向刷新（不整页 update，防 destroyed-session 连锁）。"""
+        for ctl in controls:
+            try:
+                ctl.update()
+            except Exception:
+                pass  # 会话销毁/控件未挂载：静默
+
+    def _switch(self, idx):
+        self._render_box.visible = idx == 0
+        self._src_box.visible = idx == 1
+        self._safe_update(self._render_box, self._src_box,
+                          self._btn_render_tab, self._btn_src_tab)
 
     def _close(self, _e=None):
-        self._stop.set()          # 停秒表；worker 完成回调自行静默
+        self._stop.set()  # 轮询线程收到即 terminate 子进程并静默退出
         self._busy = False
         if getattr(self, "_btn_run", None) is not None:
             self._btn_run.disabled = False
             self._btn_run.content = "开始提取"
+        if getattr(self, "_btn_pick", None) is not None:
+            self._btn_pick.disabled = False
         if getattr(self, "_progress", None) is not None:
             self._progress.visible = False
             self._live_row.visible = False

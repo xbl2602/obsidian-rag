@@ -840,6 +840,24 @@ def test_preview_backend_override():
             ex.set_cache_dir(None)
 
 
+def test_preview_job_process_isolation():
+    """试验台的进程隔离根基：spawn 子进程提取成功经队列回传（GIL 解耦）。"""
+    import multiprocessing as mp
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "t.pdf"
+        _make_text_pdf(p)
+        q = mp.Queue()
+        proc = mp.Process(target=ex._preview_job, args=(q, str(p), None),
+                          daemon=True)
+        proc.start()
+        payload = q.get(timeout=120)
+        proc.join(timeout=10)
+        assert payload["ok"], payload
+        info = payload["info"]
+        assert info["reason"] == "" and info["route"] == "local"
+        assert info["chars"] > 0 and "mixing model" in info["md"]
+
+
 # ---------- 静态断言与白名单 ----------
 
 def test_static_single_source_of_truth():

@@ -480,3 +480,16 @@ def _mineru_cloud_extract(path):
         _warn_once(f"mineru:{e.__class__.__name__}",
                    f"MinerU 云端 OCR 失败（按提取失败处理，待重试）：{e}")
         return None, "extract-failed"
+
+
+def _preview_job(q, path_str, backend=None):
+    """子进程入口（GUI 提取试验台用）：结果经队列返回父进程。
+
+    独立进程彻底绕开 GIL——重转换期间 UI 线程零争抢；
+    超时/取消由父进程 terminate() 即时强杀，无残留状态可担心。
+    """
+    try:
+        info = extract_preview(Path(path_str), backend=backend)
+        q.put({"ok": True, "info": info})
+    except Exception as e:
+        q.put({"ok": False, "error": f"{e.__class__.__name__}: {e}"})

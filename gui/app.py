@@ -242,6 +242,11 @@ class App:
         while True:
             try:
                 self._refresh_once()
+            except RuntimeError as e:
+                # 窗口/会话已销毁（GUI 关闭）：静默退出循环，别再刷屏
+                if "destroyed session" in str(e):
+                    return
+                self._log_line("ERROR [GUI] 刷新失败：%s" % e)
             except Exception as e:
                 self._log_line("ERROR [GUI] 刷新失败：%s" % e)
             await asyncio_sleep_1s()
@@ -472,7 +477,10 @@ class App:
             self._log_line("ERROR [GUI] 索引进程退出码 %s" % rc)
 
     def _log_line(self, line):
-        self.log_view.append(line)
+        try:
+            self.log_view.append(line)
+        except RuntimeError:
+            pass  # 会话已销毁（GUI 关闭中）：静默丢弃
 
     # ---------- 交互 ----------
 
