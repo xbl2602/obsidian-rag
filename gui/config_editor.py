@@ -45,6 +45,10 @@ GROUPS = [
         ("hyde_enabled", "bool"), ("hyde_llm_url", "str"),
         ("hyde_llm_model", "str"), ("hyde_min_confidence", "float"),
     ]),
+    ("扫描件 OCR（MinerU 云端，默认关）", [
+        ("pdf_scan_backend", "str"), ("mineru_api_key", "str"),
+        ("mineru_timeout_seconds", "int"),
+    ]),
     ("工具默认值", [
         ("default_top_k", "int"), ("default_libraries", "list"),
     ]),

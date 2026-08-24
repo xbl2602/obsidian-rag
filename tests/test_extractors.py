@@ -18,17 +18,20 @@
 """
 import hashlib
 import inspect
+import io
 import json
 import os
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np  # noqa: E402
 
+import config as cfgmod  # noqa: E402
 import extractors as ex  # noqa: E402
 import index  # noqa: E402
 import library  # noqa: E402
@@ -581,6 +584,197 @@ def test_deleted_binary_cleans_up_even_in_agent_restricted_view():
                                       extensions=["md", "pdf", "docx"],
                                       agent_allowed=allowed_md)
             assert not stale
+        finally:
+            iso.cleanup()
+
+
+# ---------- 扫描件 OCR 后端（MinerU 云端，mock HTTP 零网络） ----------
+
+class _FakeResp:
+    def __init__(self, j=None, status=200, content=b""):
+        self._j = j or {}
+        self.status_code = status
+        self.content = content
+
+    def json(self):
+        return self._j
+
+
+class _FakeRequests:
+    """脚本化 requests：按 URL 前缀分发响应并记录调用。"""
+
+    def __init__(self, zip_md="# OCR 标题\n识别出的正文内容\n"):
+        self.calls = []
+        self.zip_md = zip_md
+        self.fail_post = None  # 置为异常类则 post 直接抛
+
+    def _zip_bytes(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("sub/images/x.png", b"png")
+            zf.writestr("sub/main.md", self.zip_md.encode("utf-8"))
+            zf.writestr("tiny.md", b"small")
+        return buf.getvalue()
+
+    def post(self, url, **kw):
+        self.calls.append(("POST", url))
+        if self.fail_post:
+            raise self.fail_post("模拟网络超时")
+        return _FakeResp({"code": 0, "data": {
+            "batch_id": "b1", "file_urls": ["http://presigned/put"]}}, 200)
+
+    def put(self, url, data=None, **kw):
+        self.calls.append(("PUT", url, len(data or b"")))
+        return _FakeResp(status=200)
+
+    def get(self, url, **kw):
+        self.calls.append(("GET", url))
+        if url.endswith("/file-protocol/batch/b1"):
+            return _FakeResp({"code": 0, "data": {"extract_result": [
+                {"state": "done",
+                 "full_zip_url": "http://cdn/result.zip"}]}}, 200)
+        if url.endswith("result.zip"):
+            return _FakeResp(content=self._zip_bytes(), status=200)
+        return _FakeResp({}, 404)
+
+
+def _with_ocr_cfg(fn):
+    """临时把后端切到 mineru-cloud 并注入假 Key（恢复现场）。"""
+    saved = {k: cfgmod.CFG.get(k) for k in
+             ("pdf_scan_backend", "mineru_api_key", "mineru_timeout_seconds")}
+    cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
+    cfgmod.CFG["mineru_api_key"] = "test-key-请勿记录"
+    cfgmod.CFG["mineru_timeout_seconds"] = 60
+    try:
+        return fn()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                cfgmod.CFG.pop(k, None)
+            else:
+                cfgmod.CFG[k] = v
+
+
+def test_mineru_cloud_happy_path_and_cache_route():
+    with tempfile.TemporaryDirectory() as td:
+        cache = Path(td) / "cache"
+        ex.set_cache_dir(cache)
+        fake = _FakeRequests()
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        try:
+            p = Path(td) / "scan.pdf"
+            _make_scanned_pdf(p)
+            md, reason = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert reason == "" and md and "# OCR 标题" in md
+            kinds = [c[0] for c in fake.calls]
+            assert kinds[0] == "POST" and kinds[1] == "PUT"
+            assert any(k == "GET" and k_url.endswith("result.zip")
+                       for k, k_url in (c[:2] for c in fake.calls))
+            # 缓存落在 ocr 路由键下（文件名中冒号净化为连字符）；二次调用命中缓存、零网络调用
+            import hashlib as _h
+            key = _h.md5(p.read_bytes()).hexdigest()
+            cached = list(cache.glob(f"{key}.ocr-*.v{ex.EXTRACT_VERSION}.md"))
+            assert len(cached) == 1, f"ocr 路由缓存缺失：{list(cache.glob('*.md'))}"
+            n_calls = len(fake.calls)
+            md2, reason2 = ex.extract_to_markdown(p)
+            assert reason2 == "" and md2 == md
+            assert len(fake.calls) == n_calls, "命中缓存不得再发网络请求"
+        finally:
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+
+
+def test_mineru_no_key_keeps_scanned_and_api_failure_folds():
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)
+
+        def run_nokey():
+            saved = cfgmod.CFG.get("pdf_scan_backend")
+            cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
+            cfgmod.CFG["mineru_api_key"] = ""
+            try:
+                return ex.extract_to_markdown(p)
+            finally:
+                if saved is None:
+                    cfgmod.CFG.pop("pdf_scan_backend", None)
+                else:
+                    cfgmod.CFG["pdf_scan_backend"] = saved
+
+        md, reason = run_nokey()
+        assert md is None and reason == "scanned", "未配 Key 保持 scanned 语义"
+
+        # API 异常（超时等）必须折叠为 extract-failed，绝不外抛
+        fake = _FakeRequests()
+        fake.fail_post = TimeoutError
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        saved_backend = cfgmod.CFG.get("pdf_scan_backend")
+        saved_key = cfgmod.CFG.get("mineru_api_key")
+        cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
+        cfgmod.CFG["mineru_api_key"] = "k"
+        try:
+            md, reason = ex.extract_to_markdown(p)
+            assert md is None and reason == "extract-failed"
+        finally:
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            for k, v in (("pdf_scan_backend", saved_backend),
+                         ("mineru_api_key", saved_key)):
+                if v is None:
+                    cfgmod.CFG.pop(k, None)
+                else:
+                    cfgmod.CFG[k] = v
+
+
+def test_xsrc_retry_after_enabling_ocr_backend():
+    """存量 scanned 终态在启用后端后自动重试转正；失败重落终态带新签名。"""
+    orig_cloud = ex._mineru_cloud_extract
+    with _IsoEnv() as iso:
+        try:
+            s = iso.vault / "scan.pdf"
+            _make_scanned_pdf(s)
+            (iso.vault / "n.md").write_text("# N\nhello world\n", encoding="utf-8")
+            _run_index(iso)  # 后端=none：落 scanned 终态
+            e0 = _load_meta(iso)["scan.pdf"]
+            assert e0["xfail"] and e0["reason"] == "scanned"
+            assert e0["xsrc"] == ex.current_backend_sig()
+
+            stale, _ = index.kb_stale(str(iso.vault), meta_file=iso.meta_file,
+                                      collection_name="col_test",
+                                      extensions=["md", "pdf", "docx"])
+            assert not stale, "能力未变时必须判稳"
+
+            # 用户启用云端 OCR（mock 客户端返回成功结果）
+            cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
+            cfgmod.CFG["mineru_api_key"] = "k"
+            ex._mineru_cloud_extract = lambda p: ("# OCR 转正\n来自扫描件的正文\n", "")
+            try:
+                stale, stats = index.kb_stale(
+                    str(iso.vault), meta_file=iso.meta_file,
+                    collection_name="col_test",
+                    extensions=["md", "pdf", "docx"])
+                assert stale and stats.get("changed") == 1, \
+                    f"签名失配应判待重试（stats={stats}）"
+                _run_index(iso)
+                e1 = _load_meta(iso)["scan.pdf"]
+                assert not e1.get("xfail") and e1.get("chunks", 0) >= 1, str(e1)
+                assert any("OCR 转正" in t for batch in iso.encoder.calls
+                           for t in batch), "转正内容应进入嵌入管线"
+                # 幂等：转正后再跑不再重复嵌入
+                n_calls = len(iso.encoder.calls)
+                _run_index(iso)
+                assert len(iso.encoder.calls) == n_calls
+            finally:
+                ex._mineru_cloud_extract = orig_cloud
+                for k in ("pdf_scan_backend", "mineru_api_key"):
+                    cfgmod.CFG.pop(k, None)
         finally:
             iso.cleanup()
 

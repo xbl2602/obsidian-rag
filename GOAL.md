@@ -1,64 +1,48 @@
 # 当前目标
 
 ## 目标
-实现多格式的「人机分权」：默认开启 pdf/docx 索引（人经 GUI/CLI 完全控制），Agent 触发的索引（含检索自动同步）默认仅限文本类，二进制格式须经用户一次性批准（持久化、可撤销）。
+完成 R3a：扫描件 PDF 经 MinerU 云端 API 自动 OCR 入索引（R3b 本地部署搁置）；OCR 相关配置（含 API Key）可在 config.json 与 GUI 双端设置，天然后写覆盖。
 
 ## 验收标准
 
-- **C1 默认开启**：
+- **C1 配置层**：
   ```powershell
-  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python -X utf8 -c "import sys; sys.path.insert(0,'.'); from library import effective_config; assert effective_config({'name':'t','path':'.'})['extensions']==['md','pdf','docx']; print('C1 PASS')"
+  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python -c "import sys; sys.path.insert(0,'.'); import config; errs=config.template_consistency_errors(); assert not errs, errs; assert 'mineru_api_key' in config.DEFAULTS and config.DEFAULTS['pdf_scan_backend']=='none'; print('C1 PASS')"
   ```
-  预期：打印 C1 PASS（entry.extensions 为 null 时继承新默认）。
-
-- **C2 Agent 门禁语义**：
+  预期：C1 PASS（模板与 DEFAULTS 一致；后端默认安全值 none=维持现状）。
+- **C2 提取器后端框架 + 云端客户端（mock HTTP 全覆盖）**：
   ```powershell
   $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python tests\test_extractors.py
   ```
-  预期：退出码 0，且包含新增用例——受限模式下：① 未授权二进制文件不被转换/嵌入；② 其既有 meta 条目与块被保留（不被裁剪清理）；③ 解除限制后自动补齐。
-
-- **C3 注册表校验**：agent_formats 键合法（⊆ 当前 extensions 且仅二进制类）、非法值报错：
+  预期：退出码 0；含新增用例——scanned 文件在后端可用时自动走 OCR 转正、API 失败折叠为 extract-failed 终态不炸轮次、缓存键含 backend 维度。
+- **C3 xsrc 重试语义**：存量 scanned/extract-failed 终态条目在后端能力变化后自动重试转正（测试断言），且 Agent 门禁冻结优先级不受影响。
+- **C4 GUI 设置组落位**：
   ```powershell
-  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python -c "import sys; sys.path.insert(0,'.'); import tests.noop" 2>$null; .venv\Scripts\python tests\library_registry_test.py
+  Select-String -Quiet -Pattern "PDF/OCR|mineru" gui\config_editor.py; Select-String -Quiet -Pattern "mineru_api_key" gui\config_editor.py
   ```
-  预期：library_registry 全过（含新增 agent_formats 校验用例）。
-
-- **C4 GUI 勾选块落位**：
-  ```powershell
-  (Select-String -Pattern "agent_formats" gui\widgets.py,gui\app.py | Measure-Object).Count -ge 1; (Select-String -Quiet -Pattern "ft.Checkbox" gui\widgets.py)
-  ```
-  预期：两条 True（库配置对话框含格式勾选与 Agent 授权勾选）。
-
+  预期：均 True（GUI 设置页可改 API Key 等键；与 config.json 同一存储，后保存者生效）。
 - **C5 六件套全绿 + 文档**：
   ```powershell
-  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python tests\audit_regression_test.py; if ($?) { .venv\Scripts\python tests\test_gui_store.py }; if ($?) { Select-String -Quiet -Pattern "问题 25" TASK_LOG.md }
+  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python tests\audit_regression_test.py; if ($?) { Select-String -Quiet -Pattern "问题 26" TASK_LOG.md }; if ($?) { Select-String -Quiet -Pattern "MinerU" AI_GUIDE.md }
   ```
-  预期：audit 19/19、gui_store 0 failures、TASK_LOG 含本条记录（问题 25）；另完整跑六件套确认无回归。
+  预期：audit 19/19、TASK_LOG 有问题 26、AI_GUIDE 含 MinerU 段；另完整跑六件套。
 
 ## 范围
-- 做:
-  - library.py：DEFAULT_EXTENSIONS=["md","pdf","docx"]；OVERRIDE_KEYS/LIST_KEYS 增加 agent_formats；set_config 校验（小写归一、⊆extensions、仅 BINARY_EXTS）
-  - index.py：kb_stale/_index_core 增加 agent_allowed 参数——未授权后缀文件「冻结」（跳过 stat/读取，保留条目与块，不计变更加不触发清理）；全量路径不受影响
-  - server.py / retriever.py：Agent 可达的索引入口（reindex 工具与检索自动同步）传受限集合 = TEXT_EXTS ∪ (extensions∩agent_formats)；reindex 工具新增 allow_new_formats 确认参数，确认为真时把新格式写入 agent_formats 持久化；待确认时返回明确提示文案
-  - gui/widgets.py：库配置对话框 extensions 改为四个 Checkbox；新增「允许 AI Agent 索引」勾选行（仅列出已启用的二进制格式）；_do_config 保存两类勾选
-  - 测试：更新受影响断言（默认 extensions 变更）；新增门禁集成用例（复用 test_extractors 隔离环境）
-  - 文档：TASK_LOG 问题 25；TODO 补记该特性
-- 不做:
-  - 扫描件 OCR（R3）
-  - 真实 vault 的重建执行（默认开启后由用户下次索引自然生效，不在本轮手动触发）
-  - git push
+- 做: 后端分发（none/mineru-cloud；mineru-local 留桩报未支持）、HTTP 客户端（提交→轮询→下载 zip→取 md）、子进程零依赖方案、缓存键加 backend 维度、终态 xsrc 记录+失配自动重试、config 四~五键+模板+GUI 组、mock 单测、文档
+- 不做: R3b 本地部署联调；真实云端冒烟（无 Key，待用户提供后单独验证）；push
 
 ## 注意事项
-- 冻结语义必须保证：Agent 受限轮询绝不裁剪/清理未授权文件的块与 meta 条目（否则等于变相删库）；一致性自愈的期望块数把冻结条目计算在内
-- 既有测试若断言旧默认 ["md"]，按新语义更新断言并在提交信息说明
-- MCP 工具签名变化（新增可选参数）需向后兼容：不传参=严格模式
+- API 契约以官方文档为准（实现前先查证）；外部调用全部带超时+异常折叠，绝不抛出 extractors 边界
+- 默认 pdf_scan_backend=none：不装/不配 Key 的用户行为与 R2 完全一致
+- API Key 属敏感值：不写入日志/traceback
+- 最新输入覆盖语义由单一存储天然满足：config.json 与 GUI 编辑的是同一文件，后保存者胜
 
 ## 当前进度
-- [x] C1 默认开启（effective_config 缺省 = md,pdf,docx；agent_formats 交集派生）
-- [x] C2 门禁语义测试（test_extractors 17/17，新增 agent_gate 冻结/补齐全序列）
-- [x] C3 注册表校验（library_registry 15/15，含 agent_formats 校验用例）
-- [x] C4 GUI 勾选块（格式四选 + AI 权限行，agent_formats 落位 gui/widgets.py）
-- [x] C5 六件套全绿（19/19、15/15、5/5、0f、30 PASS、39/39）+ TASK_LOG 问题 25
+- [x] C1 配置层（三键入 DEFAULTS/模板/_POSITIVE_KEYS；默认 none 安全值）
+- [x] C2 后端框架+客户端（mock HTTP 全覆盖：happy/no-key/fail-fold/缓存路由维度）
+- [x] C3 xsrc 重试语义（签名失配穿透快速路径，转正后幂等；门禁冻结优先级不变）
+- [x] C4 GUI 设置组（config_editor GROUPS「扫描件 OCR」三键；test_config_editor 守护通过）
+- [x] C5 回归+文档（六件套全绿；TASK_LOG 问题 26、AI_GUIDE MinerU 段、TODO R3a 标记）
 
 ## 上一目标完成记录（2026-08-24）
-R1（177ede6）+R2（2ac21b5）已交付：DOCX+文字层PDF 提取、统一终态(v9)、一致性自愈、GUI converting 相位与 xfail 可见性；TODO/TASK_LOG 同步完毕（e11afbe/f1877a0）。
+人机分权门禁已交付（d02bda0）：默认多格式开启、agent_formats 门禁+GUI 开关（7b9ecd0 合并单开关）、格式撤销/删除语义回归（eca3918）。六件套全绿。

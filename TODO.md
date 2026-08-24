@@ -20,6 +20,13 @@
   Agent 触发的索引/自动同步仅限文本类+已批准格式，批准一次长期有效、可随时撤销
 - [ ] MinerU-Open-CLI 账号/Token 准备（flash-extract 免注册 ≤10MB/20页；extract 注册 Token 200MB/200页）
 
+> ✅ **R3a 已完成（2026-08-24，问题 26）**：扫描件 OCR 接入 MinerU 云端 HTTP API
+> （直连 mineru.net，无需安装 CLI）。`pdf_scan_backend`（none/mineru-cloud）+
+> `mineru_api_key` + `mineru_timeout_seconds` 三键进 config 与 GUI 设置页，
+> 双端同文件后写覆盖。终态条目带 xsrc 能力签名：启用后端/补 Key 后存量 scanned
+> 自动重试转正，无需 --full。缓存键升级 `<md5>.<route>.v2`。R3b 本地部署搁置。
+> ⏳ 待办：用户提供真实 API Key 后做一次云端冒烟验证。
+
 ## 核心思想
 
 索引时把非 MD 文件转成 Markdown，复用既有整条切块管线；源文件零写入；

@@ -12,7 +12,7 @@ from pathlib import Path
 import chromadb
 
 from config import CFG
-from extractors import BINARY_EXTS, TEXT_EXTS, extract_to_markdown
+from extractors import BINARY_EXTS, TEXT_EXTS, current_backend_sig, extract_to_markdown
 from library import effective_config, load_registry, meta_path, resolve_entries
 
 # 跨平台文件锁：Windows 用 msvcrt（字节范围锁），Linux/macOS 用 fcntl（flock）。
@@ -102,16 +102,32 @@ def _skipped(info):
     return isinstance(info, dict) and bool(info.get("tbd") or info.get("xfail"))
 
 
-def _terminal_entry(st, bhash, reason):
+def _terminal_entry(st, bhash, reason, xsrc=None):
     """构造持久化终态条目（不产块，但必须留在 meta 里防重建死循环）。
 
     reason ∈ {"unreadable", "extract-failed", "empty", "tbd", "scanned"}。
+    xsrc：产生该终态时的 OCR 能力签名（仅二进制提取类失败携带）——
+    签名变化（用户启用后端/补配 Key）时条目自动获得重试资格。
     chunks=0 使其不贡献任何有效块 id：该文件若曾有旧块，会在写库阶段
     被精确清理逻辑删除。调用方必须同时 current_rels.add(rel) 让条目持久化。
     """
-    return {"hash": bhash, "chunks": 0, "size": st.st_size,
-            "mtime": st.st_mtime_ns, "tbd": False,
-            "xfail": True, "reason": reason}
+    e = {"hash": bhash, "chunks": 0, "size": st.st_size,
+         "mtime": st.st_mtime_ns, "tbd": False,
+         "xfail": True, "reason": reason}
+    if xsrc:
+        e["xsrc"] = xsrc
+    return e
+
+
+def _backend_changed(entry, xsig):
+    """终态条目产生时的 OCR 能力签名与当前不符 = 该文件值得重试转正。
+
+    典型场景：用户把 pdf_scan_backend 从 none 切到 mineru-cloud、或补配了
+    mineru_api_key——已跳过的扫描件在下一轮索引自动重试，无需 --full。
+    """
+    return bool(entry.get("xfail")
+                and entry.get("reason") in ("scanned", "extract-failed")
+                and entry.get("xsrc") != xsig)
 
 
 class LockBusyError(RuntimeError):
@@ -975,6 +991,7 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
     seen = set()
     changed = 0
     added = 0
+    xsig = current_backend_sig()
     for fpath in files:
         rel = str(fpath.relative_to(vault)).replace("\\", "/")
         if agent_allowed is not None and \
@@ -983,6 +1000,10 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
             # 零 I/O、不计任何变更；无条目则视同不存在，待人类路径首建。
             if meta.get(rel) is not None:
                 seen.add(rel)
+            continue
+        entry = meta.get(rel)
+        if entry is not None and _backend_changed(entry, xsig):
+            changed += 1  # OCR 能力已变化：零 I/O 判待重试，交由索引轮转正/再落终态
             continue
         try:
             st = fpath.stat()
@@ -1244,6 +1265,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
         scan_start = time.time()
 
         update_progress(phase="scanning", message="比对指纹、切块...")
+        xsig = current_backend_sig()
         for fpath in files:
             rel = str(fpath.relative_to(vault)).replace("\\", "/")
             if agent_allowed is not None and \
@@ -1262,7 +1284,10 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
             current_rels.add(rel)  # 本轮所有存活路径（终态/成功/未变）统一在此持久化
             # 快速路径：size+mtime 未变则免读全文/免提取（与 kb_stale 同一指纹策略），
             # 对 xfail/tbd 终态条目同等适用——终态稳定即 O(1) 收敛，绝不重复提取。
-            if incremental and old and old.get("size") == st.st_size and old.get("mtime") == st.st_mtime_ns:
+            # 例外：OCR 能力签名变化（启用后端/补 Key）→ 穿透快速路径重试转正。
+            if (incremental and old and old.get("size") == st.st_size
+                    and old.get("mtime") == st.st_mtime_ns
+                    and not _backend_changed(old, xsig)):
                 unchanged += 1
                 update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
                 continue
@@ -1309,7 +1334,8 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 converted += 1
                 body, reason = extract_to_markdown(fpath)
                 if body is None:
-                    meta[rel] = _terminal_entry(st, bhash, reason or "extract-failed")
+                    meta[rel] = _terminal_entry(st, bhash, reason or "extract-failed",
+                                                xsrc=xsig)
                     log(f"{tag}提取失败（{reason or 'extract-failed'}），记入终态待重试：{rel}")
                     changed += 1
                     update_progress(files_done=unchanged + changed, message=f"提取失败 {rel}")

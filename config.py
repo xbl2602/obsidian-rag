@@ -76,6 +76,11 @@ DEFAULTS = {
     # ---- 导出/导入 ----
     "keep_exports": 3,
     "import_upsert_batch": 500,
+
+    # ---- 扫描件 OCR（R3a：MinerU 云端 API，默认关）----
+    "pdf_scan_backend": "none",       # none | mineru-cloud（mineru-local 属 R3b 未支持）
+    "mineru_api_key": "",             # mineru.net 个人中心 API Token；GUI/config 双端可改
+    "mineru_timeout_seconds": 600,    # 单个扫描件 提交+轮询+下载 的总预算（秒）
 }
 
 CONFIG_TEMPLATE = """\
@@ -287,7 +292,26 @@ CONFIG_TEMPLATE = """\
   "confidence_drop_threshold": 0.40,
 
   // ----------------------------------------------------------
-  // 八、导出 / 导入
+  // 八、扫描件 OCR（MinerU 云端 API，默认关）
+  // ----------------------------------------------------------
+
+  // 扫描件（无文字层 PDF）的 OCR 后端：
+  //   none         = 不做 OCR，扫描件跳过并在指纹里记 scanned 终态（默认）
+  //   mineru-cloud = 调 MinerU 云端 API（mineru.net），需在下方填 API Key
+  // 改动后无需重建：已跳过的扫描件会在下一轮索引自动重试转正（xsrc 失配机制）。
+  "pdf_scan_backend": "none",
+
+  // MinerU 云端 API Key：mineru.net → 个人中心 → API Token。
+  // 可在本 config 与 GUI 设置页两处修改——同一份文件、后保存者生效。
+  // 敏感信息：不会出现在任何日志中。
+  "mineru_api_key": "",
+
+  // 单个扫描件「提交+轮询+下载」的总时间预算（秒）。超时按提取失败处理，
+  // 记入终态待重试（文件内容变化或后端再变化时自动重试）。
+  "mineru_timeout_seconds": 600,
+
+  // ----------------------------------------------------------
+  // 九、导出 / 导入
   // ----------------------------------------------------------
 
   // data/export 保留最近导出包的数量（多余自动清理）。
@@ -370,7 +394,7 @@ _POSITIVE_KEYS = frozenset((
     "lock_timeout_seconds", "lock_poll_seconds", "heartbeat_interval", "heartbeat_timeout",
     "stall_timeout", "return_chunk_limit", "max_chunks_per_file", "bm25_k1",
     "dense_candidate_factor", "dense_min_candidates", "default_top_k", "keep_exports",
-    "import_upsert_batch",
+    "import_upsert_batch", "mineru_timeout_seconds",
 ))
 
 
