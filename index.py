@@ -12,6 +12,7 @@ from pathlib import Path
 import chromadb
 
 from config import CFG
+from extractors import BINARY_EXTS, TEXT_EXTS, extract_to_markdown
 from library import effective_config, load_registry, meta_path, resolve_entries
 
 # 跨平台文件锁：Windows 用 msvcrt（字节范围锁），Linux/macOS 用 fcntl（flock）。
@@ -39,7 +40,12 @@ EMBED_BATCH_SIZE = CFG["embed_batch_size"]
 
 # 切块/清洗逻辑版本：升级后旧索引需重嵌（指纹感知不到代码升级），
 # meta 版本不匹配时 index_vault 自动按全量重建处理。
-META_VERSION = 8  # v8: TBD 占位重文件跳过索引（v7: 空正文文件跳过不产生块）
+META_VERSION = 9  # v9: 多格式提取（docx/pdf）+ 统一终态机制 + 原始字节指纹
+                  # （v8: TBD 占位重文件跳过索引；v7: 空正文文件跳过不产生块）
+
+# _load_text 读取失败时的指纹哨兵：锁定/OneDrive/AV 占用等 OSError 场景。
+# 两轮哨兵等值 = 判稳（不反复触发重建）；文件恢复可读后真实 hash ≠ 哨兵 → 自动重试。
+_UNREADABLE = "unreadable"
 
 # [TBD]/[tbd]/TBD —/TODO — 等占位标记行识别（排除"半成品报告"用的判定）
 TBD_RE = re.compile(r"\[TBD|TBD\s*[—-]|\[todo\]|TODO\s*[—-]", re.IGNORECASE)
@@ -57,6 +63,55 @@ def is_tbd_heavy(content, ratio):
         return False
     tbd = sum(1 for l in lines if TBD_RE.search(l))
     return tbd / len(lines) >= ratio
+
+
+def _load_text(fpath):
+    """统一读取入口（终态机制 A 的全部语义所在）。返回 (text, bhash)。
+
+    - bhash：文件「原始字节」的 MD5。对合法 UTF-8 文本与旧版
+      「解码后再编码」的内容指纹完全等值（decode→encode 往返无损），
+      既有 meta 条目无需迁移；二进制源（pdf/docx）也用它做指纹，
+      kb_stale 据此实现「真没变就绝不跑转换」的零成本快速比对。
+      读取失败（锁定/权限/AV 占用等 OSError）→ 哨兵 _UNREADABLE。
+    - text：文本类后缀（TEXT_EXTS）→ 解码文本（errors=replace），
+      空/纯空白归一为 None；二进制后缀 → 一律 None——内容必须走
+      extractors 提取管线，此处绝不转换（GUI 每秒轮询的零成本边界）；
+      读取失败 → None。
+
+    后缀判定一律 suffix.lower()（堵 .PDF/.MD 大写扩展名被静默误路由）。
+    本函数绝不抛异常。
+    """
+    try:
+        raw = fpath.read_bytes()
+    except OSError:
+        return None, _UNREADABLE
+    bhash = hashlib.md5(raw).hexdigest()
+    suffix = fpath.suffix.lower().lstrip(".")
+    if suffix in TEXT_EXTS:
+        text = raw.decode("utf-8", errors="replace")
+        return (text if text.strip() else None), bhash
+    return None, bhash
+
+
+def _skipped(info):
+    """单点谓词：该 meta 条目是否为「不产块的持久化终态」（TBD 重 / xfail 提取失败类）。
+
+    收拢 kb_stale/_index_core 里所有「排除出应索引集合」的判断，
+    防止新增终态类型时漏改某一处导致每轮误判 stale。
+    """
+    return isinstance(info, dict) and bool(info.get("tbd") or info.get("xfail"))
+
+
+def _terminal_entry(st, bhash, reason):
+    """构造持久化终态条目（不产块，但必须留在 meta 里防重建死循环）。
+
+    reason ∈ {"unreadable", "extract-failed", "empty", "tbd", "scanned"}。
+    chunks=0 使其不贡献任何有效块 id：该文件若曾有旧块，会在写库阶段
+    被精确清理逻辑删除。调用方必须同时 current_rels.add(rel) 让条目持久化。
+    """
+    return {"hash": bhash, "chunks": 0, "size": st.st_size,
+            "mtime": st.st_mtime_ns, "tbd": False,
+            "xfail": True, "reason": reason}
 
 
 class LockBusyError(RuntimeError):
@@ -300,9 +355,15 @@ def progress_text(p):
             lines.append(f"  ⚠ 疑似卡死：心跳已停 {int(gap)}s（> {int(HEARTBEAT_TIMEOUT)}s）{tip}")
             lines.append(f"  建议检查 PID {p.get('pid')} 是否存活；确认卡死可结束该进程后重试。")
         elif stall > STALL_TIMEOUT:
-            lines.append(f"  ⚠ 进度停滞：心跳正常（{int(gap)}s 前）但进度已 {int(stall)}s 未推进"
-                         f"（> {int(STALL_TIMEOUT)}s），疑似批次内卡死（假活）")
-            lines.append(f"  建议检查 PID {p.get('pid')} 是否仍在消耗 CPU；确认卡死可结束该进程后重试。")
+            if p.get("phase") == "converting":
+                # 文档转换（pdf/docx→md）相位豁免：单文件转换耗时与页数相关，
+                # 大文件超过 STALL_TIMEOUT 属预期，不判"批次内卡死"
+                lines.append(f"  · 文档转换中（进度 {int(stall)}s 未推进，属大文件转换预期，"
+                             f"心跳 {int(gap)}s 前正常）")
+            else:
+                lines.append(f"  ⚠ 进度停滞：心跳正常（{int(gap)}s 前）但进度已 {int(stall)}s 未推进"
+                             f"（> {int(STALL_TIMEOUT)}s），疑似批次内卡死（假活）")
+                lines.append(f"  建议检查 PID {p.get('pid')} 是否仍在消耗 CPU；确认卡死可结束该进程后重试。")
         else:
             lines.append(f"  心跳: {int(gap)}s 前（正常） · 进度推进: {int(stall)}s 前")
     return "\n".join(lines)
@@ -907,40 +968,56 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
     added = 0
     for fpath in files:
         rel = str(fpath.relative_to(vault)).replace("\\", "/")
-        st = fpath.stat()
+        try:
+            st = fpath.stat()
+        except OSError:
+            continue  # 状态拿不到，本轮无法判定（下轮自然重试；不计 changed/removed）
         entry = meta.get(rel)
-        # TBD 占位重文件：不在"需要索引"集合内。未变的 TBD 文件靠 meta 的
-        # tbd 标记走快速路径即可，无需读全文（文件补全后 mtime 变化 → 重判）。
-        if entry and entry.get("tbd"):
-            if entry.get("size") == st.st_size and entry.get("mtime") == st.st_mtime_ns:
-                continue
+        # 快速路径：size+mtime 未变即稳——对 xfail/tbd 终态条目同等适用，
+        # 终态持久化在 meta 里，O(1) 跳过，绝不读全文、绝不跑转换。
         if entry and entry.get("size") == st.st_size and entry.get("mtime") == st.st_mtime_ns:
             seen.add(rel)
             continue
-        content = fpath.read_text(encoding="utf-8", errors="replace")
-        if is_tbd_heavy(content, tbd_ratio):
-            # 由非 TBD 变 TBD（或新文件即 TBD）：不索引；原来有索引则需重建删除
-            if entry and not entry.get("tbd"):
-                changed += 1
+        text, bhash = _load_text(fpath)
+        if bhash == _UNREADABLE:
+            # 终态一致即稳定（罕见：mtime 变了但仍读不了）；否则计一次待重试
+            if entry and entry.get("xfail") and entry.get("reason") == "unreadable":
+                seen.add(rel)
+                continue
+            changed += 1
             continue
-        seen.add(rel)
-        h = hashlib.md5(content.encode("utf-8")).hexdigest()
-        if entry and entry.get("hash") == h:
+        suffix = fpath.suffix.lower().lstrip(".")
+        if suffix in TEXT_EXTS and text is None:
+            # 空文件落 empty 终态。历史上空正文 md 不落 meta，导致每轮重计
+            # added → 每轮判 stale（「明确不做」备案的既有隐患，随终态机制一并收敛）
+            if entry and entry.get("xfail") and entry.get("reason") == "empty":
+                seen.add(rel)
+                continue
+            changed += 1
+            continue
+        if suffix in TEXT_EXTS and is_tbd_heavy(text or "", tbd_ratio):
+            if entry and entry.get("xfail") and entry.get("reason") == "tbd":
+                seen.add(rel)
+                continue
+            changed += 1
+            continue
+        # 二进制源走到这里只做字节哈希比对（绝不提取）；文本源同旧语义。
+        if entry and entry.get("hash") == bhash:
+            seen.add(rel)
             continue
         if entry:
             changed += 1
         else:
             added += 1
-    # removed 只统计"应当索引但缺失"的文件：TBD 条目（tbd=True）不属于应索引
-    # 文件，稳定状态下留在 meta 里但不进 seen，不能每次都算 removed（否则
-    # 每轮指纹检查都判 stale → 每轮都触发重建）。
+    # removed 只统计"应当索引但缺失"的文件：终态条目（tbd/xfail）不属于应索引
+    # 文件，稳定状态下留在 meta 里但不进应索引集合，不能每次都算 removed。
     meta_files = {k for k, v in meta.items()
-                  if isinstance(v, dict) and not v.get("tbd")}
+                  if isinstance(v, dict) and not _skipped(v)}
     removed = len(meta_files - seen)
     stale = bool(changed or added or removed)
 
     expected = sum(info.get("chunks", 0) for info in meta.values()
-                   if isinstance(info, dict) and not info.get("tbd"))
+                   if isinstance(info, dict) and not _skipped(info))
     actual = _chroma_count(collection_name)
     if actual is not None and actual != expected:
         log(f"索引一致性校验失败：Chroma {actual} 块 vs meta {expected} 块，触发重建")
@@ -1121,14 +1198,25 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
         if not full and meta.pop("_version", 1) != META_VERSION:
             log(f"{tag}切块逻辑版本升级（v{META_VERSION}），强制全量重建")
             meta = {}
-        # 崩溃自愈（P7）：meta 有数据但 Chroma 空（如 --full 中途被杀在清库窗口）
-        # → 增量指纹全命中时 new_ids 为空，普通增量路径无法补数据，需强制全量重嵌。
-        if not full and meta and collection.count() == 0:
-            log(f"{tag}检测到索引库为空（meta 记录 {sum(i.get('chunks', 0) for i in meta.values() if isinstance(i, dict))} 块），自动全量重建")
-            meta = {}
-        current_rels = set()  # 动态构建：TBD 占位重文件不在其中（其旧条目/旧块会被清理）
+        # 崩溃/丢失自愈（P7，v9 推广为通用一致性校验）：meta 期望块数与
+        # Chroma 实际块数不符时，增量路径无法凭空补出缺失的块（指纹全命中
+        # → new_ids 为空），必须按全量重建处理。覆盖两类场景：
+        #   a) count==0：--full 中途被杀在清库窗口（原 P7）；
+        #   b) 部分丢失：进程被杀致 Chroma WAL 段未持久化、或外部动库——
+        #      此前会陷入「每轮判 stale → 每轮修不了」的死循环。
+        # 全终态库（只有 xfail/tbd 条目）期望 0 块且实际 0 块，相等，不误伤。
+        if not full and meta:
+            _expected = sum(i.get("chunks", 0) for i in meta.values()
+                            if isinstance(i, dict) and not _skipped(i))
+            _actual = collection.count()
+            if _actual != _expected:
+                log(f"{tag}一致性校验失败：meta 期望 {_expected} 块 vs Chroma 实际 "
+                    f"{_actual} 块，增量无法修复缺失块，自动转全量重建")
+                meta = {}
+        current_rels = set()  # 动态构建：本轮磁盘上应存在的文件（含持久化终态条目）
 
         new_ids, new_texts, new_metas = [], [], []
+        converted = 0  # 本轮做过文档转换（pdf/docx→md）的文件数
         changed = 0
         unchanged = 0
         scan_start = time.time()
@@ -1136,34 +1224,73 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
         update_progress(phase="scanning", message="比对指纹、切块...")
         for fpath in files:
             rel = str(fpath.relative_to(vault)).replace("\\", "/")
-            st = fpath.stat()
+            try:
+                st = fpath.stat()
+            except OSError as e:
+                log(f"{tag}无法获取文件状态，本轮跳过（下轮重试）：{rel}（{e}）")
+                continue
             old = meta.get(rel)
-            # 快速路径：size+mtime 未变则免读全文（与 kb_stale 同一指纹策略）。
-            # TBD 标记文件未变时同样跳过（补全后 mtime 变化 → 重新判定入索引）。
+            current_rels.add(rel)  # 本轮所有存活路径（终态/成功/未变）统一在此持久化
+            # 快速路径：size+mtime 未变则免读全文/免提取（与 kb_stale 同一指纹策略），
+            # 对 xfail/tbd 终态条目同等适用——终态稳定即 O(1) 收敛，绝不重复提取。
             if incremental and old and old.get("size") == st.st_size and old.get("mtime") == st.st_mtime_ns:
-                if not old.get("tbd"):
-                    current_rels.add(rel)
                 unchanged += 1
                 update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
                 continue
-            content = fpath.read_text(encoding="utf-8", errors="replace")
-            if is_tbd_heavy(content, tbd_ratio):
-                # 占位重文件不索引；曾索引过（旧块存在）→ 留给清理逻辑删除
-                log(f"{tag}跳过占位重文件（TBD 占比 ≥ {tbd_ratio:.0%}）：{rel}")
+            text, bhash = _load_text(fpath)
+
+            # ---- 统一终态出口（封堵死循环入口）：None 判定严格先于 is_tbd_heavy ----
+            if bhash == _UNREADABLE:
+                meta[rel] = _terminal_entry(st, bhash, "unreadable")
+                log(f"{tag}文件不可读（锁定/权限？），记入 unreadable 终态待重试：{rel}")
+                changed += 1
+                update_progress(files_done=unchanged + changed, message=f"跳过不可读 {rel}")
                 continue
-            current_rels.add(rel)
-            fhash = hashlib.md5(content.encode("utf-8")).hexdigest()
-            if incremental and old and old.get("hash") == fhash:
+            suffix = fpath.suffix.lower().lstrip(".")
+            is_text = suffix in TEXT_EXTS
+            if is_text and text is None:
+                # 空文件（含仅 frontmatter 的 md）落 empty 终态。历史上空正文不落
+                # meta，导致每轮重计 added → 每轮误判 stale（备案隐患，就此收敛）
+                meta[rel] = _terminal_entry(st, bhash, "empty")
+                log(f"{tag}空文件（无正文），记入 empty 终态：{rel}")
+                changed += 1
+                update_progress(files_done=unchanged + changed, message=f"跳过空文件 {rel}")
+                continue
+            if incremental and old and not _skipped(old) and old.get("hash") == bhash:
                 unchanged += 1
                 update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
                 continue
 
-            front, body = extract_frontmatter(content)
-            body = clean_wikilinks(body)
-            # 空正文守卫：0 字节/仅 frontmatter/纯空白文件不产生块（防噪音块占检索名额）
+            front, body = {}, ""
+            if is_text:
+                if is_tbd_heavy(text or "", tbd_ratio):
+                    # 占位重文件落 tbd 终态；其旧块由 chunks=0 驱动清理阶段删除
+                    meta[rel] = _terminal_entry(st, bhash, "tbd")
+                    log(f"{tag}跳过占位重文件（TBD 占比 ≥ {tbd_ratio:.0%}）：{rel}")
+                    changed += 1
+                    update_progress(files_done=unchanged + changed,
+                                    message=f"跳过占位重文件 {rel}")
+                    continue
+                front, body = extract_frontmatter(text or "")
+                body = clean_wikilinks(body)
+            else:
+                # 二进制源：转 Markdown 后走同一条切块管线。converting 相位在
+                # progress_text 里豁免停滞告警（大文件转换可能超过 STALL_TIMEOUT）。
+                update_progress(phase="converting", message=f"转换 {rel}...")
+                converted += 1
+                body, reason = extract_to_markdown(fpath)
+                if body is None:
+                    meta[rel] = _terminal_entry(st, bhash, reason or "extract-failed")
+                    log(f"{tag}提取失败（{reason or 'extract-failed'}），记入终态待重试：{rel}")
+                    changed += 1
+                    update_progress(files_done=unchanged + changed, message=f"提取失败 {rel}")
+                    continue
+                body = clean_wikilinks(body)
+            # 防御分支：正常不应到达（文本空已归一为终态、提取器保证非空产出）
             if not body.strip():
-                if incremental and old:
-                    continue  # 之前已有块则留给清理逻辑删除；无块则跳过
+                meta[rel] = _terminal_entry(st, bhash, "empty")
+                changed += 1
+                update_progress(files_done=unchanged + changed, message=f"跳过空内容 {rel}")
                 continue
             # 两级切块：标题切 → 超长块降级段落切 → 超长段级句子剪（永不剪断句子）
             if len(body) <= short_doc:
@@ -1264,7 +1391,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                     "hp": hp,
                     "ctx": ctx,
                 })
-            meta[rel] = {"hash": fhash, "chunks": len(chunks), "size": st.st_size,
+            meta[rel] = {"hash": bhash, "chunks": len(chunks), "size": st.st_size,
                          "mtime": st.st_mtime_ns, "tbd": False}
             changed += 1
             update_progress(files_done=unchanged + changed, message=f"切块 {rel}")
@@ -1323,8 +1450,11 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
 
             save_meta(meta, meta_file)
             final_count = collection.count()
-        update_progress(phase="done", message=f"完成。Chroma 现有 {final_count} 个块。", running=False)
-        log(f"{tag}完成。Chroma 现有 {final_count} 个块。耗时 {time.time() - scan_start:.1f}s。")
+        conv_note = f"（转换文档 {converted} 个）" if converted else ""
+        update_progress(phase="done", running=False,
+                        message=f"完成。Chroma 现有 {final_count} 个块。{conv_note}")
+        log(f"{tag}完成。Chroma 现有 {final_count} 个块。{conv_note}"
+            f"耗时 {time.time() - scan_start:.1f}s。")
     except Exception as e:
         progress_error(e)
         raise
@@ -1353,8 +1483,18 @@ if __name__ == "__main__":
         log("错误：没有已注册的库。请先用 library.py add <路径> 注册。")
         sys.exit(1)
 
+    failed = 0
     for entry in entries:
         cfg = effective_config(entry)
         log(f"开始索引库：{cfg['name']} → {cfg['path']}")
-        index_library(cfg, incremental=not args.full, full=args.full)
+        try:
+            index_library(cfg, incremental=not args.full, full=args.full)
+        except LockBusyError:
+            raise  # 写锁被占影响所有库，继续跑其余库没有意义，直接上抛
+        except Exception as e:
+            failed += 1
+            log(f"[{cfg['name']}] 索引失败（继续下一库）：{e}")
+    if failed:
+        log(f"全部索引任务结束：{failed} 个库失败，其余成功。")
+        sys.exit(1)
     log("全部索引任务完成。")

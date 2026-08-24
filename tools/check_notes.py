@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from extractors import SUPPORTED_EXTS, TEXT_EXTS  # noqa: E402
 from index import collect_md_files, extract_frontmatter  # noqa: E402
 from library import effective_config, load_registry  # noqa: E402
 
@@ -209,10 +210,21 @@ def scan_library(entry):
     back = build_backlinks(vault, files)
 
     hard_rows, soft_rows, mapping = [], [], []
+    # 二进制源（pdf/docx 等，extensions 开了多格式时会出现）没有可分析的
+    # 文本正文：read_text 会直接 UnicodeDecodeError 崩溃。按命名规范工具的
+    # 语义只分析文本类文件；跳过数打到 stderr。
+    binary_rels = {rel for rel, p in files.items()
+                   if p.suffix.lower().lstrip(".") in (SUPPORTED_EXTS - TEXT_EXTS)}
+    if binary_rels:
+        print(f"[check_notes] 库 {cfg['name']} 有 {len(binary_rels)} 个二进制源文件"
+              f"（{', '.join(sorted(SUPPORTED_EXTS - TEXT_EXTS))}），不参与命名规范分析",
+              file=sys.stderr)
     for rel in sorted(files):
         if is_exempt(Path(rel).name, rel):
             continue
         p = files[rel]
+        if rel in binary_rels:
+            continue
         try:
             text = p.read_text(encoding="utf-8")
         except OSError:

@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 PASS, FAIL = [], []
 REPO_FILES = ["index.py", "retriever.py", "server.py", "export.py", "import.py",
-              "library.py", "config.py", "AI_GUIDE.md"]
+              "library.py", "config.py", "extractors.py", "AI_GUIDE.md"]
 
 
 def check(name, cond, detail=""):
@@ -146,8 +146,12 @@ def main():
           == (ROOT / "data" / f"index_meta_{lib}.json").read_text(encoding="utf-8"))
     vf = [f["rel"] for f in manifest["vault_files"]]
     lib_vault = copy / "vault_export" / lib
-    check("副本 vault_export 文件数一致",
-          len(list(lib_vault.rglob("*.md"))) == len(vf))
+    # 权威清单比对：不再 rglob("*.md") 计数（多格式支持后 vault_files 含
+    # pdf/docx 等二进制源，按扩展名计数会漏），直接比磁盘文件集合与清单集合
+    disk = {p.relative_to(lib_vault).as_posix()
+            for p in lib_vault.rglob("*") if p.is_file()}
+    check("副本 vault_export 文件清单一致", disk == set(vf),
+          f"磁盘独有 {sorted(disk - set(vf))[:3]} 清单独有 {sorted(set(vf) - disk)[:3]}")
     check("中文文件名往返无损", all((lib_vault / Path(rel)).exists() for rel in zh_rel[:3]))
     check("包已归档", (copy / "data" / "archive" / pack.name).exists())
     check("临时区已清理", not (copy / "data" / "import_work").exists())

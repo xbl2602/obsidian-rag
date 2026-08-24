@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 from config import CFG, DATA_DIR
+from extractors import SUPPORTED_EXTS
 
 LIBRARIES_FILE = DATA_DIR / "libraries.json"
 
@@ -232,6 +233,23 @@ def set_config(name, key, value):
     if entry is None:
         raise ValueError(f"库不存在：{name}")
     parsed = _parse_value(key, value)
+    if key == "extensions":
+        # 白名单校验引用 extractors.SUPPORTED_EXTS（单一事实来源）；
+        # 小写归一 + 去重 + 保序，堵手滑写出的 .PDF / PDF / 大小写混排
+        exts = parsed if isinstance(parsed, list) else []
+        norm = []
+        for e in exts:
+            e2 = str(e).lower().lstrip(".")
+            if e2 and e2 not in norm:
+                norm.append(e2)
+        bad = [e for e in norm if e not in SUPPORTED_EXTS]
+        if bad:
+            raise ValueError(f"不支持的扩展名：{', '.join(bad)}"
+                             f"（当前支持：md, txt, {', '.join(sorted(SUPPORTED_EXTS - {'md', 'txt'}))}；"
+                             f"扫描件 OCR 计划末轮）")
+        if not norm:
+            raise ValueError("extensions 不能为空")
+        parsed = norm
     if key == "collection":
         if not isinstance(parsed, str) or not parsed:
             raise ValueError("collection 不能为空")

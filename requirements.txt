@@ -17,3 +17,9 @@ jieba==0.42.1       # BM25 中文分词。缺失时 retriever 会降级为纯 2-
                     # 但此前它不在本文件里且是裸 import，新机器部署后一检索就报
                     # "No module named 'jieba'" 导致检索 100% 不可用。
 flet==0.86.5        # 桌面控制台（gui/app.py，可选安装：不装不影响 CLI/MCP）
+
+# 多格式文档提取（extractors.py，R1：Word + 文字层 PDF；扫描件 OCR 计划末轮）
+pymupdf==1.28.2         # PDF 文字层探测与解析
+pymupdf4llm==1.28.2     # 文字层 PDF → Markdown
+python-docx==1.2.0      # DOCX → 结构化读取
+# 传递依赖由 pip 自动解析：pymupdf-layout / psutil / tabulate / lxml

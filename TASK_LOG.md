@@ -1018,3 +1018,30 @@ $env:HF_HUB_OFFLINE = "1"; .venv\Scripts\python.exe index.py --full
 - **评估**：v6 重建后 eval_retrieval 12 组 **top1=5/12、top3=10/12、top5=10/12**（基线 6/9/9）。top3/top5 各 +1；CFD 查询 top1 从 y+ 变为同相关的 ansys 引用集（重排器判断）。
 - **可见效果逐条确认**：置信度严格降序（0.73/0.72/0.72，F6 生效）；来源行出现 [已回填父节全文]（F18 生效）；v6 文档带文件级锚点 ctx（F20 生效）；缺失 jieba 时降级日志路径已在代码确认。
 - **遗留**：三小库重建完成；Vault 文档（主页/使用指南/架构/决策记录/Roadmap/操作手册）已同步置信度与 small-to-big 语义；retriever.py _format_results docstring 已修正。
+
+## 问题 23：多格式文档支持 R1——DOCX + 文字层 PDF（2026-08-24）
+
+**范围修订**：原方案 R1 含 MinerU 云端 OCR；用户决定扫描件 OCR 整体后移到末轮（TODO.md 已重排：R1=Word+文字层PDF，R2=GUI，R3(末)=OCR）。R1 零新增配置键、零子进程、零 GUI 改动。
+
+### 实现
+- **extractors.py（新）**：唯一入口 `extract_to_markdown(path) -> (md|None, reason)`（与 TODO 原拟的 `-> str|None` 不同：index 落终态需要 reason，故改返回二元组）。DOCX 按 body 子元素保序遍历（标题钳 ###、管道表转义、单元格换行压空格）；PDF 以「文字页占比 ≥0.5」判层，扫描件返回 `(None,"scanned")`。缓存键 `<字节md5>.v1`，原子写，写失败仅跳过缓存；None 不写缓存；启动清扫 >24h 孤儿 tmp。懒加载 import，绝不抛异常、绝不写源目录。TEXT/BINARY/SUPPORTED_EXTS 单一事实来源。
+- **index.py**：META_VERSION 8→9；新增 `_load_text()`（原始字节 MD5 指纹——对合法 UTF-8 与旧内容指纹等值，既有条目免迁移；OSError→哨兵 `"unreadable"` 两轮判稳；后缀一律 lower()）、`_skipped()` 单点谓词、`_terminal_entry()` 统一终态（reason ∈ unreadable|extract-failed|empty|tbd|scanned）；主循环 None/unreadable 判定严格先于 TBD；kb_stale 二进制源只比字节哈希绝不提取；converting 进度相位 + progress_text 停滞豁免；`__main__` 逐库 try/except（LockBusy 除外）。
+- **library.py**：set_config extensions 白名单校验引用 SUPPORTED_EXTS（小写归一+去重+保序）。**tools/check_notes.py**：跳过二进制源（修 UnicodeDecodeError 崩溃）。**verify_export_import.py**：REPO_FILES 补 extractors.py；vault_export 计数改 manifest 权威清单集合比对。
+
+### 过程中抓到并修掉的三个真 bug（新测试逮住）
+1. `_index_core` 正常成功路径漏 `current_rels.add(rel)` → 切块成功的文件被裁剪出 meta、块随即被当幽灵清掉（单点 add 移到 stat 之后统一覆盖所有存活路径）。
+2. P7 自愈分支误伤全终态库（每轮把合法终态 meta 清空重落，永不收敛）。
+3. **一致性死循环（P7 推广）**：Chroma 部分丢块时（实测：验证中途进程被杀 → WAL 段未持久化，HEBAT3_Technical_Report 的 104 块丢失），meta 期望≠实际每轮报 stale 但增量无块可补、永远修不回。现推广为通用校验：期望≠实际即自动转全量重建（全终态库 0==0 不误伤）。真库实测自愈：1594←1490，38.9s。
+- 另收敛一项备案隐患：「既有 md 空正文守卫不落 meta → 每轮误计 added 每轮 stale」随 empty 终态机制一并解决（原列于「明确不做」，因与同一代码路径重合顺带完成）。
+
+### 回归结果（Windows 实机，Py3.14）
+test_extractors **16/16**（新）· audit_regression **19/19** · library_registry **14/14** · server_singleton **5/5** · test_config_editor 0 failures · test_gui_store 0 failures · verify_export_import **39/39**。
+注：管道环境下跑测试需 `$env:PYTHONIOENCODING='utf-8'` 前缀（交互控制台不受影响）。
+
+### 真实索引影响
+v9 升级触发一次全量重建（legacy 入口实测 1594 块 / 80.5s GPU，批次自动收紧 32→8）。**运行中的 GUI/server 若加载的是旧代码需重启**，否则新旧逻辑会交替操作同一 Chroma/meta。
+
+### 遗留
+- 扫描件 pdf 在 vault 中存在：当前记 scanned 终态跳过，R3 接 MinerU 后凭 mtime 变化或手动 --full 转正（xsrc 自动重试机制属 R3）。
+- 提取器依赖缺失时的优雅降级路径未做单测（ImportError 模拟成本高），靠懒加载+warn_once 兜底。
+- 真实 vault 尚未开启 extensions（行为变更，待用户确认后执行 `library.py config "Obsidian Vault" --set extensions=md,pdf,docx`）。

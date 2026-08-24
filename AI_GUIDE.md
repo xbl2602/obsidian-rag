@@ -43,6 +43,12 @@ python3 -m venv .venv
 （Windows 对应：`.venv\Scripts\python.exe -m venv .venv` 后用 `.venv\Scripts\pip install ...`，
 torch 用 `pip install torch==2.11.0+cu128 --index-url https://download.pytorch.org/whl/cu128`）
 
+> **多格式索引（v9 起）**：库的 extensions 可含 `pdf,docx`（`python library.py config <名>
+> --set extensions=md,pdf,docx`），依赖本文件同目录 requirements.txt 中的
+> pymupdf / pymupdf4llm / python-docx。**扫描件 PDF（无文字层）暂不支持 OCR**：
+> 索引时自动跳过并在指纹里记 `xfail/reason=scanned` 终态（不会反复触发重建），
+> 计划末轮接入 MinerU 后自动转正重试。
+
 ### 2.3 导入数据包（核心步骤）
 ```bash
 # --yes 必加：AI 非交互环境，跳过“覆盖确认”询问
