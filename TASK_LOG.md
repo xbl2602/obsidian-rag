@@ -1045,3 +1045,27 @@ v9 升级触发一次全量重建（legacy 入口实测 1594 块 / 80.5s GPU，�
 - 扫描件 pdf 在 vault 中存在：当前记 scanned 终态跳过，R3 接 MinerU 后凭 mtime 变化或手动 --full 转正（xsrc 自动重试机制属 R3）。
 - 提取器依赖缺失时的优雅降级路径未做单测（ImportError 模拟成本高），靠懒加载+warn_once 兜底。
 - 真实 vault 尚未开启 extensions（行为变更，待用户确认后执行 `library.py config "Obsidian Vault" --set extensions=md,pdf,docx`）。
+
+## 问题 24：多格式文档支持 R2——GUI 适配（2026-08-24）
+
+R1 提交（177ede6）后的 GUI 层配套，全部为展示/判定口径对齐，检索链路零改动。
+
+### 改动
+- **gui/store.py**：
+  - `heartbeat_state` 对 converting 相位豁免停滞告警（与 index.progress_text 双看门狗口径一致：心跳停止仍判 dead，豁免不掩盖真死）；
+  - 新增 `meta_issues_for(cfg)`（按 reason 统计 xfail 终态文件数，只读指纹文件）与 `ISSUE_TEXT`（五种 reason 的中文标签+处置指引）。
+- **gui/widgets.py**：
+  - ProgressCard 阶段条插入「转换」chip（scanning→**converting**→embedding），converting 计数行显示「文档转换 x/y · PDF/DOCX→Markdown」；
+  - HeartbeatPill.set_state 增可选 note 参数（运行中文案覆盖，不改状态色/呼吸）；
+  - 库配置对话框 extensions 字段 helper 补「支持 md/txt/pdf/docx；扫描件 PDF 暂不支持 OCR（索引时自动跳过）」。
+- **gui/app.py**：
+  - 刷新循环在 converting 相位给心跳胶囊传 note=「文档转换中（大文件耗时属预期）」，用户不再误读为卡死；
+  - 状态卡副行追加提取跳过汇总（形如「⚠ 提取跳过 4 个文件：扫描件×3、不可读×1」），按当前选中库范围聚合。
+- **tests/test_gui_store.py**：+3 用例（converting 停滞豁免且 dead 不被豁免掩盖 / meta_issues_for 按 reason 计数与缺文件容错 / ISSUE_TEXT 覆盖全部终态 reason），27→**30 用例全过**。
+
+### 回归
+六件套全绿：audit 19/19、library_registry 14/14、server_singleton 5/5、test_config_editor 0 failures、test_gui_store 0 failures（含新增 3 例）、verify_export_import 39/39。
+
+### 备注
+- GUI 视觉观感（chip 配色、文案长度）待用户下次开 GUI 人工确认；逻辑层已由单测锁定。
+- 真实 vault extensions 启用仍待用户确认（同问题 23 遗留）。

@@ -54,11 +54,11 @@
 - 提交信息用中文、feat: 前缀，风格对齐仓库既有提交
 
 ## 当前进度
-- [ ] C1 R1 提交落位
-- [ ] C2 GUI 既有测试不红
-- [ ] C3 GUI 层 converting/xfail 能力静态落位
-- [ ] C4 六件套全绿
-- [ ] C5 TASK_LOG R2 记录
+- [x] C1 R1 提交落位（177ede6；R2 成果随后按里程碑单独提交）
+- [x] C2 GUI 既有测试不红（test_gui_store 30/30、test_config_editor 0 failures）
+- [x] C3 GUI 层 converting/xfail 能力静态落位（converting×8、xfail/reason×4）
+- [x] C4 六件套全绿（19/19、14/14、5/5、0 failures、30 PASS、39/39）
+- [x] C5 TASK_LOG R2 记录（问题 24）
 
 ## 上一目标完成记录（2026-08-24）
 R1 全部交付：依赖锁定（pymupdf 1.28.2 / pymupdf4llm 1.28.2 / python-docx 1.2.0）、extractors.py（DOCX+文字层 PDF→Markdown、缓存、扫描件 scanned 终态）、index.py v9（_load_text 字节指纹、统一终态、一致性自愈推广）、16 项新测试、六件套全绿（19/19、14/14、5/5、0 failures、0 failures、39/39）、真库自愈 1490→1594 块。明细见 TASK_LOG.md 问题 23。

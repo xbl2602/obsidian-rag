@@ -23,6 +23,7 @@ from store import (  # noqa: E402
     STATE_NONE,
     index_state, index_busy, meta_stats, progress_ratio,
     heartbeat_state, read_progress, library_entries, library_snapshot,
+    meta_issues_for, ISSUE_TEXT,
     is_library_dir,
 )
 from worker import IndexWorker, read_history  # noqa: E402
@@ -283,7 +284,11 @@ class App:
         self.progress.update(progress, ratio, colors, elapsed_txt, eta_txt, idle_summary)
 
         hb = heartbeat_state(progress)
-        self.heartbeat.set_state(hb, datetime.datetime.now(), colors)
+        # converting 相位：停滞豁免已在 store.heartbeat_state 对齐；这里把
+        # 「心跳正常」文案换成转换中提示，让用户知道不是卡死
+        hb_note = ("文档转换中（大文件耗时属预期）"
+                   if running and progress.get("phase") == "converting" else None)
+        self.heartbeat.set_state(hb, datetime.datetime.now(), colors, note=hb_note)
         self.heartbeat.tick()
         if hb == "dead" and running and not self._dead_reported:
             self._dead_reported = True
@@ -394,7 +399,34 @@ class App:
                 nnone = sum(1 for r in rows if r[1] == "none")
                 sub = "%d 库：%d 待索引" % (n, nstale) if nstale else (
                     "%d 库：均最新" % n if nnone == 0 else "%d 库：均未索引" % n)
+        issue_txt = self._issues_suffix(by)
+        if issue_txt:
+            sub = "%s ｜ ⚠ %s" % (sub, issue_txt) if sub else "⚠ %s" % issue_txt
         self.status_card.set_state(agg_state, colors, sub=sub)
+
+    def _issues_suffix(self, by_name_rows):
+        """选中范围内提取失败（xfail 终态）文件的汇总短文案；无问题返回空串。
+
+        形如「提取跳过 4 个文件：扫描件×3、不可读×1」——只提示不阻塞，
+        处置指引见库管理或 AI_GUIDE（reason 全集定义在 gui.store.ISSUE_TEXT）。
+        """
+        sel = None if self.lib_picker.is_all else self.lib_picker.selected_names
+        names = list(by_name_rows.keys()) if sel is None else \
+            [n for n in sel if n in by_name_rows]
+        tally = {}
+        for n in names:
+            cfg = self._lib_by_name.get(n)
+            if not cfg:
+                continue
+            for reason, cnt in meta_issues_for(cfg).items():
+                tally[reason] = tally.get(reason, 0) + cnt
+        if not tally:
+            return ""
+        total = sum(tally.values())
+        detail = "、".join(
+            "%s×%d" % (ISSUE_TEXT.get(r, (r, ""))[0], c)
+            for r, c in sorted(tally.items(), key=lambda kv: -kv[1]))
+        return "提取跳过 %d 个文件：%s" % (total, detail)
 
     def _update_time_kpi(self, progress, running, colors):
         """耗时卡状态机：进行中=实时计时；未索引=「—」；其余=上次完成耗时。"""

@@ -4,6 +4,7 @@
 """
 import json
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from gui.store import (  # noqa: E402
     STATE_NONE, STATE_OK, STATE_STALE,
     HB_DEAD, HB_DONE, HB_IDLE, HB_RUNNING, HB_STALLED,
     heartbeat_state, progress_ratio, meta_stats_for, library_state,
-    library_snapshot, is_library_dir,
+    library_snapshot, is_library_dir, meta_issues_for, ISSUE_TEXT,
 )
 from gui.app import format_elapsed, format_mmss, App  # noqa: E402 纯函数，不触发窗口
 from gui.theme import DARK  # noqa: E402
@@ -311,6 +312,51 @@ def test_split_lib_rel():
         ("Obsidian Vault", "docs/foo.md")
     assert App._split_lib_rel("a/b/c.md") == ("a", "b/c.md")
     assert App._split_lib_rel("nested.md") == (None, "nested.md")  # 无斜杠 = 无前缀
+
+
+def test_heartbeat_converting_stall_is_not_stalled():
+    """converting 相位豁免停滞告警（与 index.progress_text 口径一致），
+    但心跳停止仍判 dead——豁免不掩盖真死。"""
+    stale_advance = time.time() - 999
+    p = make_progress(running=True, phase="converting",
+                      updated_at=time.time(), last_advance_at=stale_advance)
+    assert heartbeat_state(p) == HB_RUNNING
+    p2 = make_progress(running=True, phase="converting", updated_at=stale_advance)
+    assert heartbeat_state(p2) == HB_DEAD
+    # 非 converting 相位的同等停滞照旧判 stalled（回归保护）
+    p3 = make_progress(running=True, phase="scanning",
+                       updated_at=time.time(), last_advance_at=stale_advance)
+    assert heartbeat_state(p3) == HB_STALLED
+
+
+def test_meta_issues_for_counts_xfail_by_reason():
+    import gui.store as gstore
+    meta = {
+        "_version": 9,
+        "a.md": {"hash": "x", "chunks": 3, "size": 1, "mtime": 1, "tbd": False},
+        "s1.pdf": {"hash": "h", "chunks": 0, "size": 1, "mtime": 1,
+                   "tbd": False, "xfail": True, "reason": "scanned"},
+        "s2.pdf": {"hash": "h", "chunks": 0, "size": 1, "mtime": 1,
+                   "tbd": False, "xfail": True, "reason": "scanned"},
+        "b.docx": {"hash": "h", "chunks": 0, "size": 1, "mtime": 1,
+                   "tbd": False, "xfail": True, "reason": "extract-failed"},
+    }
+    cfg = {"name": "t"}
+    with tempfile.TemporaryDirectory() as td:
+        mf = Path(td) / "m.json"
+        mf.write_text(json.dumps(meta), encoding="utf-8")
+        with patch.object(gstore, "meta_path", return_value=mf):
+            assert meta_issues_for(cfg) == {"scanned": 2, "extract-failed": 1}
+        with patch.object(gstore, "meta_path",
+                          return_value=Path(td) / "nope.json"):
+            assert meta_issues_for(cfg) == {}, "指纹缺失 = 无问题，不得抛异常"
+
+
+def test_issue_text_covers_all_terminal_reasons():
+    from gui.store import ISSUE_TEXT
+    for r in ("scanned", "unreadable", "extract-failed", "empty", "tbd"):
+        label, guide = ISSUE_TEXT[r]
+        assert label and guide, f"reason {r} 的标签与处置指引必须齐全"
 
 
 if __name__ == "__main__":

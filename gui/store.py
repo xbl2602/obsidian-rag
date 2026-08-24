@@ -129,7 +129,12 @@ def index_state():
 
 
 def heartbeat_state(progress):
-    """心跳四态判定（复用现有双通道规则，与库无关）。"""
+    """心跳四态判定（复用现有双通道规则，与库无关）。
+
+    converting（文档转换）相位豁免停滞告警：单文件转换耗时与页数相关，
+    大文件超过 STALL_TIMEOUT 属预期——与 index.progress_text 的口径保持一致
+    （双看门狗一致，防一边正常一边弹卡死）。心跳停止仍照常判 dead。
+    """
     now = time.time()
     if not progress.get("running"):
         return HB_DONE if progress.get("phase") == "done" and progress.get("pid") else HB_IDLE
@@ -137,9 +142,38 @@ def heartbeat_state(progress):
     advanced = progress.get("last_advance_at") or 0
     if now - updated > HEARTBEAT_TIMEOUT:
         return HB_DEAD
+    if progress.get("phase") == "converting":
+        return HB_RUNNING
     if now - advanced > STALL_TIMEOUT:
         return HB_STALLED
     return HB_RUNNING
+
+
+# 提取失败（xfail 终态）的展示文案：reason → (短标签, 处置指引)
+ISSUE_TEXT = {
+    "scanned": ("扫描件 PDF", "暂不支持 OCR，计划末轮接入；如需检索请使用文字层版本"),
+    "unreadable": ("不可读", "文件被占用/权限不足，解除后重新索引自动重试"),
+    "extract-failed": ("提取失败", "文件可能损坏或加密，修复源文件后重建"),
+    "empty": ("空文件", "无正文内容，补全内容后自动入索引"),
+    "tbd": ("TBD 占位", "占位符过多暂不索引，补全后自动恢复"),
+}
+
+
+def meta_issues_for(cfg):
+    """单库提取失败（xfail 终态）统计：{reason: 文件数}，无问题返回 {}。
+
+    只读该库指纹文件的终态条目，不加载模型、不碰 Chroma。
+    """
+    try:
+        meta = load_meta(meta_path(cfg["name"]))
+    except Exception:
+        return {}
+    issues = {}
+    for v in meta.values():
+        if isinstance(v, dict) and v.get("xfail"):
+            r = v.get("reason") or "unknown"
+            issues[r] = issues.get(r, 0) + 1
+    return issues
 
 
 def progress_ratio(progress):

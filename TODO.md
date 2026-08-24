@@ -98,6 +98,8 @@ python index.py --library "Obsidian Vault"
 
 ## R2 — GUI 适配
 
+> ✅ **已完成（2026-08-24）**：converting 相位展示+双看门狗口径对齐、xfail 终态可见性（状态卡汇总+ISSUE_TEXT 指引）、extensions 字段格式提示；test_gui_store 增至 30 用例全过，六件套全绿。明细见 TASK_LOG.md 问题 24。
+
 - [ ] gui/widgets.py 库设置页：extensions 字段旁标注支持的格式（md/txt/pdf/docx）与扫描件暂不支持的提示
 - [ ] 索引进度：converting 相位在 GUI 进度区的展示；heartbeat_state 豁免与 server 侧 progress_text 对齐（双看门狗一致，防一边正常一边弹卡死）
 - [ ] 提取失败文件的 GUI 可见性：列表/统计中区分 xfail 条目（含 reason），给出处置指引

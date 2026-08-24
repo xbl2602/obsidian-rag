@@ -174,8 +174,10 @@ class HeartbeatPill:
         self._low = False
         self._colors = colors
 
-    def set_state(self, state, now, colors):
-        self.text.value = self.TEXT[state]
+    def set_state(self, state, now, colors, note=None):
+        """更新心跳胶囊。note：可选的运行中补充文案（如「文档转换中」），
+        覆盖默认状态文案但不改变状态色/呼吸行为。"""
+        self.text.value = self.TEXT[state] if not note else note
         if state == "running":
             self.ts.value = now.strftime("%H:%M:%S")
         elif state in ("done", "dead", "stalled"):
@@ -215,9 +217,11 @@ class HeartbeatPill:
         self.card.border = ft.Border.all(1, colors["border_faint"])
 
 
-PHASES = ["scanning", "embedding", "writing", "done"]
-PHASE_TEXT = {"scanning": "扫描", "embedding": "嵌入", "writing": "写库", "done": "完成"}
-PHASE_COLOR = {"scanning": "scan", "embedding": "accent", "writing": "accent", "done": "success"}
+PHASES = ["scanning", "converting", "embedding", "writing", "done"]
+PHASE_TEXT = {"scanning": "扫描", "converting": "转换",
+              "embedding": "嵌入", "writing": "写库", "done": "完成"}
+PHASE_COLOR = {"scanning": "scan", "converting": "accent",
+               "embedding": "accent", "writing": "accent", "done": "success"}
 
 
 def _parse_src(src):
@@ -383,7 +387,11 @@ class ProgressCard:
         else:
             done, total = progress.get("files_done"), progress.get("files_total")
             f = progress.get("chunks_done"), progress.get("chunks_total")
-            if phase == "scanning" and done is not None:
+            if phase == "converting":
+                # 文档转换相位：进度按文件计；大文件（页数多）单文件可能较久
+                self.count.value = ("文档转换 %s/%s · PDF/DOCX→Markdown"
+                                    % (done, total) if done is not None else "文档转换中...")
+            elif phase == "scanning" and done is not None:
                 self.count.value = "文件 %s/%s" % (done, total)
             elif f[0] is not None and total:
                 self.count.value = "文件 %s/%s · 块 %s/%s" % (done, total, f[0], f[1])
@@ -1426,6 +1434,15 @@ class LibraryManagerDialog:
                 val = ""
             else:
                 val = str(raw)
+            if raw is None:
+                helper = "（留空 = 继承全局）"
+            elif key != "collection":
+                helper = "当前覆盖值，清空后保存恢复继承全局"
+            else:
+                helper = "当前覆盖值（仅 collection 不可恢复继承）"
+            if key == "extensions":
+                # R1 多格式支持：白名单见 extractors.SUPPORTED_EXTS（library.set_config 校验）
+                helper += "｜支持 md/txt/pdf/docx；扫描件 PDF 暂不支持 OCR（索引时自动跳过）"
             inp = ft.TextField(
                 label=_LIB_CONFIG_NAMES[key], value=val,
                 height=46, dense=True, border_radius=SIZE["radius_control"],
@@ -1433,9 +1450,7 @@ class LibraryManagerDialog:
                 border_color=colors["border"], text_size=13, expand=True,
                 text_style=ft.TextStyle(font_family=FONT_UI),
                 label_style=ft.TextStyle(size=12, font_family=FONT_UI),
-                helper="（留空 = 继承全局）" if raw is None else
-                       ("当前覆盖值，清空后保存恢复继承全局" if key != "collection" else
-                        "当前覆盖值（仅 collection 不可恢复继承）"),
+                helper=helper,
             )
             self._cfg_fields[key] = inp
             body.controls.append(inp)
