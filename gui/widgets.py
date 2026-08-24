@@ -6,6 +6,7 @@
 import datetime
 import re
 import threading
+import time
 
 import flet as ft
 
@@ -1652,8 +1653,16 @@ def _fmt_ts(ts):
 
 class ExtractLabDialog:
     """转换试验台：选一个文件，走与索引完全相同的提取管线（含缓存与 OCR 后端），
-    就地预览产出质量。布局：顶部控制行 + 信息徽章 + 整幅结果区（渲染/源码两页签），
-    不做左右分栏——输入是二进制文件没有可展示的"原文"，整幅留给产出最省空间。"""
+    就地预览产出质量。顶部控制行（含后端单次覆盖下拉）+ 活动指示（不确定进度条
+    + 秒表）+ 整幅结果区（渲染/源码页签）。不做左右分栏——输入是二进制文件没有
+    可展示的"原文"，整幅留给产出最省空间。
+
+    中断与收尾语义：
+    - 提取跑在 daemon 线程：关闭对话框/GUI 时线程随进程消亡，无守护进程残留；
+    - 缓存写入是 tmp+os.replace 原子操作，中断至多留孤儿 tmp（启动清扫回收），
+      绝不产生半截缓存；
+    - 预览不写 meta/Chroma/终态，任何时刻中断都无需回滚。
+    """
 
     def __init__(self, colors=DARK):
         self._cols = colors
@@ -1662,6 +1671,8 @@ class ExtractLabDialog:
         self._file_path = None
         self._dlg = None
         self._busy = False
+        self._stop = threading.Event()
+        self._t0 = 0.0
 
     # ---- 打开 / 构建 ----
 
@@ -1669,6 +1680,8 @@ class ExtractLabDialog:
         if self._dlg is None:
             self._build()
         self._page = page
+        self._reset_idle_ui()
+        self._refresh_backend_ui()
         try:
             page.show_dialog(self._dlg)
         except Exception:
@@ -1696,10 +1709,16 @@ class ExtractLabDialog:
                 text_style=ft.TextStyle(font_family=FONT_UI, weight=ft.FontWeight.W_600)),
             on_click=self._run)
 
-        backend = self._current_backend_label()
+        # 后端单次覆盖下拉："跟随全局" = 不覆盖，其余仅影响本次预览
+        self._dd_backend = ft.Dropdown(
+            value="auto", width=270,
+            options=[ft.DropdownOption(key="auto", text="跟随全局设置"),
+                     ft.DropdownOption(key="none", text="本地直提（无 OCR）"),
+                     ft.DropdownOption(key="mineru-cloud", text="MinerU 云端 OCR")],
+            on_change=lambda _e: self._refresh_hint())
+
         self._backend_chip = ft.Container(
-            content=ft.Text(f"后端：{backend}", size=11, color=c["t3"],
-                            font_family=FONT_MONO),
+            content=ft.Text("", size=11, color=c["t3"], font_family=FONT_MONO),
             padding=ft.Padding.symmetric(horizontal=10, vertical=4),
             border_radius=SIZE["radius_pill"],
             bgcolor=ft.Colors.with_opacity(0.08, c["t4"]))
@@ -1724,11 +1743,24 @@ class ExtractLabDialog:
                                      visible=False)
         self._chips = ft.Row([], spacing=8, wrap=True)
 
+        # 活动指示：不确定进度条 + 运行秒表（心跳），完成即隐藏
+        self._progress = ft.ProgressBar(value=None, visible=False,
+                                        bar_height=4, color=c["accent"],
+                                        bgcolor=c["sunken"])
+        self._live_text = ft.Text("", size=11, color=c["t2"], font_family=FONT_MONO)
+        self._live_row = ft.Row([self._progress, self._live_text], spacing=10,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                visible=False)
+
+        self._hint = ft.Text(self._hint_text(), size=11, color=c["t4"],
+                             font_family=FONT_UI, height=1.4)
+
         body = ft.Column([
             ft.Row([self._btn_pick, self._file_text],
                    spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Row([self._btn_run, self._backend_chip],
+            ft.Row([self._btn_run, self._dd_backend, self._backend_chip],
                    spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            self._live_row,
             self._chips,
             ft.Row([self._btn_render_tab, self._btn_src_tab], spacing=4,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -1736,16 +1768,11 @@ class ExtractLabDialog:
             self._src_box,
         ], spacing=SIZE["gap_tight"], expand=True)
 
-        hint = ft.Text(
-            "与索引用同一条提取管线（含缓存与 OCR 后端）；扫描件走云端可能需要数十秒。"
-            "此处预览不写入索引。",
-            size=11, color=c["t4"], font_family=FONT_UI, height=1.4)
-
         self._dlg = ft.AlertDialog(
             modal=True,
             title=ft.Text("提取试验台 — 转译效果预览", size=17,
                           weight=ft.FontWeight.W_600, font_family=FONT_UI),
-            content=ft.Container(content=ft.Column([body, hint],
+            content=ft.Container(content=ft.Column([body, self._hint],
                                                    spacing=8, expand=True),
                                  width=920, height=640),
             actions=[ft.TextButton("关闭", on_click=self._close)],
@@ -1766,6 +1793,40 @@ class ExtractLabDialog:
         return {"none": "本地直提（OCR 关）",
                 "mineru-cloud": f"MinerU 云端（{has_key}）",
                 "mineru-local": "本地部署（未支持）"}.get(b, b)
+
+    def _effective_backend(self):
+        val = getattr(self, "_dd_backend", None)
+        sel = val.value if val is not None else "auto"
+        if sel == "auto":
+            import extractors as ex
+            return ex.get_scan_backend()
+        return sel
+
+    def _hint_text(self):
+        base = "与索引用同一条提取管线（含缓存）；预览不写入索引。"
+        tail = {"none": "当前后端：本地直提——扫描件将被跳过并说明原因。",
+                "mineru-cloud": "当前后端：MinerU 云端——每个扫描件可能需要数十秒。",
+                "mineru-local": "本地部署属 R3b 尚未支持，扫描件将跳过。",
+                }.get(self._effective_backend(), "")
+        return base + tail
+
+    def _refresh_hint(self):
+        if getattr(self, "_hint", None) is not None:
+            self._hint.value = self._hint_text()
+        self._refresh_backend_ui()
+
+    def _refresh_backend_ui(self):
+        if getattr(self, "_backend_chip", None) is not None:
+            self._backend_chip.content.value =                 f"全局后端：{self._current_backend_label()}"
+        self._update()
+
+    def _reset_idle_ui(self):
+        """打开/复用实例时确保处于干净待命态（如上次被中途关闭）。"""
+        if not self._busy and getattr(self, "_btn_run", None) is not None:
+            self._btn_run.disabled = False
+            self._btn_run.text = "开始提取"
+            self._progress.visible = False
+            self._live_row.visible = False
 
     async def _pick(self, _e=None):
         if self._page is None or self._picker is None:
@@ -1788,24 +1849,68 @@ class ExtractLabDialog:
 
     # ---- 提取执行 ----
 
+    @staticmethod
+    def _budget_for(backend):
+        try:
+            import config as cm
+            if backend in ("auto", "mineru-cloud"):
+                return max(30.0, float(cm.CFG.get("mineru_timeout_seconds") or 600))
+        except Exception:
+            pass
+        return 60.0
+
     def _run(self, _e=None):
         if self._busy or not self._file_path:
-            return
+            return  # 防重入：进行中/未选文件一律忽略
         self._busy = True
         self._btn_run.disabled = True
-        c = self._cols
-        self._set_chips([("⏳ 提取中…（扫描件走云端可能数十秒）", c["accent"])])
+        self._btn_run.text = "提取中…"
+        self._stop.clear()
+        self._t0 = time.monotonic()
+        backend = self._dd_backend.value
+        budget = self._budget_for(backend)
+        self._progress.visible = True
+        self._live_row.visible = True
+        self._live_text.value = self._live_label(budget)
+        self._set_chips([])
         self._update()
-        threading.Thread(target=self._work, daemon=True, name="extract-lab").start()
+        threading.Thread(target=self._ticker, args=(budget,), daemon=True,
+                         name="extract-lab-ticker").start()
+        threading.Thread(target=self._work, daemon=True,
+                         args=(None if backend == "auto" else backend,),
+                         name="extract-lab-work").start()
 
-    def _work(self):
+    def _live_label(self, budget):
+        return (f"⏱ {time.monotonic() - self._t0:.0f}s 运行中"
+                f" · 超时预算 ~{int(budget)}s")
+
+    def _ticker(self, budget):
+        """活动秒表（心跳）：每 0.7s 刷新运行时长，让用户确信没死机。"""
+        while not self._stop.wait(0.7):
+            try:
+                self._live_text.value = self._live_label(budget)
+                self._update()
+            except RuntimeError:
+                return
+
+    def _work(self, backend):
         import extractors as ex
-        info = ex.extract_preview(self._file_path)
         try:
+            info = ex.extract_preview(self._file_path, backend=backend)
+        except Exception as e:  # 双保险：契约之外的异常也不允许线程悬死无反馈
+            info = {"md": None, "reason": f"internal:{e.__class__.__name__}",
+                    "route": "-", "cached": False, "elapsed": 0.0, "chars": 0}
+        self._stop.set()
+        self._busy = False
+        try:
+            self._btn_run.disabled = False
+            self._btn_run.text = "开始提取"
+            self._progress.visible = False
             self._render(info)
+            self._live_row.visible = False
             self._update()
         except RuntimeError:
-            pass  # 页面已关闭
+            pass  # 窗口已关闭：daemon 线程自然结束，无任何需回收的状态
 
     def _render(self, info):
         c = self._cols
@@ -1815,18 +1920,21 @@ class ExtractLabDialog:
         if info["cached"]:
             chips.append(("缓存命中", "success"))
         if reason:
-            label, guide = ("失败", "")
+            label, guide = reason, ""
             try:
                 from gui.store import ISSUE_TEXT
                 label, guide = ISSUE_TEXT.get(reason, (reason, ""))
             except Exception:
-                label = reason
+                pass
             chips.insert(0, (f"✗ {reason} · {label}｜{guide}", "danger"))
             self._md_view.value = ""
             self._src_view.value = ""
         else:
             chips.insert(0, (f"路由 {info['route']}", "accent"))
-            self._md_view.value = md or ""
+            # 渲染视图做内联标签净化（<u> 等 flet Markdown 不渲染的裸 HTML）；
+            # 源码页保持原样，以源码为准
+            import extractors as ex
+            self._md_view.value = ex.sanitize_render_md(md or "")
             self._src_view.value = md or ""
         self._set_chips([(txt, self._cols.get(key, key)) for txt, key in chips])
 
@@ -1845,11 +1953,17 @@ class ExtractLabDialog:
             if self._page is not None:
                 self._page.update()
         except RuntimeError:
-            pass
+            pass  # 页面已销毁（GUI 关闭）：静默放弃 UI 更新
 
     def _close(self, _e=None):
+        self._stop.set()          # 停秒表；worker 完成回调自行静默
         self._busy = False
-        self._btn_run.disabled = False
+        if getattr(self, "_btn_run", None) is not None:
+            self._btn_run.disabled = False
+            self._btn_run.text = "开始提取"
+        if getattr(self, "_progress", None) is not None:
+            self._progress.visible = False
+            self._live_row.visible = False
         try:
             if self._dlg is not None:
                 self._dlg.open = False

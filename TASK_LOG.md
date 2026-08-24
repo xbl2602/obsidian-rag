@@ -1116,3 +1116,12 @@ R1 提交（177ede6）后的 GUI 层配套，全部为展示/判定口径对齐�
 - **extractors.py**：抽取 `_extract_full()` 返回 (md, reason, route, cached)；公开 API `extract_to_markdown` 保持二元组契约不变；新增 `extract_preview(path)` 输出过程信息 dict。
 - **gui/widgets.py**：新增 `ExtractLabDialog`。flet 0.86 控件模型适配：FilePicker 为服务型控件且 `pick_files` 是 async 方法（async 事件处理器直接 await 结果，不再走 on_result 回调）；弃用签名大改的 ft.Tabs，改自绘页签按钮 + visible 切换（版本免疫）。提取在后台线程执行，UI 不冻结。
 - 测试：test_extractors 增 `test_extract_preview_contract`（字段形态/pair 契约不回归/缓存命中可见），**23 用例全过**；gui_store 导入级验证组件可构建。六件套全绿。
+
+### 体验修订（同日，用户实测反馈六项）
+1. 防重入 + 明确动画：进行中按钮禁用并改文案「提取中…」，新增**不确定进度条**；
+2. 动态提示：底部说明按当前生效后端实时生成（本地直提→「扫描件将被跳过」；云端→「可能数十秒」），不再静态误导；
+3. 活动秒表（心跳）：进度条旁每 0.7s 刷新「⏱ Xs 运行中 · 超时预算 ~Ys」，死机与否一目了然；中断收尾语义成文——daemon 线程随 GUI 进程消亡、缓存原子写至多留孤儿 tmp（启动清扫回收）、预览不碰 meta/Chroma 无需回滚；
+4. 后端可选：新增「跟随全局 / 本地直提 / MinerU 云端」下拉，**单次覆盖**仅影响本次预览（extract_preview(backend=…) 参数穿透），不污染全局配置；
+5. 渲染净化：新增 sanitize_render_md——<b>/<i> 转 **/*，<u>/<span> 等裸 HTML 剥除（flet Markdown 不渲染裸 HTML 会原样显示）；源码页保持原样以源码为准；
+6. 复用实例打开时重置为干净待命态（防上次中途关闭遗留禁用按钮）。
+测试：test_extractors **25 用例全过**（+sanitize 净化、+backend 单次覆盖不污染全局）；gui_store 0 failures；audit 19/19。

@@ -248,10 +248,10 @@ def test_cache_hit_skips_reextraction_and_none_not_cached():
             calls = {}
             orig = ex._extract_pdf
 
-            def counting(path):
+            def counting(path, **kw):
                 key = Path(path).name
                 calls[key] = calls.get(key, 0) + 1
-                return orig(path)
+                return orig(path, **kw)
             ex._extract_pdf = counting
             try:
                 md1, r1 = ex.extract_to_markdown(p)
@@ -801,6 +801,42 @@ def test_extract_preview_contract():
             r3 = ex.extract_preview(bad)
             assert r3["md"] is None and r3["reason"] == "extract-failed"
         finally:
+            ex.set_cache_dir(None)
+
+
+def test_sanitize_render_md_inline_tags():
+    """渲染预览净化：<b>/<i> 转 Markdown 强调，<u>/<span> 等裸 HTML 剥除。"""
+    s = ex.sanitize_render_md("<b>粗</b> 与 <strong>强</strong>、<i>斜</i>"
+                              "<u>下划</u><span style=x>杂</span>尾")
+    assert s == "**粗** 与 **强**、*斜*下划杂尾"
+    assert "<" not in s and ">" not in s
+
+
+def test_preview_backend_override():
+    """试验台后端单次覆盖：覆盖值只影响本次预览，不污染全局配置。"""
+    orig_cloud = ex._mineru_cloud_extract
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "cache")
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)
+        saved = cfgmod.CFG.get("pdf_scan_backend")
+        assert saved == "none", \
+            f"前置假设：全局应为 none（实得 {saved!r}）——存在测试间配置泄漏"
+        try:
+            ex._mineru_cloud_extract = lambda _p: ("# 云端识别\n正文\n", "")
+            r_default = ex.extract_preview(p)
+            assert r_default["reason"] == "scanned" and r_default["md"] is None
+            r_over = ex.extract_preview(p, backend="mineru-cloud")
+            assert r_over["reason"] == "" and r_over["route"] == "ocr:mineru-cloud"
+            assert "云端识别" in r_over["md"]
+            assert cfgmod.CFG.get("pdf_scan_backend") == (
+                saved if saved is not None else cfgmod.CFG.get("pdf_scan_backend"))
+        finally:
+            ex._mineru_cloud_extract = orig_cloud
+            if saved is None:
+                cfgmod.CFG.pop("pdf_scan_backend", None)
+            else:
+                cfgmod.CFG["pdf_scan_backend"] = saved
             ex.set_cache_dir(None)
 
 

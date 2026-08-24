@@ -155,8 +155,25 @@ def _file_md5(path):
     return h.hexdigest()
 
 
-def _extract_full(path):
-    """完整提取过程。返回 (markdown|None, reason, route|None, cached)。"""
+def sanitize_render_md(md):
+    """渲染预览用的净化：把常见内联 HTML 标签转成 Markdown 等价物或剥除。
+
+    提取产物（尤其 pymupdf4llm）会混入 <u>/<span> 等标签，flet 的 Markdown
+    控件不渲染裸 HTML，会原样显示。仅用于预览渲染；源码页保持原样。
+    """
+    import re as _re
+    md = _re.sub(r"</?(?:b|strong)>", "**", md)
+    md = _re.sub(r"</?(?:i|em)>", "*", md)
+    md = _re.sub(r"`?</?(?:code|kbd)>`?", "`", md)
+    md = _re.sub(r"</?(?:u|s|del|ins|sub|sup|mark|small|span)[^>]*>", "", md)
+    return md
+
+
+def _extract_full(path, backend=None):
+    """完整提取过程。返回 (markdown|None, reason, route|None, cached)。
+
+    backend：试验台等场景的单次后端覆盖（None=跟随全局配置）。
+    """
     path = Path(path)
     ext = path.suffix.lower().lstrip(".")
     # 缓存按产出路由分键；同一文件的字节只会由一条路由成功产出（确定性），
@@ -172,7 +189,7 @@ def _extract_full(path):
     if ext == "docx":
         md, reason, route = _extract_docx(path)
     elif ext == "pdf":
-        md, reason, route = _extract_pdf(path)
+        md, reason, route = _extract_pdf(path, backend=backend)
     else:
         return None, "extract-failed", None, False  # 路由层只应送 BINARY_EXTS，防御分支
     if md is None:
@@ -195,16 +212,16 @@ def extract_to_markdown(path):
     return md, reason
 
 
-def extract_preview(path):
+def extract_preview(path, backend=None):
     """提取试验台用：单文件提取并返回过程信息（不落索引终态）。
 
+    backend：单次覆盖扫描件 OCR 后端（None=跟随全局配置）。
     返回 dict：md/reason/route/cached/elapsed/chars。
     """
     t0 = time.monotonic()
-    md, reason, route, cached = _extract_full(path)
+    md, reason, route, cached = _extract_full(path, backend=backend)
     return {"md": md, "reason": reason,
-            "route": route or ("-" if md is None and reason in
-                               ("unreadable", "empty") else "-"),
+            "route": route or "-",
             "cached": bool(cached),
             "elapsed": round(time.monotonic() - t0, 2),
             "chars": len(md) if md else 0}
@@ -309,12 +326,14 @@ _TEXT_PAGE_MIN_CHARS = 10
 _TEXT_PAGE_RATIO = 0.5
 
 
-def _extract_pdf(path):
+def _extract_pdf(path, backend=None):
     """PDF 提取路由：文字层 → 本地直提；扫描件 → 按 pdf_scan_backend 分发。
 
     返回 (markdown|None, reason, route)：route 标记产出路径，进缓存键
     （local=本地直提 / ocr:mineru-cloud=云端 OCR），换后端旧缓存天然失效。
+    backend：单次覆盖（试验台用），None = 跟随全局配置。
     """
+    backend = backend or get_scan_backend()
     try:
         import pymupdf
         import pymupdf4llm
@@ -340,8 +359,7 @@ def _extract_pdf(path):
         text_pages = sum(1 for pg in doc
                          if len(_page_text(pg).strip()) >= _TEXT_PAGE_MIN_CHARS)
         if text_pages / doc.page_count < _TEXT_PAGE_RATIO:
-            # 扫描件：按配置路由 OCR 后端
-            backend = get_scan_backend()
+            # 扫描件：按配置（或单次覆盖）路由 OCR 后端
             if backend == "none":
                 _warn_once("scanned",
                            "发现扫描件 PDF（无文字层），当前未启用 OCR 后端，已跳过"
