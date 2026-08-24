@@ -1714,8 +1714,9 @@ class ExtractLabDialog:
             value="auto", width=270,
             options=[ft.DropdownOption(key="auto", text="跟随全局设置"),
                      ft.DropdownOption(key="none", text="本地直提（无 OCR）"),
-                     ft.DropdownOption(key="mineru-cloud", text="MinerU 云端 OCR")],
-            on_change=lambda _e: self._refresh_hint())
+                     ft.DropdownOption(key="mineru-cloud", text="MinerU 云端 OCR")])
+        # flet 0.86：Dropdown 事件名为 on_select（构造器不接受 on_change）
+        self._dd_backend.on_select = lambda _e: self._refresh_hint()
 
         self._backend_chip = ft.Container(
             content=ft.Text("", size=11, color=c["t3"], font_family=FONT_MONO),
@@ -1824,7 +1825,7 @@ class ExtractLabDialog:
         """打开/复用实例时确保处于干净待命态（如上次被中途关闭）。"""
         if not self._busy and getattr(self, "_btn_run", None) is not None:
             self._btn_run.disabled = False
-            self._btn_run.text = "开始提取"
+            self._btn_run.content = "开始提取"
             self._progress.visible = False
             self._live_row.visible = False
 
@@ -1864,7 +1865,7 @@ class ExtractLabDialog:
             return  # 防重入：进行中/未选文件一律忽略
         self._busy = True
         self._btn_run.disabled = True
-        self._btn_run.text = "提取中…"
+        self._btn_run.content = "提取中…"
         self._stop.clear()
         self._t0 = time.monotonic()
         backend = self._dd_backend.value
@@ -1904,7 +1905,7 @@ class ExtractLabDialog:
         self._busy = False
         try:
             self._btn_run.disabled = False
-            self._btn_run.text = "开始提取"
+            self._btn_run.content = "开始提取"
             self._progress.visible = False
             self._render(info)
             self._live_row.visible = False
@@ -1960,7 +1961,7 @@ class ExtractLabDialog:
         self._busy = False
         if getattr(self, "_btn_run", None) is not None:
             self._btn_run.disabled = False
-            self._btn_run.text = "开始提取"
+            self._btn_run.content = "开始提取"
         if getattr(self, "_progress", None) is not None:
             self._progress.visible = False
             self._live_row.visible = False
