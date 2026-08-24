@@ -60,37 +60,37 @@
 > 提取入口返回 `(md, reason)` 二元组以支撑终态分类；空正文 md 一并落 empty 终态
 > （顺带收敛了「明确不做」里的备案隐患）。
 
-- [ ] **1. requirements.txt + 安装验证**：pymupdf / pymupdf4llm / python-docx（Py3.14 轮子验证，lxml 是唯一硬风险；失败即停回报，退路=docx 优雅降级）。版本号安装成功后回填锁定
-- [ ] **2. extractors.py**（新文件，只依赖 config.CFG，无子进程、无后端分发）：
-  - [ ] `extract_to_markdown(path) -> str|None`：唯一入口，绝不抛异常、绝不写源目录
-  - [ ] DOCX 路：python-docx 按 body 子元素保序遍历；Heading N/标题 N 样式→#×N（>3 钳 ###，兜底 base_style）；表格→管道表（\| 转义、单元格换行→空格）
-  - [ ] PDF 路：fitz 探测文字层覆盖率（≥0.5 页占比）→ pymupdf4llm.to_markdown()（list 返回值 join 归一）；**扫描件为主 → 返回 None + warn_once(说明 R3 前暂不支持)，由 index 记 reason="scanned" 终态**
-  - [ ] 缓存层：键=`<md5>.v<EXTRACT_VERSION>`；原子写 tmp 带 pid + os.replace；**写失败仅跳过缓存照常返回结果**；None 不写缓存；启动清扫 >24h 孤儿 *.tmp；目录可注入参数覆盖（测试隔离）
-  - [ ] 懒加载 import（pymupdf/python-docx 未装时对应格式优雅降级 None + 安装提示）
-- [ ] **3. index.py**：
-  - [ ] META_VERSION 8→9（v9 注释：多格式提取+原始字节指纹）
-  - [ ] `_load_text()` 统一入口（终态机制 A 全部语义在此）替换 kb_stale/_index_core 两处裸 read_text
-  - [ ] kb_stale：二进制源走字节哈希快速比对；removed/expected 排除口径改用 `_skipped()`
-  - [ ] _index_core 主循环重排（None→tbd→哈希短路→终态落盘→正常切块）；frontmatter 仅对 TEXT_EXTS 生效
-  - [ ] 提取前 update_progress(phase="converting")；progress_text 加 converting 豁免分支
-  - [ ] `__main__` 多库循环逐库 try/except（一库失败不连坐）
-  - [ ] 单点谓词 `_skipped(info)`
-- [ ] **4. library.py**：set_config extensions 白名单校验引用 SUPPORTED_EXTS；小写归一去重保序
-- [ ] **5. retriever.py**：零改动（已核实块元数据链路天然兼容）
-- [ ] **6. tools/check_notes.py**：scan_library 对非 TEXT_EXTS 跳过正文分析（修二进制 UnicodeDecodeError 崩溃）
-- [ ] **7. tests/test_extractors.py**（新文件，风格对齐 audit_regression_test.py 非 pytest）：
-  - [ ] docx 回环（标题层级/管道表/正文）；pdf 文字层生成提取
-  - [ ] 大写扩展名 `.PDF`/`.Docx` 路由正确（红队 B3 回归）
-  - [ ] 伪造二进制→None 无堆栈；空 docx→None 走 xfail
-  - [ ] 缓存命中计数不增；None 不写缓存；缓存写失败不影响返回值
-  - [ ] xfail 防死循环全序列：坏 pdf→meta 有 chunks:0/xfail→第二遍零变更→修复+mtime 变化→第三遍出块；哨兵 unreadable 两轮判稳
-  - [ ] TBD 重 pdf → 终态条目 reason=tbd → 不再触发重建（红队 B1 回归）
-  - [ ] 扫描件 pdf（无文字层）→ 终态 reason=scanned → 不触发重复重建
-  - [ ] 源目录零写入快照断言
-  - [ ] 静态断言：kb_stale/_index_core 含 _load_text 不含裸 fpath.read_text
-- [ ] **8. tests/verify_export_import.py L149-151**：rglob("*.md") 计数 → manifest vault_files[].rel 权威清单集合比对
-- [ ] **9. R1 回归出口**：六件套全绿（audit 19/19 / library_registry 14/14 / server_singleton 5/5 / test_config_editor / test_gui_store / verify_export_import）
-- [ ] **10. R1 文档**：TASK_LOG.md 追加条目；AI_GUIDE.md 注明「扫描件 pdf 暂不支持，计划末轮接入 MinerU」
+- [x] **1. requirements.txt + 安装验证**：pymupdf / pymupdf4llm / python-docx（Py3.14 轮子验证，lxml 是唯一硬风险；失败即停回报，退路=docx 优雅降级）。版本号安装成功后回填锁定
+- [x] **2. extractors.py**（新文件，只依赖 config.CFG，无子进程、无后端分发）：
+  - [x] `extract_to_markdown(path) -> str|None`：唯一入口，绝不抛异常、绝不写源目录
+  - [x] DOCX 路：python-docx 按 body 子元素保序遍历；Heading N/标题 N 样式→#×N（>3 钳 ###，兜底 base_style）；表格→管道表（\| 转义、单元格换行→空格）
+  - [x] PDF 路：fitz 探测文字层覆盖率（≥0.5 页占比）→ pymupdf4llm.to_markdown()（list 返回值 join 归一）；**扫描件为主 → 返回 None + warn_once(说明 R3 前暂不支持)，由 index 记 reason="scanned" 终态**
+  - [x] 缓存层：键=`<md5>.v<EXTRACT_VERSION>`；原子写 tmp 带 pid + os.replace；**写失败仅跳过缓存照常返回结果**；None 不写缓存；启动清扫 >24h 孤儿 *.tmp；目录可注入参数覆盖（测试隔离）
+  - [x] 懒加载 import（pymupdf/python-docx 未装时对应格式优雅降级 None + 安装提示）
+- [x] **3. index.py**：
+  - [x] META_VERSION 8→9（v9 注释：多格式提取+原始字节指纹）
+  - [x] `_load_text()` 统一入口（终态机制 A 全部语义在此）替换 kb_stale/_index_core 两处裸 read_text
+  - [x] kb_stale：二进制源走字节哈希快速比对；removed/expected 排除口径改用 `_skipped()`
+  - [x] _index_core 主循环重排（None→tbd→哈希短路→终态落盘→正常切块）；frontmatter 仅对 TEXT_EXTS 生效
+  - [x] 提取前 update_progress(phase="converting")；progress_text 加 converting 豁免分支
+  - [x] `__main__` 多库循环逐库 try/except（一库失败不连坐）
+  - [x] 单点谓词 `_skipped(info)`
+- [x] **4. library.py**：set_config extensions 白名单校验引用 SUPPORTED_EXTS；小写归一去重保序
+- [x] **5. retriever.py**：零改动（已核实块元数据链路天然兼容）
+- [x] **6. tools/check_notes.py**：scan_library 对非 TEXT_EXTS 跳过正文分析（修二进制 UnicodeDecodeError 崩溃）
+- [x] **7. tests/test_extractors.py**（新文件，风格对齐 audit_regression_test.py 非 pytest）：
+  - [x] docx 回环（标题层级/管道表/正文）；pdf 文字层生成提取
+  - [x] 大写扩展名 `.PDF`/`.Docx` 路由正确（红队 B3 回归）
+  - [x] 伪造二进制→None 无堆栈；空 docx→None 走 xfail
+  - [x] 缓存命中计数不增；None 不写缓存；缓存写失败不影响返回值
+  - [x] xfail 防死循环全序列：坏 pdf→meta 有 chunks:0/xfail→第二遍零变更→修复+mtime 变化→第三遍出块；哨兵 unreadable 两轮判稳
+  - [x] TBD 重 pdf → 终态条目 reason=tbd → 不再触发重建（红队 B1 回归）
+  - [x] 扫描件 pdf（无文字层）→ 终态 reason=scanned → 不触发重复重建
+  - [x] 源目录零写入快照断言
+  - [x] 静态断言：kb_stale/_index_core 含 _load_text 不含裸 fpath.read_text
+- [x] **8. tests/verify_export_import.py L149-151**：rglob("*.md") 计数 → manifest vault_files[].rel 权威清单集合比对
+- [x] **9. R1 回归出口**：六件套全绿（audit 19/19 / library_registry 14/14 / server_singleton 5/5 / test_config_editor / test_gui_store / verify_export_import）
+- [x] **10. R1 文档**：TASK_LOG.md 追加条目；AI_GUIDE.md 注明「扫描件 pdf 暂不支持，计划末轮接入 MinerU」
 
 ### R1 用户侧启用（零额外安装）
 
@@ -105,10 +105,10 @@ python index.py --library "Obsidian Vault"
 
 > ✅ **已完成（2026-08-24）**：converting 相位展示+双看门狗口径对齐、xfail 终态可见性（状态卡汇总+ISSUE_TEXT 指引）、extensions 字段格式提示；test_gui_store 增至 30 用例全过，六件套全绿。明细见 TASK_LOG.md 问题 24。
 
-- [ ] gui/widgets.py 库设置页：extensions 字段旁标注支持的格式（md/txt/pdf/docx）与扫描件暂不支持的提示
-- [ ] 索引进度：converting 相位在 GUI 进度区的展示；heartbeat_state 豁免与 server 侧 progress_text 对齐（双看门狗一致，防一边正常一边弹卡死）
-- [ ] 提取失败文件的 GUI 可见性：列表/统计中区分 xfail 条目（含 reason），给出处置指引
-- [ ] TASK_LOG 追加 R2 记录
+- [x] gui/widgets.py 库设置页：extensions 字段旁标注支持的格式（md/txt/pdf/docx）与扫描件暂不支持的提示
+- [x] 索引进度：converting 相位在 GUI 进度区的展示；heartbeat_state 豁免与 server 侧 progress_text 对齐（双看门狗一致，防一边正常一边弹卡死）
+- [x] 提取失败文件的 GUI 可见性：列表/统计中区分 xfail 条目（含 reason），给出处置指引
+- [x] TASK_LOG 追加 R2 记录
 
 ---
 
