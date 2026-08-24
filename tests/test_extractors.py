@@ -779,6 +779,31 @@ def test_xsrc_retry_after_enabling_ocr_backend():
             iso.cleanup()
 
 
+def test_extract_preview_contract():
+    """试验台预览接口：字段齐全、公开 pair API 行为不变、缓存命中可见。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "cache")
+        try:
+            p = Path(td) / "t.pdf"
+            _make_text_pdf(p)
+            r1 = ex.extract_preview(p)
+            assert r1["reason"] == "" and r1["md"] and r1["chars"] > 0
+            assert r1["cached"] is False and r1["route"] == "local"
+            assert isinstance(r1["elapsed"], float)
+            # 公开 API 契约不回归：仍是 (md, reason) 二元组
+            pair = ex.extract_to_markdown(p)
+            assert isinstance(pair, tuple) and len(pair) == 2
+            r2 = ex.extract_preview(p)
+            assert r2["cached"] is True and r2["md"] == r1["md"]
+            # 失败路径的字段形态
+            bad = Path(td) / "b.pdf"
+            bad.write_bytes(b"%PDF broken")
+            r3 = ex.extract_preview(bad)
+            assert r3["md"] is None and r3["reason"] == "extract-failed"
+        finally:
+            ex.set_cache_dir(None)
+
+
 # ---------- 静态断言与白名单 ----------
 
 def test_static_single_source_of_truth():

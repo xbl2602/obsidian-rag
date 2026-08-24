@@ -1100,3 +1100,19 @@ R1 提交（177ede6）后的 GUI 层配套，全部为展示/判定口径对齐�
 2. **物理删除二进制文件** → 连 Agent 受限视角也会正常裁剪清理（冻结只作用于仍在磁盘上的未授权文件，不给已删文件续命）。
 顺手修掉一个被新用例逮住的既有死角：kb_stale 的判空基准含 `_version` 哨兵与非 dict 脏数据——「条目清空后的收敛态」会被 emptied 分支永远误报 stale。现以真实条目数为准；「meta 与文件双空」判稳。
 回归：test_extractors 19/19，六件套全绿。期间真库再现 Chroma 分叉（2370 vs 1594，疑似并发写入者），一致性自愈自动全量重建修复并幂等收敛——自愈机制实战有效。
+
+## 问题 27：提取试验台——GUI 单文件转译效果预览（2026-08-24）
+
+用户需求：点按钮选文件上传，旁边返回提取结果，像 Google Translate 左右对照那样预览转译质量；但左右分栏空间利用率低。
+
+### 设计取舍
+输入是二进制文件，"左侧原文"没有可展示物——因此不做分栏，**整幅留给产出**：
+- 顶部控制行：选择文件 + 开始提取 + 当前后端徽章（本地直提 / MinerU 云端·已配Key）
+- 信息徽章行：路由（local / ocr:mineru-cloud）、耗时、字符数、缓存命中、失败原因+处置指引（复用 ISSUE_TEXT）
+- 主体两个自绘页签：「渲染预览」（flet Markdown，GitHub 扩展集，表格/标题可读）与「Markdown 源码」（等宽只读框便于复制）
+入口：库管理对话框工具栏「提取试验台」按钮。与索引用同一条管线（extract_preview → _extract_full），所见即所得；预览不落索引终态。
+
+### 实现
+- **extractors.py**：抽取 `_extract_full()` 返回 (md, reason, route, cached)；公开 API `extract_to_markdown` 保持二元组契约不变；新增 `extract_preview(path)` 输出过程信息 dict。
+- **gui/widgets.py**：新增 `ExtractLabDialog`。flet 0.86 控件模型适配：FilePicker 为服务型控件且 `pick_files` 是 async 方法（async 事件处理器直接 await 结果，不再走 on_result 回调）；弃用签名大改的 ft.Tabs，改自绘页签按钮 + visible 切换（版本免疫）。提取在后台线程执行，UI 不冻结。
+- 测试：test_extractors 增 `test_extract_preview_contract`（字段形态/pair 契约不回归/缓存命中可见），**23 用例全过**；gui_store 导入级验证组件可构建。六件套全绿。

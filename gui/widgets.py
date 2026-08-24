@@ -5,6 +5,7 @@
 """
 import datetime
 import re
+import threading
 
 import flet as ft
 
@@ -1233,6 +1234,14 @@ class LibraryManagerDialog:
             on_click=self._open_add,
         )
         self._btn_close = ft.TextButton("关闭", on_click=self._close)
+        self._btn_lab = ft.OutlinedButton(
+            "提取试验台", icon=ft.Icons.SCIENCE, height=36,
+            tooltip="选一个文件试跑提取管线，预览转译效果与质量",
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                text_style=ft.TextStyle(font_family=FONT_UI)),
+            on_click=self._open_lab)
+        self._lab = None
         self._build()
 
     # ---- 构建 ----
@@ -1241,7 +1250,7 @@ class LibraryManagerDialog:
         body = ft.Column([
             self._list,
             ft.Row([self._status, ft.Container(expand=True),
-                    self._btn_close, self._btn_add],
+                    self._btn_close, self._btn_lab, self._btn_add],
                    spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ], spacing=SIZE["gap_tight"], expand=True)
         self._dlg = ft.AlertDialog(
@@ -1413,6 +1422,12 @@ class LibraryManagerDialog:
         self._set_status("已注册库：%s。点击上方『增量重建』开始建索引。" % entry["name"], "ok")
 
     # ---- 配置 ----
+
+    def _open_lab(self, _e=None):
+        """打开提取试验台（复用实例，每次绑定当前窗口）。"""
+        if self._lab is None:
+            self._lab = ExtractLabDialog(colors=self._cols)
+        self._lab.open(self._page)
 
     def _open_config(self, name):
         from library import effective_config, load_registry
@@ -1631,3 +1646,217 @@ def _fmt_ts(ts):
         return "从未"
     from datetime import datetime
     return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+
+
+# ---- 提取试验台：单文件转译效果预览（选文件 → 实时看 Markdown 产出） ----
+
+class ExtractLabDialog:
+    """转换试验台：选一个文件，走与索引完全相同的提取管线（含缓存与 OCR 后端），
+    就地预览产出质量。布局：顶部控制行 + 信息徽章 + 整幅结果区（渲染/源码两页签），
+    不做左右分栏——输入是二进制文件没有可展示的"原文"，整幅留给产出最省空间。"""
+
+    def __init__(self, colors=DARK):
+        self._cols = colors
+        self._page = None
+        self._picker = None
+        self._file_path = None
+        self._dlg = None
+        self._busy = False
+
+    # ---- 打开 / 构建 ----
+
+    def open(self, page):
+        if self._dlg is None:
+            self._build()
+        self._page = page
+        try:
+            page.show_dialog(self._dlg)
+        except Exception:
+            pass
+
+    def _build(self):
+        c = self._cols
+        self._file_text = ft.Text("未选择文件", size=12, color=c["t3"],
+                                  font_family=FONT_MONO, expand=True,
+                                  max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+        self._picker = ft.FilePicker()
+        self._btn_pick = ft.OutlinedButton(
+            "选择文件", icon=ft.Icons.UPLOAD_FILE, height=SIZE["input_h"],
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                text_style=ft.TextStyle(font_family=FONT_UI)),
+            on_click=self._pick)
+
+        self._btn_run = ft.FilledButton(
+            "开始提取", icon=ft.Icons.PLAY_ARROW, height=SIZE["input_h"],
+            style=ft.ButtonStyle(
+                bgcolor=c["accent"], color=c["on_accent"],
+                shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                padding=ft.Padding.symmetric(horizontal=18),
+                text_style=ft.TextStyle(font_family=FONT_UI, weight=ft.FontWeight.W_600)),
+            on_click=self._run)
+
+        backend = self._current_backend_label()
+        self._backend_chip = ft.Container(
+            content=ft.Text(f"后端：{backend}", size=11, color=c["t3"],
+                            font_family=FONT_MONO),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+            border_radius=SIZE["radius_pill"],
+            bgcolor=ft.Colors.with_opacity(0.08, c["t4"]))
+
+        ext = getattr(ft, "MarkdownExtensionSet", None)
+        md_kw = {"extension_set": ext.GITHUB_WEB} if ext else {}
+        self._md_view = ft.Markdown(value="", selectable=True, **md_kw)
+        self._src_view = ft.TextField(value="", multiline=True, read_only=True,
+                                      border=ft.InputBorder.NONE, filled=False,
+                                      text_size=12, expand=True,
+                                      text_style=ft.TextStyle(
+                                          font_family="Consolas", size=12))
+        # 自绘页签（版本免疫，不依赖具体 Tabs 控件签名）
+        self._btn_render_tab = ft.TextButton("渲染预览",
+                                             on_click=lambda _e: self._switch(0))
+        self._btn_src_tab = ft.TextButton("Markdown 源码",
+                                          on_click=lambda _e: self._switch(1))
+        self._render_box = ft.Container(
+            content=ft.Column([self._md_view], scroll=ft.ScrollMode.AUTO, expand=True),
+            expand=True)
+        self._src_box = ft.Container(content=self._src_view, expand=True,
+                                     visible=False)
+        self._chips = ft.Row([], spacing=8, wrap=True)
+
+        body = ft.Column([
+            ft.Row([self._btn_pick, self._file_text],
+                   spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Row([self._btn_run, self._backend_chip],
+                   spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            self._chips,
+            ft.Row([self._btn_render_tab, self._btn_src_tab], spacing=4,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            self._render_box,
+            self._src_box,
+        ], spacing=SIZE["gap_tight"], expand=True)
+
+        hint = ft.Text(
+            "与索引用同一条提取管线（含缓存与 OCR 后端）；扫描件走云端可能需要数十秒。"
+            "此处预览不写入索引。",
+            size=11, color=c["t4"], font_family=FONT_UI, height=1.4)
+
+        self._dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("提取试验台 — 转译效果预览", size=17,
+                          weight=ft.FontWeight.W_600, font_family=FONT_UI),
+            content=ft.Container(content=ft.Column([body, hint],
+                                                   spacing=8, expand=True),
+                                 width=920, height=640),
+            actions=[ft.TextButton("关闭", on_click=self._close)],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+
+    def _switch(self, idx):
+        self._render_box.visible = idx == 0
+        self._src_box.visible = idx == 1
+        self._update()
+
+    @staticmethod
+    def _current_backend_label():
+        import extractors as ex
+        b = ex.get_scan_backend()
+        has_key = "已配 Key" if ex.current_backend_sig().endswith(":key") else "未配 Key"
+        return {"none": "本地直提（OCR 关）",
+                "mineru-cloud": f"MinerU 云端（{has_key}）",
+                "mineru-local": "本地部署（未支持）"}.get(b, b)
+
+    async def _pick(self, _e=None):
+        if self._page is None or self._picker is None:
+            return
+        try:
+            if self._picker not in getattr(self._page, "overlay", []):
+                self._page.overlay.append(self._picker)
+            files = await self._picker.pick_files(
+                dialog_title="选择要试提取的文档",
+                allowed_extensions=["pdf", "docx", "md", "txt"],
+                allow_multiple=False)
+        except Exception:
+            return
+        if not files:
+            return
+        self._file_path = files[0].path
+        self._file_text.value = self._file_path
+        self._set_chips([])
+        self._update()
+
+    # ---- 提取执行 ----
+
+    def _run(self, _e=None):
+        if self._busy or not self._file_path:
+            return
+        self._busy = True
+        self._btn_run.disabled = True
+        c = self._cols
+        self._set_chips([("⏳ 提取中…（扫描件走云端可能数十秒）", c["accent"])])
+        self._update()
+        threading.Thread(target=self._work, daemon=True, name="extract-lab").start()
+
+    def _work(self):
+        import extractors as ex
+        info = ex.extract_preview(self._file_path)
+        try:
+            self._render(info)
+            self._update()
+        except RuntimeError:
+            pass  # 页面已关闭
+
+    def _render(self, info):
+        c = self._cols
+        md, reason = info["md"], info["reason"]
+        chips = [(f"耗时 {info['elapsed']}s", "t3"),
+                 (f"{info['chars']} 字符", "t3")]
+        if info["cached"]:
+            chips.append(("缓存命中", "success"))
+        if reason:
+            label, guide = ("失败", "")
+            try:
+                from gui.store import ISSUE_TEXT
+                label, guide = ISSUE_TEXT.get(reason, (reason, ""))
+            except Exception:
+                label = reason
+            chips.insert(0, (f"✗ {reason} · {label}｜{guide}", "danger"))
+            self._md_view.value = ""
+            self._src_view.value = ""
+        else:
+            chips.insert(0, (f"路由 {info['route']}", "accent"))
+            self._md_view.value = md or ""
+            self._src_view.value = md or ""
+        self._set_chips([(txt, self._cols.get(key, key)) for txt, key in chips])
+
+    def _set_chips(self, items):
+        c = self._cols
+        self._chips.controls = [
+            ft.Container(content=ft.Text(txt, size=11, color=c.get(key, c["t2"]),
+                                         font_family=FONT_UI),
+                         padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                         border_radius=SIZE["radius_pill"],
+                         bgcolor=ft.Colors.with_opacity(0.10, c.get(key, c["t4"])))
+            for txt, key in items]
+
+    def _update(self):
+        try:
+            if self._page is not None:
+                self._page.update()
+        except RuntimeError:
+            pass
+
+    def _close(self, _e=None):
+        self._busy = False
+        self._btn_run.disabled = False
+        try:
+            if self._dlg is not None:
+                self._dlg.open = False
+                self._dlg.update()
+            if self._picker is not None and self._page is not None \
+                    and self._picker in getattr(self._page, "overlay", []):
+                self._page.overlay.remove(self._picker)
+                self._page.update()
+        except RuntimeError:
+            pass

@@ -155,12 +155,8 @@ def _file_md5(path):
     return h.hexdigest()
 
 
-def extract_to_markdown(path):
-    """唯一入口：二进制文档 → Markdown。返回 (markdown|None, reason)。
-
-    成功：(str, "")。失败：(None, reason)，reason 取值见模块 docstring。
-    本函数绝不抛异常、绝不写源目录。
-    """
+def _extract_full(path):
+    """完整提取过程。返回 (markdown|None, reason, route|None, cached)。"""
     path = Path(path)
     ext = path.suffix.lower().lstrip(".")
     # 缓存按产出路由分键；同一文件的字节只会由一条路由成功产出（确定性），
@@ -169,23 +165,49 @@ def extract_to_markdown(path):
     try:
         key = _file_md5(path)
     except OSError:
-        return None, "unreadable"
-    hit, _hit_route = _cache_get(key, routes)
+        return None, "unreadable", None, False
+    hit, hit_route = _cache_get(key, routes)
     if hit is not None:
-        return hit, ""
+        return hit, "", hit_route or "local", True
     if ext == "docx":
         md, reason, route = _extract_docx(path)
     elif ext == "pdf":
         md, reason, route = _extract_pdf(path)
     else:
-        return None, "extract-failed"  # 路由层只应送 BINARY_EXTS，防御分支
+        return None, "extract-failed", None, False  # 路由层只应送 BINARY_EXTS，防御分支
     if md is None:
-        return None, reason
+        return None, reason, None, False
     md = md.strip()
     if not md:
-        return None, "empty"
-    _cache_put(key, md, route or "local")
-    return md, ""
+        return None, "empty", None, False
+    route = route or "local"
+    _cache_put(key, md, route)
+    return md, "", route, False
+
+
+def extract_to_markdown(path):
+    """唯一入口：二进制文档 → Markdown。返回 (markdown|None, reason)。
+
+    成功：(str, "")。失败：(None, reason)，reason 取值见模块 docstring。
+    本函数绝不抛异常、绝不写源目录。
+    """
+    md, reason, _route, _cached = _extract_full(path)
+    return md, reason
+
+
+def extract_preview(path):
+    """提取试验台用：单文件提取并返回过程信息（不落索引终态）。
+
+    返回 dict：md/reason/route/cached/elapsed/chars。
+    """
+    t0 = time.monotonic()
+    md, reason, route, cached = _extract_full(path)
+    return {"md": md, "reason": reason,
+            "route": route or ("-" if md is None and reason in
+                               ("unreadable", "empty") else "-"),
+            "cached": bool(cached),
+            "elapsed": round(time.monotonic() - t0, 2),
+            "chars": len(md) if md else 0}
 
 
 # ---------- DOCX ----------
