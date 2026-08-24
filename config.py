@@ -21,6 +21,7 @@ DEFAULTS = {
     "exclude_dirs": [".obsidian", ".smart-env", ".trash", ".git", "TEMP", "templates"],
     "exclude_files": ["目录.md", "AGENTS.md", "LOG.md", "README.md"],
     "exclude_patterns": ["session-", "会话", ".tmp"],
+    "tbd_exclude_ratio": 0.1,  # 正文含 [TBD] 占位的行占比 ≥ 此值的文件跳过索引（0=关闭）
     "model_name": "BAAI/bge-m3",
     "collection_name": "obsidian_kb",
 
@@ -66,6 +67,11 @@ DEFAULTS = {
 
     # ---- 工具默认值 ----
     "default_top_k": 5,
+    "default_libraries": [],  # libraries 为空时的默认库列表；空 = 全部注册库
+
+    # ---- 置信度阈值（检索输出护栏）----
+    "confidence_warn_threshold": 0.55,  # 命中置信度低于此值 → 来源行标注（低置信度，仅供参考）
+    "confidence_drop_threshold": 0.40,  # 命中置信度低于此值 → 该来源不输出（宁缺毋滥）
 
     # ---- 导出/导入 ----
     "keep_exports": 3,
@@ -111,6 +117,13 @@ CONFIG_TEMPLATE = """\
   // 按文件名前缀排除（文件名以任一元素开头即跳过）。
   // 用于跳过 session 转录/临时文件；如需纳入只需删掉对应元素。
   "exclude_patterns": ["session-", "会话", ".tmp"],
+
+  // 跳过"占位重灾区"文件：正文中 [TBD]/TBD — 等占位标记出现的行占比 ≥ 此值
+  // （TBD 行数 / 总行数）时，整个文件不索引（写报告的半成品是信息垃圾，
+  // 检索命中只会命中 [TBD] 占位符，实测污染查询结果）。0 = 关闭此过滤。
+  // 文件补全后（占比回落）自动恢复索引，无需手动操作。
+  // 修改后需 --full 重建该库（影响索引内容）。
+  "tbd_exclude_ratio": 0.1,
 
   // 嵌入模型名（sentence-transformers 标识）。换模型 = 换向量空间：
   // 旧向量与新向量不可混用，必须 python index.py --full 全量重嵌。
@@ -250,6 +263,28 @@ CONFIG_TEMPLATE = """\
 
   // search_knowledge 的参数 top_k 默认值。调用处仍可显式传参覆盖。
   "default_top_k": 5,
+
+  // libraries 参数为空时的默认检索范围（库名列表，须与注册表一致）。
+  // 本机典型设置 ["Obsidian Vault"]：笔记主库默认命中，test/agents/skills 等
+  // 非笔记库需要时显式指定（libraries="all" = 全部库，exclude="B" = 反选）。
+  // 空 [] = 全部注册库（通用默认，出厂行为）。显式传 libraries/exclude 时不受本项影响。
+  "default_libraries": [],
+
+  // ----------------------------------------------------------
+  // 六之三、置信度阈值（检索输出护栏，实时生效）
+  // ----------------------------------------------------------
+
+  // 命中置信度（重排器 sigmoid 或 RRF 归一化，0~1）的两档护栏：
+  //   ≥ warn：正常输出；
+  //   warn > 命中 ≥ drop：来源行标注"（低置信度 x.xx，仅供参考）"，照常输出；
+  //   < drop：该来源直接不输出（宁缺毋滥，防止噪音命中被当真引用）。
+  // 白话/模糊输入的查询天然置信度偏低——此时只标注不隐藏：若全部结果
+  // 的最高置信度仍 < warn，结果头部整体提示"置信度偏低，仅供参考"。
+  // 标定参考：真相关内容通常 ≥0.6（强相关 ~0.7）；噪音命中聚集在 ~0.50
+  // （重排器 logit≈0 = "无法判断"，不是"一半相关"），故 warn 设在 0.55。
+  // 调高 warn = 更多提醒；调高 drop = 更激进过滤（注意别误杀模糊查询）。
+  "confidence_warn_threshold": 0.55,
+  "confidence_drop_threshold": 0.40,
 
   // ----------------------------------------------------------
   // 八、导出 / 导入

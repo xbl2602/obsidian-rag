@@ -14,7 +14,8 @@ from config import CONFIG_PATH, DEFAULTS, load_config
 GROUPS = [
     ("知识库与索引范围（改动需全量重建）", [
         ("vault", "str"), ("exclude_dirs", "list"), ("exclude_files", "list"),
-        ("exclude_patterns", "list"), ("model_name", "str"),
+        ("exclude_patterns", "list"), ("tbd_exclude_ratio", "float"),
+        ("model_name", "str"),
         ("collection_name", "str"),
     ]),
     ("切块粒度（改动需全量重建）", [
@@ -38,13 +39,14 @@ GROUPS = [
         ("dense_candidate_factor", "int"), ("dense_min_candidates", "int"),
         ("rerank_model", "str"), ("rerank_candidates", "int"),
         ("rerank_enabled", "bool"), ("small_to_big", "bool"),
+        ("confidence_warn_threshold", "float"), ("confidence_drop_threshold", "float"),
     ]),
     ("HyDE 查询增强（需本地 LLM，默认关）", [
         ("hyde_enabled", "bool"), ("hyde_llm_url", "str"),
         ("hyde_llm_model", "str"), ("hyde_min_confidence", "float"),
     ]),
     ("工具默认值", [
-        ("default_top_k", "int"),
+        ("default_top_k", "int"), ("default_libraries", "list"),
     ]),
     ("导出 / 导入", [
         ("keep_exports", "int"), ("import_upsert_batch", "int"),

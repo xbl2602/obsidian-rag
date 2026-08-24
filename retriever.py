@@ -2,6 +2,7 @@
 import math
 import re
 import sys
+import threading
 from collections import Counter
 
 import chromadb
@@ -23,9 +24,24 @@ def _max_chunks_per_file():
     return CFG["max_chunks_per_file"]  # 正文模式下同一文件最多展示块数（防同文件饱和）
 
 
+# 共享 PersistentClient：此前每次 get_collection 都新建 client，并发搜索时
+# 多个 client 同时初始化会竞态建 sqlite/tenant（实测报 "Could not connect to
+# tenant default_tenant"）。共享单例 + 初始化互斥锁，读操作天然可并发。
+_chroma_client = None
+_chroma_client_lock = threading.Lock()
+
+
+def _get_chroma_client():
+    global _chroma_client
+    if _chroma_client is None:
+        with _chroma_client_lock:
+            if _chroma_client is None:
+                _chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    return _chroma_client
+
+
 def get_collection(collection_name=COLLECTION_NAME):
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    return client.get_or_create_collection(
+    return _get_chroma_client().get_or_create_collection(
         name=collection_name, metadata={"hnsw:space": "cosine"}
     )
 
@@ -194,6 +210,7 @@ def _reset_bm25():
 
 _reranker = None
 _reranker_failed = False
+_reranker_lock = threading.Lock()  # 懒加载互斥：并发首次搜索会同时触发加载（双份模型 + 显存浪费）
 rerank_failures = 0  # 重排执行失败次数（eval 回归据此检测"静默降级"）
 
 
@@ -201,17 +218,22 @@ def _get_reranker():
     """懒加载 cross-encoder 重排器。加载失败置标记（本次会话不再重试，降级纯融合）。
 
     reranker 与 embedding 模型独立，检索时才加载（首次 ~10s + 模型 ~1.1GB）。
+    2026-08-15：加载加锁（双重检查）——此前无锁，mcp 并发请求时两个线程
+    同时通过 None 检查、各自加载一份模型，后者覆盖前者（孤儿模型占显存）。
     """
     global _reranker, _reranker_failed
     if _reranker is not None or _reranker_failed:
         return _reranker
-    try:
-        from sentence_transformers import CrossEncoder
-        _reranker = CrossEncoder(CFG["rerank_model"], max_length=512)
-    except Exception as e:
-        _reranker_failed = True
-        print(f"[retriever] 重排器加载失败（降级纯融合）：{e}", file=sys.stderr)
-        return None
+    with _reranker_lock:
+        if _reranker is not None or _reranker_failed:
+            return _reranker
+        try:
+            from sentence_transformers import CrossEncoder
+            _reranker = CrossEncoder(CFG["rerank_model"], max_length=512)
+        except Exception as e:
+            _reranker_failed = True
+            print(f"[retriever] 重排器加载失败（降级纯融合）：{e}", file=sys.stderr)
+            return None
     return _reranker
 
 
@@ -312,6 +334,10 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
         for cid in cids:
             got_map[(name, cid)] = (meta_map.get(cid) or {}, doc_map.get(cid) or "")
     lines = []
+    shown = 0          # 实际输出的来源数（低置信过滤后）
+    max_shown_conf = 0.0  # 输出结果中的最高置信度（整体低置信提示用）
+    warn_c = CFG.get("confidence_warn_threshold", 0.35)
+    drop_c = CFG.get("confidence_drop_threshold", 0.15)
     for name, cid in pairs:
         meta, doc = got_map[(name, cid)]
         rel = meta.get("file", "")
@@ -323,6 +349,15 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
         conf = (scores or {}).get((name, cid))
         if conf is not None:
             src += f" [置信度 {conf:.2f}]"
+            if conf < drop_c:
+                # 低置信护栏（drop）：噪音命中直接不输出，宁缺毋滥——
+                # 防止 LLM 把不相关来源当真引用（实测"火箭冷却"混入 agents/test 噪音）。
+                continue
+            if conf < warn_c:
+                # 低置信护栏（warn）：照常输出但显式标注，供调用方判断
+                src += f"（低置信度 {conf:.2f}，仅供参考）"
+        shown += 1
+        max_shown_conf = max(max_shown_conf, conf if conf is not None else 1.0)
         if not include_body:
             lines.append(src)
             continue
@@ -340,9 +375,18 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
         lines.append(src)
         lines.append(doc)
         lines.append("---")
+    if shown == 0:
+        if scores:
+            return "未找到相关内容（检索到的命中均低于置信度下限，已过滤；" \
+                   "可尝试换关键词、扩库范围或检查是否索引了相关内容）。"
+        return "未找到相关内容。"
+    if scores and max_shown_conf < warn_c:
+        # 白话/模糊输入场景：整体置信度偏低但不隐藏（用户可能说人话问事），
+        # 在头部统一提示，让 LLM 知道这批结果需要谨慎引用。
+        lines.insert(0, f"（本次查询整体置信度偏低（最高 {max_shown_conf:.2f}），以下结果仅供参考）")
     if capped:
         lines.append(f"（同一文件最多展示 {_max_chunks_per_file()} 块，完整内容请打开源文件）")
-    return "\n".join(lines) if lines else "未找到相关内容。"
+    return "\n".join(lines)
 
 
 # ---------- HyDE（查询侧增强，可选） ----------
@@ -389,7 +433,7 @@ def hyde_generate(query, url=None, model=None, timeout=30):
 
 
 def hybrid_search_hyde(query, top_k=None, libraries="", exclude="", folder="",
-                       hyde_enabled=None, **kwargs):
+                       hyde_enabled=None, defaults=None, **kwargs):
     """HyDE 增强版检索：首轮置信度低时用 LLM 假设文档重查。
 
     标准流程：普通检索 → 若 top1 置信度 < hyde_min_confidence（说明命中弱）→
@@ -409,9 +453,10 @@ def hybrid_search_hyde(query, top_k=None, libraries="", exclude="", folder="",
     kwargs.pop("return_top_confidence", None)
     if not hyde_enabled:
         return hybrid_search(query, top_k=top_k, libraries=libraries, exclude=exclude,
-                             folder=folder, **kwargs)
+                             folder=folder, defaults=defaults, **kwargs)
     first, conf = hybrid_search(query, top_k=top_k, libraries=libraries, exclude=exclude,
-                                folder=folder, return_top_confidence=True, **kwargs)
+                                folder=folder, defaults=defaults,
+                                return_top_confidence=True, **kwargs)
     threshold = CFG["hyde_min_confidence"]
     if conf is None or conf >= threshold:
         return first
@@ -422,7 +467,8 @@ def hybrid_search_hyde(query, top_k=None, libraries="", exclude="", folder="",
         return first
     print(f"[retriever] HyDE 假设文档：{hypo[:80]}...", file=sys.stderr)
     second, conf2 = hybrid_search(hypo, top_k=top_k, libraries=libraries, exclude=exclude,
-                                  folder=folder, return_top_confidence=True, **kwargs)
+                                  folder=folder, defaults=defaults,
+                                  return_top_confidence=True, **kwargs)
     return second if (conf2 or 0.0) > conf else first
 
 
@@ -430,11 +476,11 @@ def hybrid_search_hyde(query, top_k=None, libraries="", exclude="", folder="",
 
 def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
                   dense_weight=None, bm25_weight=None, include_body=True, with_scores=False,
-                  small_to_big=None, return_top_confidence=False):
+                  small_to_big=None, return_top_confidence=False, defaults=None):
     """混合检索：dense 向量 + BM25 关键词，RRF 融合后取 top_k。
 
-    libraries/exclude 选库（空 = 全部库；"A,B" 指定；exclude 做减法，见 library.resolve_entries）：
-      最终范围 = (libraries 非空 ? libraries : 全部) − exclude。
+    libraries/exclude 选库（空 = 默认库 defaults；"A,B" 指定；exclude 做减法，见 library.resolve_entries）：
+      最终范围 = (libraries 非空 ? libraries : defaults 非空 ? defaults : 全部) − exclude。
     跨库排序：每库 RRF 融合取 top rerank_candidates 进全局重排池，重排器（纯文本打分）
     全局精排；重排不可用时按库归一化融合分合并。结果来源行带 <库名>/<相对路径> 前缀。
 
@@ -463,7 +509,7 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
         return (text, conf) if return_top_confidence else text
 
     try:
-        entries = resolve_entries(libraries, exclude)
+        entries = resolve_entries(libraries, exclude, defaults=defaults)
     except ValueError as e:
         return _out(f"（{e}）")
 

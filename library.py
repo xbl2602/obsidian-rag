@@ -293,8 +293,13 @@ def list_summary():
     return rows
 
 
-def resolve_entries(libraries="", exclude=""):
-    """按白名单减法解析检索库列表；未知库名 / 空集抛 ValueError（含可用库名清单）。"""
+def resolve_entries(libraries="", exclude="", defaults=None):
+    """按白名单减法解析检索库列表；未知库名 / 空集抛 ValueError（含可用库名清单）。
+
+    defaults：libraries 为空（未显式指定）时的默认范围（来自 config 的
+    default_libraries）。defaults 中的库不存在于注册表则忽略；全部失效则回退
+    全部库（向后兼容）。显式传 libraries 时 defaults 不参与。
+    """
     entries = load_registry()
     by_name = {e["name"]: e for e in entries}
     if not by_name:
@@ -303,6 +308,10 @@ def resolve_entries(libraries="", exclude=""):
         names = list(dict.fromkeys(n.strip() for n in libraries.split(",") if n.strip()))
         if names and names[0].lower() == "all":
             names = list(by_name)
+    elif defaults:
+        names = [n for n in defaults if n in by_name]
+        if not names:
+            names = list(by_name)  # 默认库全部失效 → 回退全部库（旧行为）
     else:
         names = list(by_name)
     ex = [n.strip() for n in exclude.split(",") if n.strip()]

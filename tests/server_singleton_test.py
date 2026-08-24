@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from singleton import acquire_singleton, pid_alive, release_singleton  # noqa: E402
+import singleton  # 守卫句柄（_singleton_f）供持锁期间校验 PID 记录
 
 # opencode 环境会周期性向子进程注入 Ctrl+C（KeyboardInterrupt 出现在随机位置，
 # 与代码无关）：测试进程忽略 SIGINT 免疫之。
@@ -24,7 +25,10 @@ def test_acquire_creates_pid_file():
         f = Path(td) / "server.pid"
         assert acquire_singleton(f)
         assert f.exists()
-        assert str(os.getpid()) == f.read_text(encoding="utf-8").split()[0]
+        # 持锁期间外部新句柄读取会被 Windows 强制字节锁拒绝（PermissionError），
+        # 须经守卫自身句柄读取记录（2026-08-15 锁方案）
+        got = singleton._singleton_f.read().decode("utf-8") if singleton._singleton_f else None
+        assert str(os.getpid()) == got.split()[0]
         release_singleton(f)
         assert not f.exists()
 
@@ -57,7 +61,7 @@ def test_acquire_overwrites_stale():
         f = Path(td) / "server.pid"
         f.write_text("999999999 2026-08-12T09:00:00", encoding="utf-8")
         assert acquire_singleton(f)
-        assert str(os.getpid()) == f.read_text(encoding="utf-8").split()[0]
+        assert str(os.getpid()) == singleton._singleton_f.read().decode("utf-8").split()[0]
         release_singleton(f)
         assert not f.exists()
 

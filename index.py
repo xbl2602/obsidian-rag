@@ -39,7 +39,24 @@ EMBED_BATCH_SIZE = CFG["embed_batch_size"]
 
 # 切块/清洗逻辑版本：升级后旧索引需重嵌（指纹感知不到代码升级），
 # meta 版本不匹配时 index_vault 自动按全量重建处理。
-META_VERSION = 6  # v6: 围栏内伪标题修复 + 裸 wikilink 保留 + 文件名/title/tags 入嵌入 + 长段落守上限
+META_VERSION = 8  # v8: TBD 占位重文件跳过索引（v7: 空正文文件跳过不产生块）
+
+# [TBD]/[tbd]/TBD —/TODO — 等占位标记行识别（排除"半成品报告"用的判定）
+TBD_RE = re.compile(r"\[TBD|TBD\s*[—-]|\[todo\]|TODO\s*[—-]", re.IGNORECASE)
+
+
+def is_tbd_heavy(content, ratio):
+    """正文中占位标记行（TBD 等）占比 ≥ ratio 判为"占位重文件"，应跳过索引。
+
+    ratio <= 0 表示关闭此过滤。空白行不参与统计（与切块的"非空行"口径一致）。
+    """
+    if not ratio or ratio <= 0:
+        return False
+    lines = [l for l in content.splitlines() if l.strip()]
+    if not lines:
+        return False
+    tbd = sum(1 for l in lines if TBD_RE.search(l))
+    return tbd / len(lines) >= ratio
 
 
 class LockBusyError(RuntimeError):
@@ -379,10 +396,34 @@ def _build_model(device, fp16=False):
     return SentenceTransformer(MODEL_NAME, device=device)
 
 
+def _param_dtype_mixed(model):
+    """fp16 加载后参数 dtype 是否混搭（Half 与 Float 并存）。
+
+    实测 bge-m3 以 torch_dtype=float16 加载时 391 个参数全部为 fp16——
+    混搭即异常状态，推理时激活值与权重 dtype 不匹配必报
+    "mat1 and mat2 must have the same dtype, but got Half and Float"。
+    防御性检查：混搭则回退 fp32 整体重建，避免病态模型继续跑。
+    """
+    seen = set()
+    for p in model.parameters():
+        seen.add(p.dtype)
+        if len(seen) > 1:
+            return True
+    return False
+
+
 def _load_model(device):
-    """按 device 加载模型。CUDA/CPU 均优先 fp16 减半显存（8GB 卡防共享显存溢出），失败回退 fp32。"""
+    """按 device 加载模型。CUDA/CPU 均优先 fp16 减半显存（8GB 卡防共享显存溢出），失败回退 fp32。
+
+    2026-08-15：fp16 加载成功后再做参数 dtype 一致性检查（见 _param_dtype_mixed），
+    混搭视为加载失败回退 fp32——防御长驻进程里偶发的半精度病态（检索报 dtype 错）。
+    """
     try:
-        return _build_model(device, fp16=True), device
+        m = _build_model(device, fp16=True)
+        if _param_dtype_mixed(m):
+            log(f"{device} fp16 加载后参数 dtype 混搭（Half/Float 并存），回退 fp32")
+            raise RuntimeError("fp16 参数 dtype 混搭")
+        return m, device
     except Exception as e:
         log(f"{device} fp16 加载失败，回退 fp32：{e}")
     return _build_model(device), device
@@ -798,7 +839,7 @@ def collect_md_files(vault, exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_F
     pats = tuple(exclude_patterns or ())
     return [p for p in Path(vault).rglob("*")
             if p.is_file() and p.suffix.lower().lstrip(".") in exts
-            and not any(part in exclude_dirs for part in p.parts)
+            and not any(any(ex in part for ex in exclude_dirs) for part in p.parts)
             and p.name not in exclude_files
             and not p.name.startswith(pats)]
 
@@ -834,7 +875,7 @@ def _chroma_count(collection_name=COLLECTION_NAME):
 
 def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
              exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_FILES,
-             exclude_patterns=EXCLUDE_PATTERNS, extensions=None):
+             exclude_patterns=EXCLUDE_PATTERNS, extensions=None, tbd_ratio=0.0):
     """指纹检查：先比 mtime+size（快速路径），变化才读全文 MD5。
 
     只读、不加载模型、不嵌入。返回 (是否过期, 统计)。
@@ -866,12 +907,23 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
     added = 0
     for fpath in files:
         rel = str(fpath.relative_to(vault)).replace("\\", "/")
-        seen.add(rel)
         st = fpath.stat()
         entry = meta.get(rel)
+        # TBD 占位重文件：不在"需要索引"集合内。未变的 TBD 文件靠 meta 的
+        # tbd 标记走快速路径即可，无需读全文（文件补全后 mtime 变化 → 重判）。
+        if entry and entry.get("tbd"):
+            if entry.get("size") == st.st_size and entry.get("mtime") == st.st_mtime_ns:
+                continue
         if entry and entry.get("size") == st.st_size and entry.get("mtime") == st.st_mtime_ns:
+            seen.add(rel)
             continue
         content = fpath.read_text(encoding="utf-8", errors="replace")
+        if is_tbd_heavy(content, tbd_ratio):
+            # 由非 TBD 变 TBD（或新文件即 TBD）：不索引；原来有索引则需重建删除
+            if entry and not entry.get("tbd"):
+                changed += 1
+            continue
+        seen.add(rel)
         h = hashlib.md5(content.encode("utf-8")).hexdigest()
         if entry and entry.get("hash") == h:
             continue
@@ -879,17 +931,34 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
             changed += 1
         else:
             added += 1
-    meta_files = {k for k, v in meta.items() if isinstance(v, dict)}
+    # removed 只统计"应当索引但缺失"的文件：TBD 条目（tbd=True）不属于应索引
+    # 文件，稳定状态下留在 meta 里但不进 seen，不能每次都算 removed（否则
+    # 每轮指纹检查都判 stale → 每轮都触发重建）。
+    meta_files = {k for k, v in meta.items()
+                  if isinstance(v, dict) and not v.get("tbd")}
     removed = len(meta_files - seen)
     stale = bool(changed or added or removed)
 
-    expected = sum(info.get("chunks", 0) for info in meta.values() if isinstance(info, dict))
+    expected = sum(info.get("chunks", 0) for info in meta.values()
+                   if isinstance(info, dict) and not info.get("tbd"))
     actual = _chroma_count(collection_name)
     if actual is not None and actual != expected:
         log(f"索引一致性校验失败：Chroma {actual} 块 vs meta {expected} 块，触发重建")
         stale = True
 
     return stale, {"changed": changed, "added": added, "removed": removed}
+
+
+def _open_lock_file(path):
+    """打开/创建锁文件（r+b，非 append）。
+
+    "a+b" 模式下 seek(0)+write 会被操作系统强制写到文件尾（O_APPEND 语义），
+    _lock_record_holder 记录的 PID 永远追尾追加，旧内容留在开头——
+    实测：锁文件内容变成 "999…旧PID" + "新PID"，_lock_holder_pid 读到旧值，
+    超时报错的"疑似持有者"失效；单例 PID 校验读到旧值导致误判（2026-08-15）。
+    """
+    fd = os.open(path, os.O_RDWR | os.O_CREAT)
+    return os.fdopen(fd, "r+b")
 
 
 def _lock_try_acquire(f):
@@ -929,9 +998,14 @@ def _lock_holder_pid(f):
 
 
 def _lock_record_holder(f):
-    """获锁成功后把本进程 PID 写入锁文件（供他人超时时定位持有者），写完归位指针。"""
+    """获锁成功后把本进程 PID 写入锁文件（供他人超时时定位持有者），写完归位指针。
+
+    先 truncate 清空再写：旧内容若残留会与新 PID 直接拼接（如 "31008"+"999"→
+    "31008999"），读取方 split 解析出错误 PID（2026-08-15 实测）。
+    """
     try:
         f.seek(0)
+        f.truncate(0)
         f.write(str(os.getpid()).encode())
         f.flush()
         f.seek(0)
@@ -985,7 +1059,7 @@ def write_lock(timeout=LOCK_TIMEOUT_SECONDS):
     @contextlib.contextmanager
     def _lock():
         DATA_DIR.mkdir(exist_ok=True)
-        f = open(LOCK_FILE, "a+b")
+        f = _open_lock_file(LOCK_FILE)
         acquired = False
         try:
             f.seek(0, 2)
@@ -1021,12 +1095,13 @@ def index_library(lib, incremental=True, full=False):
                        lib["exclude_dirs"], lib["exclude_files"], lib["exclude_patterns"],
                        lib["extensions"], lib["chunk_char_limit"],
                        lib["short_doc_char_limit"], library_label=lib["name"],
-                       incremental=incremental, full=full)
+                       incremental=incremental, full=full,
+                       tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0))
 
 
 def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 exclude_patterns, extensions, chunk_max, short_doc,
-                library_label="", incremental=True, full=False):
+                library_label="", incremental=True, full=False, tbd_ratio=0.0):
     tag = f"[{library_label}] " if library_label else ""
     if not Path(vault).is_dir():
         log(f"{tag}库路径不存在，跳过索引（保留现有索引）：{vault}")
@@ -1051,7 +1126,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
         if not full and meta and collection.count() == 0:
             log(f"{tag}检测到索引库为空（meta 记录 {sum(i.get('chunks', 0) for i in meta.values() if isinstance(i, dict))} 块），自动全量重建")
             meta = {}
-        current_rels = {str(f.relative_to(vault)).replace("\\", "/") for f in files}
+        current_rels = set()  # 动态构建：TBD 占位重文件不在其中（其旧条目/旧块会被清理）
 
         new_ids, new_texts, new_metas = [], [], []
         changed = 0
@@ -1063,12 +1138,20 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
             rel = str(fpath.relative_to(vault)).replace("\\", "/")
             st = fpath.stat()
             old = meta.get(rel)
-            # 快速路径：size+mtime 未变则免读全文（与 kb_stale 同一指纹策略）
+            # 快速路径：size+mtime 未变则免读全文（与 kb_stale 同一指纹策略）。
+            # TBD 标记文件未变时同样跳过（补全后 mtime 变化 → 重新判定入索引）。
             if incremental and old and old.get("size") == st.st_size and old.get("mtime") == st.st_mtime_ns:
+                if not old.get("tbd"):
+                    current_rels.add(rel)
                 unchanged += 1
                 update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
                 continue
             content = fpath.read_text(encoding="utf-8", errors="replace")
+            if is_tbd_heavy(content, tbd_ratio):
+                # 占位重文件不索引；曾索引过（旧块存在）→ 留给清理逻辑删除
+                log(f"{tag}跳过占位重文件（TBD 占比 ≥ {tbd_ratio:.0%}）：{rel}")
+                continue
+            current_rels.add(rel)
             fhash = hashlib.md5(content.encode("utf-8")).hexdigest()
             if incremental and old and old.get("hash") == fhash:
                 unchanged += 1
@@ -1077,6 +1160,11 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
 
             front, body = extract_frontmatter(content)
             body = clean_wikilinks(body)
+            # 空正文守卫：0 字节/仅 frontmatter/纯空白文件不产生块（防噪音块占检索名额）
+            if not body.strip():
+                if incremental and old:
+                    continue  # 之前已有块则留给清理逻辑删除；无块则跳过
+                continue
             # 两级切块：标题切 → 超长块降级段落切 → 超长段级句子剪（永不剪断句子）
             if len(body) <= short_doc:
                 chunks = [(front.get("title", ""), body)]
@@ -1176,7 +1264,8 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                     "hp": hp,
                     "ctx": ctx,
                 })
-            meta[rel] = {"hash": fhash, "chunks": len(chunks), "size": st.st_size, "mtime": st.st_mtime_ns}
+            meta[rel] = {"hash": fhash, "chunks": len(chunks), "size": st.st_size,
+                         "mtime": st.st_mtime_ns, "tbd": False}
             changed += 1
             update_progress(files_done=unchanged + changed, message=f"切块 {rel}")
 

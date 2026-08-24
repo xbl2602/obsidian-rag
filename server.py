@@ -20,6 +20,7 @@ from datetime import datetime
 
 from mcp.server import MCPServer
 
+from config import CFG
 from index import (HEARTBEAT_TIMEOUT, LockBusyError, index_library, kb_stale,
                    log, progress_text, read_progress)
 from library import (effective_config, list_summary, load_registry, meta_path,
@@ -112,7 +113,8 @@ def ensure_fresh():
                 stale, stats = kb_stale(cfg["path"], meta_path(cfg["name"]),
                                         cfg["collection"], cfg["exclude_dirs"],
                                         cfg["exclude_files"], cfg["exclude_patterns"],
-                                        cfg["extensions"])
+                                        cfg["extensions"],
+                                        tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0))
             except Exception as e:
                 log(f"指纹检查失败（{cfg['name']}）：{e}")
                 stale, stats = True, {}
@@ -172,7 +174,11 @@ def list_libraries() -> str:
         return f"（获取库列表失败：{e}）"
     if not rows:
         return "（当前没有已注册库。请用 CLI：python library.py add <路径> 注册。）"
-    lines = ["已注册知识库："]
+    defaults = [n for n in (CFG.get("default_libraries") or [])
+                if any(r["name"] == n for r in rows)]
+    scope = "全部库" if not defaults else "、".join(defaults)
+    lines = ["已注册知识库：",
+             f"（默认检索范围：{scope}；libraries=\"all\" = 全部库，exclude=\"B\" = 反选）"]
     lines.append(f"  {'库名':<22}{'块数':>7}  最近索引  路径")
     for r in rows:
         blocks = str(r["blocks"]) if r["blocks"] >= 0 else "?"
@@ -186,16 +192,20 @@ def list_libraries() -> str:
 @server.tool()
 def search_knowledge(query: str, top_k: int = None, libraries: str = "", exclude: str = "",
                      folder: str = "", include_body: bool = True) -> str:
-    """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 全部库；"A" 只搜单库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 全部) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径] 与 [块 k/N] 位置标记。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
+    """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 默认库（配置 default_libraries，本机为 Obsidian Vault 单库，test/agents/skills 等非笔记库不参与）；"all" = 全部库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 默认库) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径]、[块 k/N] 与 [置信度 x.xx] 位置标记；置信度低于阈值时标注（低置信度，仅供参考）或直接过滤（低于下限不输出，防止噪音被当真引用）。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
     try:
         note = ensure_fresh()
         # hybrid_search_hyde：hyde_enabled=false（默认）时就是普通 hybrid_search，
         # 零额外开销。2026-08-14 接线——此前 HyDE 整个特性没有任何调用方。
+        # with_scores=True：MCP 输出置信度（2026-08-16 起，配合双阈值护栏）。
         return note + hybrid_search_hyde(query, top_k=top_k, libraries=libraries,
                                          exclude=exclude, folder=folder,
-                                         include_body=include_body)
+                                         include_body=include_body,
+                                         defaults=CFG.get("default_libraries", []),
+                                         with_scores=True)
     except Exception as e:
-        log(f"search_knowledge 失败：{e}")
+        import traceback
+        log(f"search_knowledge 失败：{e}\n{traceback.format_exc()}")
         return f"（检索失败：{e}；请稍后重试或检查 Vault/索引状态）"
 
 
@@ -216,7 +226,8 @@ def reindex_knowledge(library: str = "") -> str:
     except ValueError as e:
         return f"（{e}）"
     except Exception as e:
-        log(f"reindex_knowledge 失败：{e}")
+        import traceback
+        log(f"reindex_knowledge 失败：{e}\n{traceback.format_exc()}")
         return f"（重建索引失败：{e}；旧索引保持可用）"
 
 
