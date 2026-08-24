@@ -1426,21 +1426,23 @@ class LibraryManagerDialog:
         body = ft.ListView(spacing=10, expand=True, padding=0)
 
         # ---- 索引格式与 Agent 授权（勾选块，替代自由文本）----
-        # extensions = 用户要索引的格式（人机通用）；agent_formats = 允许 AI Agent
-        # 自动索引的二进制格式（一次批准长期有效，取消勾选即收回）。
+        # extensions = 用户要索引的格式（人机通用）；agent_formats = 是否允许
+        # AI Agent 自动索引其中"需要转换"的非文本格式（单一开关，一次授权长期
+        # 有效，取消即收回）。存储仍是列表：开=全部已启用二进制格式，关=空。
         cur_exts = set(cfg["extensions"])
         cur_agent = set(cfg["agent_formats"])
         self._fmt_boxes = {}
-        self._agent_boxes = {}
+        self._agent_switch = None
 
-        def _fmt_toggle(fmt):
+        def _refresh_agent_switch():
+            has_binary = any(self._fmt_boxes[f].value for f in ("pdf", "docx"))
+            self._agent_switch.disabled = not has_binary
+            if not has_binary:
+                self._agent_switch.value = False
+
+        def _fmt_toggle(_fmt):
             def handler(_e):
-                on = self._fmt_boxes[fmt].value
-                ab = self._agent_boxes.get(fmt)
-                if ab is not None:
-                    ab.disabled = not on
-                    if not on:
-                        ab.value = False  # 取消格式 = 同时收回该格式的 Agent 授权
+                _refresh_agent_switch()
             return handler
 
         fmt_row = ft.Row([], spacing=14, wrap=True)
@@ -1449,23 +1451,18 @@ class LibraryManagerDialog:
                              on_change=_fmt_toggle(fmt))
             self._fmt_boxes[fmt] = cb
             fmt_row.controls.append(cb)
-        agent_row = ft.Row([], spacing=14, wrap=True)
-        for fmt in ("pdf", "docx"):
-            cb = ft.Checkbox(
-                label=f"AI 可索引 {fmt}",
-                value=fmt in cur_agent and fmt in cur_exts,
-                disabled=fmt not in cur_exts,
-                on_change=lambda _e: None)
-            self._agent_boxes[fmt] = cb
-            agent_row.controls.append(cb)
+        self._agent_switch = ft.Checkbox(
+            label="允许 AI Agent 自动索引非文本格式（pdf / docx）",
+            value=bool(cur_agent),
+            disabled=not any(f in cur_exts for f in ("pdf", "docx")))
         body.controls.append(ft.Column([
             ft.Text("索引文件格式", size=12, weight=ft.FontWeight.W_600,
                     color=colors["t2"], font_family=FONT_UI),
             fmt_row,
-            ft.Text("AI Agent 权限（未勾选的格式仅由你手动索引；勾选 = 长期授权，"
-                    "取消 = 收回；扫描件 PDF 暂不支持 OCR）",
+            ft.Text("AI Agent 权限（关 = 非文本格式仅由你手动索引入库；"
+                    "开 = 一次授权长期有效，取消勾选即收回；扫描件 PDF 暂不支持 OCR）",
                     size=11, color=colors["t4"], font_family=FONT_UI, height=1.4),
-            agent_row,
+            self._agent_switch,
         ], spacing=6))
 
         for key in ("exclude_dirs", "exclude_files", "exclude_patterns",
@@ -1521,11 +1518,11 @@ class LibraryManagerDialog:
     def _do_config(self, dlg):
         from library import set_config, unset_config
         errors = []
-        # 1) 格式勾选块：extensions + agent_formats（取消格式 = 联动收回其授权）
+        # 1) 格式勾选块：extensions + agent_formats（开关关/格式取消 = 授权清空）
         sel_exts = [f for f in ("md", "txt", "pdf", "docx")
                     if self._fmt_boxes[f].value]
-        sel_agent = [f for f in ("pdf", "docx")
-                     if self._agent_boxes[f].value and f in sel_exts]
+        sel_agent = ([f for f in ("pdf", "docx") if f in sel_exts]
+                     if self._agent_switch.value else [])
         try:
             if sel_exts:
                 set_config(self._cfg_name, "extensions", ",".join(sel_exts))
