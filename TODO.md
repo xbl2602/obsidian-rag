@@ -15,7 +15,9 @@
 | **R3（末轮）** | ⬜ 待启动 | **扫描件 OCR：MinerU 云端 API → 本地部署** | 云端路径可用后接本地 pipeline 联调，xsrc 自愈验证 |
 
 ### R3 启动前的前置确认
-- [ ] 用户决定是否现在给真实 vault 开启 extensions（`md,pdf,docx`）——不开启也能先做 R3 开发（测试库隔离验证）
+- [x] ~~用户决定是否现在给真实 vault 开启 extensions~~ ✅ 已按用户决定落地（2026-08-24，问题 25）：
+  **默认开启** md/pdf/docx；GUI 库配置改为勾选块；新增 `agent_formats` 人机分权门禁——
+  Agent 触发的索引/自动同步仅限文本类+已批准格式，批准一次长期有效、可随时撤销
 - [ ] MinerU-Open-CLI 账号/Token 准备（flash-extract 免注册 ≤10MB/20页；extract 注册 Token 200MB/200页）
 
 ## 核心思想

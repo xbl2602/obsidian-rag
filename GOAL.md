@@ -1,64 +1,64 @@
 # 当前目标
 
 ## 目标
-把当前工作树提交为 R1 成果，随后执行 TODO.md 的 R2（GUI 适配：converting 相位展示、xfail 终态可见性、extensions 格式提示）。
+实现多格式的「人机分权」：默认开启 pdf/docx 索引（人经 GUI/CLI 完全控制），Agent 触发的索引（含检索自动同步）默认仅限文本类，二进制格式须经用户一次性批准（持久化、可撤销）。
 
 ## 验收标准
 
-- **C1 R1 已提交且跟踪文件干净**：
+- **C1 默认开启**：
   ```powershell
-  git log -1 --format=%s | Select-String -Quiet -Pattern "R1"; (git status --porcelain --untracked-files=no | Measure-Object -Line).Lines -eq 0
+  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python -X utf8 -c "import sys; sys.path.insert(0,'.'); from library import effective_config; assert effective_config({'name':'t','path':'.'})['extensions']==['md','pdf','docx']; print('C1 PASS')"
   ```
-  预期：两条均 True（最新提交信息含 R1；已跟踪文件无未提交改动。.opencode 会话产物不入库，保持 untracked）。
+  预期：打印 C1 PASS（entry.extensions 为 null 时继承新默认）。
 
-- **C2 GUI 相关既有测试不红**：
+- **C2 Agent 门禁语义**：
   ```powershell
-  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python tests\test_gui_store.py; if ($?) { .venv\Scripts\python tests\test_config_editor.py }
+  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python tests\test_extractors.py
   ```
-  预期：两个都 0 failures、退出码 0。
+  预期：退出码 0，且包含新增用例——受限模式下：① 未授权二进制文件不被转换/嵌入；② 其既有 meta 条目与块被保留（不被裁剪清理）；③ 解除限制后自动补齐。
 
-- **C3 GUI 层新能力静态落位**（converting 相位豁免 + xfail/reason 可见性）：
+- **C3 注册表校验**：agent_formats 键合法（⊆ 当前 extensions 且仅二进制类）、非法值报错：
   ```powershell
-  (Select-String -Pattern "converting" gui\widgets.py,gui\store.py,gui\app.py -ErrorAction SilentlyContinue | Measure-Object).Count -ge 1; (Select-String -Pattern "xfail|reason" gui\store.py,gui\widgets.py -ErrorAction SilentlyContinue | Measure-Object).Count -ge 1
+  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python -c "import sys; sys.path.insert(0,'.'); import tests.noop" 2>$null; .venv\Scripts\python tests\library_registry_test.py
   ```
-  预期：两条均 True。
+  预期：library_registry 全过（含新增 agent_formats 校验用例）。
 
-- **C4 六件套回归仍全绿**：
+- **C4 GUI 勾选块落位**：
   ```powershell
-  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python tests\audit_regression_test.py; if ($?) { .venv\Scripts\python tests\library_registry_test.py }; if ($?) { .venv\Scripts\python tests\server_singleton_test.py }; if ($?) { .venv\Scripts\python tests\test_config_editor.py }; if ($?) { .venv\Scripts\python tests\test_gui_store.py }; if ($?) { .venv\Scripts\python tests\verify_export_import.py }
+  (Select-String -Pattern "agent_formats" gui\widgets.py,gui\app.py | Measure-Object).Count -ge 1; (Select-String -Quiet -Pattern "ft.Checkbox" gui\widgets.py)
   ```
-  预期：全部正常结束，无 FAILED/Traceback。
+  预期：两条 True（库配置对话框含格式勾选与 Agent 授权勾选）。
 
-- **C5 文档落位**：
+- **C5 六件套全绿 + 文档**：
   ```powershell
-  Select-String -Quiet -Pattern "R2" TASK_LOG.md
+  $env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python tests\audit_regression_test.py; if ($?) { .venv\Scripts\python tests\test_gui_store.py }; if ($?) { Select-String -Quiet -Pattern "问题 25" TASK_LOG.md }
   ```
-  预期：True（TASK_LOG 有 R2 完成记录）。R2 的 GUI 行为细节（肉眼观感）以人工确认为准，见注意事项。
+  预期：audit 19/19、gui_store 0 failures、TASK_LOG 含本条记录（问题 25）；另完整跑六件套确认无回归。
 
 ## 范围
 - 做:
-  - 前置：将当前改动（extractors.py、index/library/check_notes、测试×2、TODO/TASK_LOG/AI_GUIDE/GOAL、requirements）作为单个 R1 提交
-  - gui/widgets.py 库设置页：extensions 字段旁标注支持格式（md/txt/pdf/docx）与扫描件暂不支持提示
-  - 索引进度：converting 相位在 GUI 进度区展示；heartbeat_state 停滞判定对 converting 豁免（与 index.progress_text 口径一致）
-  - xfail 终态可见性：库统计/列表区分提取失败条目（含 reason），给处置指引文案
-  - TASK_LOG.md 追加 R2 记录
+  - library.py：DEFAULT_EXTENSIONS=["md","pdf","docx"]；OVERRIDE_KEYS/LIST_KEYS 增加 agent_formats；set_config 校验（小写归一、⊆extensions、仅 BINARY_EXTS）
+  - index.py：kb_stale/_index_core 增加 agent_allowed 参数——未授权后缀文件「冻结」（跳过 stat/读取，保留条目与块，不计变更加不触发清理）；全量路径不受影响
+  - server.py / retriever.py：Agent 可达的索引入口（reindex 工具与检索自动同步）传受限集合 = TEXT_EXTS ∪ (extensions∩agent_formats)；reindex 工具新增 allow_new_formats 确认参数，确认为真时把新格式写入 agent_formats 持久化；待确认时返回明确提示文案
+  - gui/widgets.py：库配置对话框 extensions 改为四个 Checkbox；新增「允许 AI Agent 索引」勾选行（仅列出已启用的二进制格式）；_do_config 保存两类勾选
+  - 测试：更新受影响断言（默认 extensions 变更）；新增门禁集成用例（复用 test_extractors 隔离环境）
+  - 文档：TASK_LOG 问题 25；TODO 补记该特性
 - 不做:
-  - 启用真实 vault 的 extensions、重建真实索引（行为变更，单独请示用户）
-  - 扫描件 OCR / MinerU / config 新键（R3）
-  - server.py 检索口径改动（retriever 链路零改动原则不变）
+  - 扫描件 OCR（R3）
+  - 真实 vault 的重建执行（默认开启后由用户下次索引自然生效，不在本轮手动触发）
+  - git push
 
 ## 注意事项
-- R1 已完成并验证（六件套全绿，明细 TASK_LOG 问题 23）；本目标先固化成果再动 GUI
-- gui/widgets.py 约 1562 行，改动前必须先读相关段落，遵循现有代码风格；flet 版本 0.86.5
-- GUI 视觉效果无法纯机器断言的部分（文案观感、布局），完成后向用户人工确认
-- 提交信息用中文、feat: 前缀，风格对齐仓库既有提交
+- 冻结语义必须保证：Agent 受限轮询绝不裁剪/清理未授权文件的块与 meta 条目（否则等于变相删库）；一致性自愈的期望块数把冻结条目计算在内
+- 既有测试若断言旧默认 ["md"]，按新语义更新断言并在提交信息说明
+- MCP 工具签名变化（新增可选参数）需向后兼容：不传参=严格模式
 
 ## 当前进度
-- [x] C1 R1 提交落位（177ede6；R2 成果随后按里程碑单独提交）
-- [x] C2 GUI 既有测试不红（test_gui_store 30/30、test_config_editor 0 failures）
-- [x] C3 GUI 层 converting/xfail 能力静态落位（converting×8、xfail/reason×4）
-- [x] C4 六件套全绿（19/19、14/14、5/5、0 failures、30 PASS、39/39）
-- [x] C5 TASK_LOG R2 记录（问题 24）
+- [x] C1 默认开启（effective_config 缺省 = md,pdf,docx；agent_formats 交集派生）
+- [x] C2 门禁语义测试（test_extractors 17/17，新增 agent_gate 冻结/补齐全序列）
+- [x] C3 注册表校验（library_registry 15/15，含 agent_formats 校验用例）
+- [x] C4 GUI 勾选块（格式四选 + AI 权限行，agent_formats 落位 gui/widgets.py）
+- [x] C5 六件套全绿（19/19、15/15、5/5、0f、30 PASS、39/39）+ TASK_LOG 问题 25
 
 ## 上一目标完成记录（2026-08-24）
-R1 全部交付：依赖锁定（pymupdf 1.28.2 / pymupdf4llm 1.28.2 / python-docx 1.2.0）、extractors.py（DOCX+文字层 PDF→Markdown、缓存、扫描件 scanned 终态）、index.py v9（_load_text 字节指纹、统一终态、一致性自愈推广）、16 项新测试、六件套全绿（19/19、14/14、5/5、0 failures、0 failures、39/39）、真库自愈 1490→1594 块。明细见 TASK_LOG.md 问题 23。
+R1（177ede6）+R2（2ac21b5）已交付：DOCX+文字层PDF 提取、统一终态(v9)、一致性自愈、GUI converting 相位与 xfail 可见性；TODO/TASK_LOG 同步完毕（e11afbe/f1877a0）。

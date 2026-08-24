@@ -21,10 +21,11 @@ from datetime import datetime
 from mcp.server import MCPServer
 
 from config import CFG
-from index import (HEARTBEAT_TIMEOUT, LockBusyError, index_library, kb_stale,
-                   log, progress_text, read_progress)
+from extractors import BINARY_EXTS, TEXT_EXTS
+from index import (HEARTBEAT_TIMEOUT, LockBusyError, collect_md_files,
+                   index_library, kb_stale, log, progress_text, read_progress)
 from library import (effective_config, list_summary, load_registry, meta_path,
-                     resolve_entries)
+                     resolve_entries, set_config)
 from retriever import hybrid_search_hyde, reset_bm25_index
 from singleton import acquire_singleton
 
@@ -32,6 +33,33 @@ server = MCPServer("obsidian-rag", title="Obsidian RAG", version="0.2.1")
 
 # 进程内后台索引状态（防重复启动；进度详情在 index_progress.json）
 _background = {"thread": None, "pid": None}
+
+
+def _agent_allowed(cfg):
+    """Agent 可处理的后缀集合 = 文本类恒可 ∪ 用户已批准的二进制格式。
+
+    人机分权（2026-08-24）：extensions 是用户的格式开关，agent_formats 是
+    用户对 Agent 的长期授权；未授权的二进制文件在 Agent 触发的索引中被冻结。
+    """
+    return set(TEXT_EXTS) | set(cfg.get("agent_formats") or [])
+
+
+def _pending_formats(cfg):
+    """已启用但未对 Agent 授权、且磁盘上确实存在文件的二进制格式 → {格式: 数量}。"""
+    allowed = _agent_allowed(cfg)
+    pend = {}
+    for fmt in cfg["extensions"]:
+        if fmt in allowed or fmt not in BINARY_EXTS:
+            continue
+        try:
+            n = len(collect_md_files(cfg["path"], cfg["exclude_dirs"],
+                                     cfg["exclude_files"], cfg["exclude_patterns"],
+                                     [fmt]))
+        except Exception:
+            n = 0
+        if n:
+            pend[fmt] = n
+    return pend
 
 
 def _index_running():
@@ -52,7 +80,11 @@ def _index_running():
 
 
 def _start_background_index(libs, incremental=True):
-    """启动后台索引线程（libs = effective_config 列表）；已在跑则跳过。返回 (是否已启动, 提示文本)。"""
+    """启动后台索引线程；已在跑则跳过。返回 (是否已启动, 提示文本)。
+
+    lib dict 可携带 "_agent_allowed"（后缀集合）：Agent 路径的门禁集合，
+    由 index_library 冻结未授权格式的文件；人类路径（GUI/CLI）不带此键 = 无限制。
+    """
     if _index_running():
         return False, "索引任务已在运行（见 index_status 进度）。"
     t = threading.Thread(target=_run_index, args=(libs, incremental), daemon=True,
@@ -68,7 +100,8 @@ def _run_index(libs, incremental):
     """后台线程体：逐库跑索引 + 重建 BM25 缓存；单库失败不阻断其他库。"""
     for lib in libs:
         try:
-            index_library(lib, incremental=incremental)
+            index_library(lib, incremental=incremental,
+                          agent_allowed=lib.get("_agent_allowed"))
             reset_bm25_index()
             log(f"后台索引完成：{lib['name']}，BM25 缓存已重建")
         except LockBusyError as e:
@@ -107,14 +140,22 @@ def ensure_fresh():
     try:
         stale_libs = []
         parts = []
+        pending_total = {}
         for entry in load_registry():
             cfg = effective_config(entry)
+            # Agent 门禁：自动同步只处理 文本类 + 已批准格式；未授权二进制文件冻结
+            allowed = _agent_allowed(cfg)
+            cfg["_agent_allowed"] = allowed
+            pend = _pending_formats(cfg)
+            for k, v in pend.items():
+                pending_total[k] = pending_total.get(k, 0) + v
             try:
                 stale, stats = kb_stale(cfg["path"], meta_path(cfg["name"]),
                                         cfg["collection"], cfg["exclude_dirs"],
                                         cfg["exclude_files"], cfg["exclude_patterns"],
                                         cfg["extensions"],
-                                        tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0))
+                                        tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0),
+                                        agent_allowed=allowed)
             except Exception as e:
                 log(f"指纹检查失败（{cfg['name']}）：{e}")
                 stale, stats = True, {}
@@ -142,7 +183,15 @@ def ensure_fresh():
                 parts.append(f"{cfg['name']} 删除 {stats['removed']} 个文件")
             stale_libs.append(cfg)
         if not stale_libs:
+            if pending_total:
+                detail = "、".join(f"{k}×{v}" for k, v in sorted(pending_total.items()))
+                return (f"（另有未授权格式的文件暂不纳入索引：{detail}——"
+                        f"经用户确认后可调 reindex_knowledge(allow_new_formats=true) 授权，"
+                        f"或在 GUI 库管理中勾选；以下为现有检索结果）\n\n")
             return ""
+        if pending_total:
+            detail = "、".join(f"{k}×{v}" for k, v in sorted(pending_total.items()))
+            parts.append(f"另有未授权格式文件暂不纳入（{detail}），待用户授权")
         summary = "、".join(parts) or "内容变化"
 
         if _index_running():
@@ -151,7 +200,8 @@ def ensure_fresh():
         if _chroma_is_empty():
             log("索引库为空，同步重建（首跑场景）...")
             for lib in stale_libs:
-                index_library(lib, incremental=True)
+                index_library(lib, incremental=True,
+                              agent_allowed=lib.get("_agent_allowed"))
             reset_bm25_index()
             return f"（检测到{summary}，索引已更新）\n\n"
 
@@ -210,19 +260,52 @@ def search_knowledge(query: str, top_k: int = None, libraries: str = "", exclude
 
 
 @server.tool()
-def reindex_knowledge(library: str = "") -> str:
-    """增量重建索引（扫描库文件，只对内容变化的文件重新嵌入）。library 为空或 "all" = 全部注册库，否则为单个库名（须在 list_libraries 中可见）。后台执行、立即返回；用 index_status 查看实时进度（阶段/文件数/块数/ETA/卡死判断）。一般无需手动调用：每次搜索前自动检测各库变化并增量同步；仅在自动同步失败提示、或用户明确要求立即刷新时使用。"""
+def reindex_knowledge(library: str = "", allow_new_formats: bool = False) -> str:
+    """增量重建索引（扫描库文件，只对内容变化的文件重新嵌入）。library 为空或 "all" = 全部注册库，否则为单个库名（须在 list_libraries 中可见）。后台执行、立即返回；用 index_status 查看实时进度。
+
+    人机分权：默认只索引文本类（md/txt）+ 用户已批准的格式；库中启用了
+    pdf/docx 但尚未批准时，这些文件的改动会被冻结并在返回信息中列出数量——
+    须先向用户确认，用户同意后携带 allow_new_formats=true 再次调用即完成
+    一次性长期授权（持久化到注册表，之后无需再确认；用户可随时在 GUI 取消）。"""
     try:
+        libs = []
+        approved = {}
+        waiting = {}
         if library in ("", "all"):
-            libs = [effective_config(e) for e in load_registry()]
+            entries = load_registry()
         else:
-            libs = [effective_config(e) for e in resolve_entries(library, "")]
+            entries = resolve_entries(library, "")
+        for e in entries:
+            cfg = effective_config(e)
+            pend = _pending_formats(cfg)
+            if allow_new_formats and pend:
+                # 用户已确认：把本次涉及的新格式写入长期授权（持久化到注册表）
+                merged = sorted(set(cfg.get("agent_formats") or []) | set(pend))
+                set_config(cfg["name"], "agent_formats", ",".join(merged))
+                cfg = effective_config(next(
+                    x for x in load_registry() if x["name"] == cfg["name"]))
+                for k, v in pend.items():
+                    approved[k] = approved.get(k, 0) + v
+            else:
+                for k, v in pend.items():
+                    waiting[k] = waiting.get(k, 0) + v
+            cfg["_agent_allowed"] = _agent_allowed(cfg)
+            libs.append(cfg)
         if not libs:
             return "（没有已注册的库。请先用 library.py add <路径> 注册。）"
         started, note = _start_background_index(libs)
-        if started:
-            return "已开始后台重建索引。" + note
-        return "未启动新任务。" + note
+        msg = "已开始后台重建索引。" if started else "未启动新任务。"
+        msg += note
+        if approved:
+            detail = "、".join(f"{k}×{v}" for k, v in sorted(approved.items()))
+            msg += (f"\n✅ 经用户确认，已授权 Agent 索引格式并纳入本次任务：{detail}"
+                    f"（长期有效，GUI 可取消）。")
+        if waiting:
+            detail = "、".join(f"{k}×{v}" for k, v in sorted(waiting.items()))
+            msg += (f"\n⚠ 以下格式尚未获用户授权，本次不纳入：{detail}。"
+                    f"如需纳入请先向用户确认，得到同意后携带 allow_new_formats=true 重试"
+                    f"（将持久化授权）；或由用户在 GUI 库管理中勾选。")
+        return msg
     except ValueError as e:
         return f"（{e}）"
     except Exception as e:

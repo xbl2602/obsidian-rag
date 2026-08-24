@@ -1424,9 +1424,53 @@ class LibraryManagerDialog:
         self._cfg_name = name
         self._cfg_fields = {}
         body = ft.ListView(spacing=10, expand=True, padding=0)
+
+        # ---- 索引格式与 Agent 授权（勾选块，替代自由文本）----
+        # extensions = 用户要索引的格式（人机通用）；agent_formats = 允许 AI Agent
+        # 自动索引的二进制格式（一次批准长期有效，取消勾选即收回）。
+        cur_exts = set(cfg["extensions"])
+        cur_agent = set(cfg["agent_formats"])
+        self._fmt_boxes = {}
+        self._agent_boxes = {}
+
+        def _fmt_toggle(fmt):
+            def handler(_e):
+                on = self._fmt_boxes[fmt].value
+                ab = self._agent_boxes.get(fmt)
+                if ab is not None:
+                    ab.disabled = not on
+                    if not on:
+                        ab.value = False  # 取消格式 = 同时收回该格式的 Agent 授权
+            return handler
+
+        fmt_row = ft.Row([], spacing=14, wrap=True)
+        for fmt in ("md", "txt", "pdf", "docx"):
+            cb = ft.Checkbox(label=fmt, value=fmt in cur_exts,
+                             on_change=_fmt_toggle(fmt))
+            self._fmt_boxes[fmt] = cb
+            fmt_row.controls.append(cb)
+        agent_row = ft.Row([], spacing=14, wrap=True)
+        for fmt in ("pdf", "docx"):
+            cb = ft.Checkbox(
+                label=f"AI 可索引 {fmt}",
+                value=fmt in cur_agent and fmt in cur_exts,
+                disabled=fmt not in cur_exts,
+                on_change=lambda _e: None)
+            self._agent_boxes[fmt] = cb
+            agent_row.controls.append(cb)
+        body.controls.append(ft.Column([
+            ft.Text("索引文件格式", size=12, weight=ft.FontWeight.W_600,
+                    color=colors["t2"], font_family=FONT_UI),
+            fmt_row,
+            ft.Text("AI Agent 权限（未勾选的格式仅由你手动索引；勾选 = 长期授权，"
+                    "取消 = 收回；扫描件 PDF 暂不支持 OCR）",
+                    size=11, color=colors["t4"], font_family=FONT_UI, height=1.4),
+            agent_row,
+        ], spacing=6))
+
         for key in ("exclude_dirs", "exclude_files", "exclude_patterns",
                     "chunk_char_limit", "short_doc_char_limit",
-                    "extensions", "collection"):
+                    "collection"):
             raw = entry.get(key)
             if key in _LIB_LIST_KEYS:
                 val = ", ".join(str(x) for x in cfg[key]) if cfg[key] else ""
@@ -1440,9 +1484,6 @@ class LibraryManagerDialog:
                 helper = "当前覆盖值，清空后保存恢复继承全局"
             else:
                 helper = "当前覆盖值（仅 collection 不可恢复继承）"
-            if key == "extensions":
-                # R1 多格式支持：白名单见 extractors.SUPPORTED_EXTS（library.set_config 校验）
-                helper += "｜支持 md/txt/pdf/docx；扫描件 PDF 暂不支持 OCR（索引时自动跳过）"
             inp = ft.TextField(
                 label=_LIB_CONFIG_NAMES[key], value=val,
                 height=46, dense=True, border_radius=SIZE["radius_control"],
@@ -1480,6 +1521,24 @@ class LibraryManagerDialog:
     def _do_config(self, dlg):
         from library import set_config, unset_config
         errors = []
+        # 1) 格式勾选块：extensions + agent_formats（取消格式 = 联动收回其授权）
+        sel_exts = [f for f in ("md", "txt", "pdf", "docx")
+                    if self._fmt_boxes[f].value]
+        sel_agent = [f for f in ("pdf", "docx")
+                     if self._agent_boxes[f].value and f in sel_exts]
+        try:
+            if sel_exts:
+                set_config(self._cfg_name, "extensions", ",".join(sel_exts))
+            else:
+                unset_config(self._cfg_name, "extensions")
+            if sel_agent:
+                set_config(self._cfg_name, "agent_formats", ",".join(sel_agent))
+            else:
+                unset_config(self._cfg_name, "agent_formats")
+        except ValueError as ex:
+            self._set_status("保存失败：%s" % ex, "error")
+            return
+        # 2) 其余文本字段
         for key, inp in self._cfg_fields.items():
             val = (inp.value or "").strip()
             try:

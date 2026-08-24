@@ -1069,3 +1069,27 @@ R1 提交（177ede6）后的 GUI 层配套，全部为展示/判定口径对齐�
 ### 备注
 - GUI 视觉观感（chip 配色、文案长度）待用户下次开 GUI 人工确认；逻辑层已由单测锁定。
 - 真实 vault extensions 启用仍待用户确认（同问题 23 遗留）。
+
+## 问题 25：多格式「人机分权」——默认开启 + Agent 门禁（2026-08-24）
+
+用户需求：多格式默认开启；GUI 可自选格式并持久化；Agent 可继续做文本类索引，但**未经用户批准的格式不得被 Agent 重建/增量纳入**（含检索触发的自动同步）。批准粒度经确认：一次批准长期有效，可随时撤销。
+
+### 实现
+- **library.py**：`DEFAULT_EXTENSIONS=["md","pdf","docx"]`（entry.extensions 为 null 时继承 → 现有库与新建库自动默认开启）；OVERRIDE_KEYS/LIST_KEYS 增加 **`agent_formats`**；set_config 校验（仅二进制格式、须已在当前 extensions 启用、允许空=全部收回）；effective_config 输出 `agent_formats = extensions ∩ 已批准`（extensions 收窄时授权自动失效）。
+- **index.py**：kb_stale/_index_core 新增 `agent_allowed` 参数——未授权后缀的文件在循环最早期（stat 之前）**冻结**：零 I/O、不转换、不计变更、条目与块原样保留（绝不裁剪清理）；无条目则视同不存在。一致性自愈的期望块数天然包含冻结条目，无误伤。
+- **server.py**：Agent 可达的三个入口全部走门禁——
+  - `ensure_fresh()`（search 自动同步）：kb_stale/index_library 携带受限集合 `TEXT_EXTS ∪ agent_formats`；存在待批准文件时返回明确提示；
+  - `reindex_knowledge(library, allow_new_formats=false)`：新参数。未授权格式列出数量并提示"先向用户确认"；`allow_new_formats=true` = 用户已同意，将新格式写入注册表 `agent_formats` **持久化**并纳入本次任务；
+  - `_start_background_index/_run_index` 经 lib dict 的 `_agent_allowed` 键透传。
+  - GUI/CLI（人类路径）不带门禁参数，行为不变。
+- **gui/widgets.py**：库配置对话框 extensions 文本框升级为 **md/txt/pdf/docx 勾选块**；新增"AI Agent 权限"勾选行（pdf/docx，取消某格式时联动收回其授权）；保存写入两类设置（= 用户设置持久化）。
+
+### 测试与回归
+- test_extractors **17/17**（新增 test_agent_gate_freezes_unapproved_binaries：冻结不嵌入/条目保留/受限视角判稳/批准后补齐且不重嵌/新文件两视角行为）
+- library_registry **15/15**（新增 agent_formats 校验与交集语义用例；旧断言 ["md"] 按新默认更新）
+- 其余四件全绿：audit 19/19、server_singleton 5/5、config_editor 0 failures、gui_store 30 PASS、verify_export_import 39/39。
+
+### 备注
+- 默认开启对真实 vault 的实际生效点 = 下一次任何索引运行（md 部分指纹全命中，只新增 pdf/docx 的转换与嵌入）。
+- Agent 门禁是"提示+冻结"而非硬拒绝：Agent 始终可以维护文本层；越权风险由冻结语义消除。
+- MCP 工具签名向后兼容：allow_new_formats 不传 = false = 严格模式。

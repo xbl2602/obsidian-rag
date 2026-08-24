@@ -22,14 +22,18 @@ import sys
 from pathlib import Path
 
 from config import CFG, DATA_DIR
-from extractors import SUPPORTED_EXTS
+from extractors import BINARY_EXTS, SUPPORTED_EXTS
 
 LIBRARIES_FILE = DATA_DIR / "libraries.json"
 
+# 多格式默认开启：库未显式设置 extensions 时的生效清单（人经 GUI/CLI 可随时改）
+DEFAULT_EXTENSIONS = ["md", "pdf", "docx"]
+
 GLOBAL_KEYS = ("exclude_dirs", "exclude_files", "exclude_patterns",
                "chunk_char_limit", "short_doc_char_limit")
-OVERRIDE_KEYS = GLOBAL_KEYS + ("extensions", "collection")
-LIST_KEYS = ("exclude_dirs", "exclude_files", "exclude_patterns", "extensions")
+OVERRIDE_KEYS = GLOBAL_KEYS + ("extensions", "collection", "agent_formats")
+LIST_KEYS = ("exclude_dirs", "exclude_files", "exclude_patterns", "extensions",
+             "agent_formats")
 INT_KEYS = ("chunk_char_limit", "short_doc_char_limit")
 INVALID_NAME_CHARS = set('/\\:*?"<>|')
 
@@ -144,7 +148,14 @@ def _migrate_legacy():
 
 
 def effective_config(entry):
-    """库的生效配置 = 全局默认值 + 该库覆盖；含派生的 collection 与 meta 路径。"""
+    """库的生效配置 = 全局默认值 + 该库覆盖；含派生的 collection 与 meta 路径。
+
+    extensions 缺省继承 DEFAULT_EXTENSIONS（多格式默认开启）；
+    agent_formats = Agent 获准索引的二进制格式，与当前 extensions 取交集
+    （用户在 extensions 里取消某格式时，授权自动随之失效——单一事实来源是 extensions）。
+    """
+    exts = list(entry.get("extensions") or DEFAULT_EXTENSIONS)
+    approved = set(entry.get("agent_formats") or [])
     cfg = {
         "name": entry["name"],
         "path": entry["path"],
@@ -154,7 +165,8 @@ def effective_config(entry):
         "exclude_patterns": list(CFG["exclude_patterns"]),
         "chunk_char_limit": CFG["chunk_char_limit"],
         "short_doc_char_limit": CFG["short_doc_char_limit"],
-        "extensions": entry.get("extensions") or ["md"],
+        "extensions": exts,
+        "agent_formats": [f for f in exts if f in approved],
     }
     for k in GLOBAL_KEYS:
         v = entry.get(k)
@@ -233,7 +245,8 @@ def set_config(name, key, value):
     if entry is None:
         raise ValueError(f"库不存在：{name}")
     parsed = _parse_value(key, value)
-    if key == "extensions":
+    norm: list = []
+    if key in ("extensions", "agent_formats"):
         # 白名单校验引用 extractors.SUPPORTED_EXTS（单一事实来源）；
         # 小写归一 + 去重 + 保序，堵手滑写出的 .PDF / PDF / 大小写混排
         exts = parsed if isinstance(parsed, list) else []
@@ -242,6 +255,7 @@ def set_config(name, key, value):
             e2 = str(e).lower().lstrip(".")
             if e2 and e2 not in norm:
                 norm.append(e2)
+    if key == "extensions":
         bad = [e for e in norm if e not in SUPPORTED_EXTS]
         if bad:
             raise ValueError(f"不支持的扩展名：{', '.join(bad)}"
@@ -249,6 +263,20 @@ def set_config(name, key, value):
                              f"扫描件 OCR 计划末轮）")
         if not norm:
             raise ValueError("extensions 不能为空")
+        parsed = norm
+    if key == "agent_formats":
+        # Agent 授权清单：仅二进制格式、且须已在当前 extensions 中启用；
+        # 授权随 extensions 收窄自动失效（effective_config 取交集），此处挡手误。
+        # 允许为空 = 收回全部授权。
+        cur_exts = set(entry.get("extensions") or DEFAULT_EXTENSIONS)
+        bad_fmt = [e for e in norm if e not in BINARY_EXTS]
+        if bad_fmt:
+            raise ValueError(f"agent_formats 仅接受二进制格式"
+                             f"（{', '.join(sorted(BINARY_EXTS))}）：{', '.join(bad_fmt)}")
+        not_on = [e for e in norm if e not in cur_exts]
+        if not_on:
+            raise ValueError(f"以下格式未在该库 extensions 中启用，无法授权："
+                             f"{', '.join(not_on)}")
         parsed = norm
     if key == "collection":
         if not isinstance(parsed, str) or not parsed:

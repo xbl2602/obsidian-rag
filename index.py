@@ -936,7 +936,8 @@ def _chroma_count(collection_name=COLLECTION_NAME):
 
 def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
              exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_FILES,
-             exclude_patterns=EXCLUDE_PATTERNS, extensions=None, tbd_ratio=0.0):
+             exclude_patterns=EXCLUDE_PATTERNS, extensions=None, tbd_ratio=0.0,
+             agent_allowed=None):
     """指纹检查：先比 mtime+size（快速路径），变化才读全文 MD5。
 
     只读、不加载模型、不嵌入。返回 (是否过期, 统计)。
@@ -968,6 +969,13 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
     added = 0
     for fpath in files:
         rel = str(fpath.relative_to(vault)).replace("\\", "/")
+        if agent_allowed is not None and \
+                fpath.suffix.lower().lstrip(".") not in agent_allowed:
+            # Agent 未授权格式：冻结——保留既有条目（若有）防止被裁剪/清理，
+            # 零 I/O、不计任何变更；无条目则视同不存在，待人类路径首建。
+            if meta.get(rel) is not None:
+                seen.add(rel)
+            continue
         try:
             st = fpath.stat()
         except OSError:
@@ -1166,19 +1174,25 @@ def index_vault(vault, incremental=True, full=False):
                        incremental=incremental, full=full)  # 2026-08-14：此前两个参数都没往下传
 
 
-def index_library(lib, incremental=True, full=False):
-    """按注册表库索引：独立 collection / 指纹文件 / 排除规则 / 切块粒度。lib = effective_config()。"""
+def index_library(lib, incremental=True, full=False, agent_allowed=None):
+    """按注册表库索引：独立 collection / 指纹文件 / 排除规则 / 切块粒度。lib = effective_config()。
+
+    agent_allowed：Agent 门禁（人机分权）。None = 无限制（GUI/CLI 人类路径）；
+    传后缀集合 = 仅处理这些格式，其余已配置格式的文件冻结（见 _index_core）。
+    """
     return _index_core(lib["path"], lib["collection"], meta_path(lib["name"]),
                        lib["exclude_dirs"], lib["exclude_files"], lib["exclude_patterns"],
                        lib["extensions"], lib["chunk_char_limit"],
                        lib["short_doc_char_limit"], library_label=lib["name"],
                        incremental=incremental, full=full,
-                       tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0))
+                       tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0),
+                       agent_allowed=agent_allowed)
 
 
 def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 exclude_patterns, extensions, chunk_max, short_doc,
-                library_label="", incremental=True, full=False, tbd_ratio=0.0):
+                library_label="", incremental=True, full=False, tbd_ratio=0.0,
+                agent_allowed=None):
     tag = f"[{library_label}] " if library_label else ""
     if not Path(vault).is_dir():
         log(f"{tag}库路径不存在，跳过索引（保留现有索引）：{vault}")
@@ -1224,6 +1238,13 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
         update_progress(phase="scanning", message="比对指纹、切块...")
         for fpath in files:
             rel = str(fpath.relative_to(vault)).replace("\\", "/")
+            if agent_allowed is not None and \
+                    fpath.suffix.lower().lstrip(".") not in agent_allowed:
+                # Agent 未授权格式：冻结——保留既有条目与块（不裁剪不清理），
+                # 零 I/O、不转换、不计变更；无条目则视同不存在，待人类路径首建。
+                if meta.get(rel) is not None:
+                    current_rels.add(rel)
+                continue
             try:
                 st = fpath.stat()
             except OSError as e:

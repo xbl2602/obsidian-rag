@@ -38,7 +38,8 @@ def test_migration_synthesizes_first_library():
         assert e["collection"] == "obsidian_kb"
         cfg = library.effective_config(e)
         assert cfg["collection"] == "obsidian_kb"  # 迁移库沿用旧 collection，不派生
-        assert cfg["extensions"] == ["md"]
+        assert cfg["extensions"] == ["md", "pdf", "docx"]  # 多格式默认开启（2026-08-24）
+        assert cfg["agent_formats"] == []  # Agent 授权默认为空：人机分权
         assert cfg["chunk_char_limit"] == 1500  # 继承全局
         assert cfg["exclude_dirs"] == [".obsidian", ".git"]
         assert library.LIBRARIES_FILE.exists()
@@ -285,6 +286,43 @@ def test_zip_slip_rejected():
             assert False, "应拒绝绝对路径条目"
         except ValueError:
             pass
+
+
+def test_agent_formats_gate_and_validation():
+    """agent_formats：仅二进制格式、须已在 extensions 启用、随 extensions 收窄自动失效。"""
+    with tempfile.TemporaryDirectory() as td:
+        make_isolated(td)
+        library.save_registry([])
+        folder = Path(td) / "kb_alpha"
+        folder.mkdir()
+        library.add_library(str(folder))
+        e = library.load_registry()[0]
+        assert e["agent_formats"] is None  # 新库默认无授权
+        library.set_config("kb_alpha", "extensions", "md,pdf,docx")
+        # 非二进制格式拒绝
+        for bad in ("md", "txt,md"):
+            try:
+                library.set_config("kb_alpha", "agent_formats", bad)
+                assert False, f"应拒绝非二进制格式：{bad}"
+            except ValueError:
+                pass
+        # 未启用的格式拒绝（docx 尚未启用时）
+        library.set_config("kb_alpha", "extensions", "md,pdf")
+        try:
+            library.set_config("kb_alpha", "agent_formats", "pdf,docx")
+            assert False, "应拒绝未启用格式 docx"
+        except ValueError:
+            pass
+        # 正常授权 + 生效交集
+        library.set_config("kb_alpha", "agent_formats", "PDF, pdf")  # 大小写/重复归一
+        cfg = library.effective_config(library.load_registry()[0])
+        assert cfg["agent_formats"] == ["pdf"]
+        # extensions 收窄 → 授权自动失效（交集语义）
+        library.set_config("kb_alpha", "extensions", "md")
+        assert library.effective_config(library.load_registry()[0])["agent_formats"] == []
+        # 收回授权
+        library.unset_config("kb_alpha", "agent_formats")
+        assert library.load_registry()[0]["agent_formats"] is None
 
 
 def _run_all():

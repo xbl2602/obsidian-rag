@@ -456,6 +456,64 @@ def test_unreadable_sentinel_converges_then_recovers():
             iso.cleanup()
 
 
+def test_agent_gate_freezes_unapproved_binaries():
+    """人机分权门禁：agent_allowed 受限轮次不转换未授权二进制、不破坏其条目与块；
+    解除限制（用户批准）后自动补齐。"""
+    allowed_md = {"md", "txt"}
+    with _IsoEnv() as iso:
+        try:
+            good = iso.vault / "doc.pdf"
+            _make_text_pdf(good)
+            (iso.vault / "n.md").write_text("# 笔记\n正文内容。\n", encoding="utf-8")
+            # 第一轮：人类全量路径 → pdf 入索引
+            _run_index(iso)
+            meta = _load_meta(iso)
+            assert meta["doc.pdf"]["chunks"] >= 1
+            n_calls = len(iso.encoder.calls)
+
+            # 第二轮：Agent 受限视角 → pdf 冻结：零嵌入、条目原样保留
+            index._index_core(str(iso.vault), "col_test", iso.meta_file,
+                              set(), set(), (), ["md", "pdf", "docx"],
+                              600, 200, library_label="t",
+                              incremental=True, full=False, tbd_ratio=0.1,
+                              agent_allowed=allowed_md)
+            meta2 = _load_meta(iso)
+            assert meta2["doc.pdf"] == meta["doc.pdf"], "冻结文件条目不得被改动/裁剪"
+            assert len(iso.encoder.calls) == n_calls, "冻结文件不得触发嵌入"
+            stale, stats = index.kb_stale(
+                str(iso.vault), meta_file=iso.meta_file,
+                collection_name="col_test",
+                extensions=["md", "pdf", "docx"],
+                agent_allowed=allowed_md)
+            assert not stale, f"受限视角必须判稳（stats={stats}）"
+
+            # 第三轮：批准后（解除限制）→ 指纹命中，已入索引文件不重复嵌入
+            _run_index(iso)
+            assert len(iso.encoder.calls) == n_calls
+
+            # 第四/五轮：新增未授权 pdf → Agent 视角不纳入且判稳；人类路径纳入
+            g2 = iso.vault / "new.pdf"
+            _make_text_pdf(g2, pages=1, text="brand new document content here.")
+            _touch(g2, time.time_ns())
+            index._index_core(str(iso.vault), "col_test", iso.meta_file,
+                              set(), set(), (), ["md", "pdf", "docx"],
+                              600, 200, library_label="t",
+                              incremental=True, full=False, tbd_ratio=0.1,
+                              agent_allowed=allowed_md)
+            assert "new.pdf" not in _load_meta(iso), "未授权新文件不得入索引"
+            stale2, _ = index.kb_stale(
+                str(iso.vault), meta_file=iso.meta_file,
+                collection_name="col_test",
+                extensions=["md", "pdf", "docx"],
+                agent_allowed=allowed_md)
+            assert not stale2, "受限视角下未授权新文件不算 added/stale"
+            _run_index(iso)
+            e = _load_meta(iso).get("new.pdf")
+            assert e and not e.get("xfail") and e.get("chunks", 0) >= 1
+        finally:
+            iso.cleanup()
+
+
 # ---------- 静态断言与白名单 ----------
 
 def test_static_single_source_of_truth():
