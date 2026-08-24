@@ -2,16 +2,21 @@
 
 > 状态：方案已定稿（v2，经 council 三委员评审修订），分三轮交付。
 > 评审记录：`.council-state/round-plan-1/`（8 个 blocker 已全部吸收进本清单）。
-> 基线：HEAD 92af6e6，META_VERSION 将 8→9。
-> 优先级修订（2026-08-24）：扫描件 OCR（MinerU 云端+本地）整体后移到最末轮；当前唯一焦点 = **R1：Word + 文字层 PDF**。
+> 进度（2026-08-24）：**R1、R2 已完成并提交**（R1=177ede6，六件套全绿；R2=2ac21b5），
+> 明细见 TASK_LOG.md 问题 23/24。当前待办 = **R3：扫描件 OCR** + 用户确认开启真实 vault 的 extensions。
+> 历史备注：优先级修订时基线为 92af6e6、META_VERSION 8；现已升到 9 并完成一次真库重建。
 
 ## 交付轮次
 
-| 轮次 | 范围 | 出口标准 |
-|---|---|---|
-| **R1（当前焦点，最小可交付）** | CLI 全链路 + **DOCX + 文字层 PDF** | `library.py` 开 extensions → `index.py --library` 端到端索引 md/docx/文字层pdf；扫描件 pdf 干净跳过（终态防死循环）；六件套回归全绿 |
-| **R2** | **GUI 适配** | 设置页/进度展示对多格式的完整体验 |
-| **R3（末轮）** | **扫描件 OCR：MinerU 云端 API → 本地部署** | 云端路径可用后接本地 pipeline 联调，xsrc 自愈验证 |
+| 轮次 | 状态 | 范围 | 出口标准 |
+|---|---|---|---|
+| **R1（最小可交付）** | ✅ 完成 | CLI 全链路 + **DOCX + 文字层 PDF** | `library.py` 开 extensions → `index.py --library` 端到端索引 md/docx/文字层pdf；扫描件 pdf 干净跳过（终态防死循环）；六件套回归全绿 |
+| **R2** | ✅ 完成 | **GUI 适配** | 设置页/进度展示对多格式的完整体验 |
+| **R3（末轮）** | ⬜ 待启动 | **扫描件 OCR：MinerU 云端 API → 本地部署** | 云端路径可用后接本地 pipeline 联调，xsrc 自愈验证 |
+
+### R3 启动前的前置确认
+- [ ] 用户决定是否现在给真实 vault 开启 extensions（`md,pdf,docx`）——不开启也能先做 R3 开发（测试库隔离验证）
+- [ ] MinerU-Open-CLI 账号/Token 准备（flash-extract 免注册 ≤10MB/20页；extract 注册 Token 200MB/200页）
 
 ## 核心思想
 
@@ -129,7 +134,7 @@ python index.py --library "Obsidian Vault"
 
 ## 明确不做（备案）
 
-- 既有 md 空正文守卫不落 meta 的隐患（另立任务）
+- ~~既有 md 空正文守卫不落 meta 的隐患~~ ✅ 已随 R1 终态机制收敛（空文件落 `empty` 终态，TASK_LOG 问题 23）
 - GUI/server tbd_ratio 口径不一致（gui/store.py:69 不传 ratio，既有偏差）
 - OCR 结果页级进度 tick（个人库规模下 converting 相位豁免双看门狗已够）
 - pymupdf4llm 对恶意 pdf 的解析隔离（单用户本地威胁模型，风险可接受）
