@@ -13,6 +13,7 @@ from index import (
     load_meta,
     collect_md_files,
     read_progress,
+    resolve_note_relations,
     _pid_alive,
 )
 from library import (
@@ -134,6 +135,13 @@ def heartbeat_state(progress):
     converting（文档转换）相位豁免停滞告警：单文件转换耗时与页数相关，
     大文件超过 STALL_TIMEOUT 属预期——与 index.progress_text 的口径保持一致
     （双看门狗一致，防一边正常一边弹卡死）。心跳停止仍照常判 dead。
+
+    停滞宽限（问题 32）：进度 dict 带 stall_grace_until（绝对截止时间戳，由
+    index._stall_grace 在模型加载/等写锁/写库等合法长静默开始前写入）且未过期
+    时，停滞改判 running——色态与呼吸不变。判定表达式与 index._stall_grace_left
+    互为镜像，两侧必须同步修改；非法值视为无宽限（fail-closed）。
+    ⚠ 升级过渡期：旧版本读不到该字段按原逻辑走（or-0 回退旧行为），任意方向
+    新旧混跑都不比引入前糟。DEAD 先于一切豁免——宽限绝不掩盖心跳停止。
     """
     now = time.time()
     if not progress.get("running"):
@@ -144,14 +152,44 @@ def heartbeat_state(progress):
         return HB_DEAD
     if progress.get("phase") == "converting":
         return HB_RUNNING
+    until = progress.get("stall_grace_until")
+    if isinstance(until, (int, float)) and not isinstance(until, bool) \
+            and now < until:
+        return HB_RUNNING
     if now - advanced > STALL_TIMEOUT:
         return HB_STALLED
     return HB_RUNNING
 
 
+def heartbeat_note(progress):
+    """心跳胶囊文案（纯函数，不碰 flet）：converting → 转换提示；停滞宽限内 →
+    合法长静默提示（含已安静秒数）；否则 None（显示默认「心跳正常」）。
+
+    DEAD-first 短路：心跳冻结超 HEARTBEAT_TIMEOUT 时无论宽限是否未过期一律
+    返回 None——红 DEAD 胶囊配「宽限内」文案自相矛盾（reliability N1）。
+    """
+    now = time.time()
+    if not progress.get("running"):
+        return None
+    updated = progress.get("updated_at") or 0
+    if now - updated > HEARTBEAT_TIMEOUT:
+        return None
+    if progress.get("phase") == "converting":
+        return "文档转换中（大文件耗时属预期）"
+    until = progress.get("stall_grace_until")
+    if isinstance(until, (int, float)) and not isinstance(until, bool) \
+            and now < until:
+        advanced = progress.get("last_advance_at") or 0
+        quiet = max(0, int(now - advanced))
+        return f"模型加载/写库中（已安静 {quiet}s，宽限内）"
+    return None
+
+
 # 提取失败（xfail 终态）的展示文案：reason → (短标签, 处置指引)
 ISSUE_TEXT = {
-    "scanned": ("扫描件 PDF", "暂不支持 OCR，计划末轮接入；如需检索请使用文字层版本"),
+    "scanned": ("扫描件 PDF",
+                "如已在设置中启用 pdf_scan_backend（云端 OCR），下一轮索引会自动重试；"
+                "未启用则请到设置中开启，或改用文字层版本"),
     "unreadable": ("不可读", "文件被占用/权限不足，解除后重新索引自动重试"),
     "extract-failed": ("提取失败", "文件可能损坏或加密，修复源文件后重建"),
     "empty": ("空文件", "无正文内容，补全内容后自动入索引"),
@@ -174,6 +212,17 @@ def meta_issues_for(cfg):
             r = v.get("reason") or "unknown"
             issues[r] = issues.get(r, 0) + 1
     return issues
+
+
+def note_relations_for(cfg, target):
+    """给定库配置与笔记标识（相对路径或不含扩展名的标题），返回其双链关系。
+
+    只读 meta 指纹文件，不加载模型、不碰 Chroma。
+    """
+    try:
+        return resolve_note_relations(meta_path(cfg["name"]), target)
+    except Exception:
+        return {"resolved": False, "file": None, "outlinks": [], "inlinks": []}
 
 
 def progress_ratio(progress):

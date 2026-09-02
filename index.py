@@ -102,10 +102,22 @@ def _skipped(info):
     return isinstance(info, dict) and bool(info.get("tbd") or info.get("xfail"))
 
 
+# 终态 reason 字面量的单一事实来源：kb_stale（判是否已收敛）与 _index_core
+# （落盘终态）必须共用同一组常量表达同一个 reason，否则两侧字符串静默失配
+# → kb_stale 永远判"未收敛"、每轮误报 stale、每轮无谓重建。
+# ⚠ 值本身是持久化数据格式（写进 meta 的 reason 字段），绝不可改动。
+REASON_UNREADABLE = "unreadable"
+REASON_EXTRACT_FAILED = "extract-failed"
+REASON_EMPTY = "empty"
+REASON_TBD = "tbd"
+REASON_SCANNED = "scanned"
+
+
 def _terminal_entry(st, bhash, reason, xsrc=None):
     """构造持久化终态条目（不产块，但必须留在 meta 里防重建死循环）。
 
-    reason ∈ {"unreadable", "extract-failed", "empty", "tbd", "scanned"}。
+    reason ∈ {REASON_UNREADABLE, REASON_EXTRACT_FAILED, REASON_EMPTY,
+    REASON_TBD, REASON_SCANNED}。
     xsrc：产生该终态时的 OCR 能力签名（仅二进制提取类失败携带）——
     签名变化（用户启用后端/补配 Key）时条目自动获得重试资格。
     chunks=0 使其不贡献任何有效块 id：该文件若曾有旧块，会在写库阶段
@@ -126,8 +138,27 @@ def _backend_changed(entry, xsig):
     mineru_api_key——已跳过的扫描件在下一轮索引自动重试，无需 --full。
     """
     return bool(entry.get("xfail")
-                and entry.get("reason") in ("scanned", "extract-failed")
+                and entry.get("reason") in (REASON_SCANNED, REASON_EXTRACT_FAILED)
                 and entry.get("xsrc") != xsig)
+
+
+def _entry_converged(entry, reason):
+    """既有终态条目是否已经反映了这个 reason——是则本轮已收敛，kb_stale 不必再计一次
+    changed。与 _terminal_entry 写入的 reason 必须用同一组 REASON_* 常量表达，
+    防止 kb_stale 与 _index_core 两侧的判定字符串静默失配、每轮误判 stale。
+    """
+    return bool(entry and entry.get("xfail") and entry.get("reason") == reason)
+
+
+def _links_missing(entry):
+    """已有的正常（非终态）条目缺少 links 字段——功能上线前建立的旧索引需要一次性补齐。
+
+    与 _backend_changed 是同一种"惰性触发重试"机制：不强制 --full 全量重建，
+    下一轮增量索引里这个文件会自然穿透快速路径重新处理一次，之后恢复正常跳过。
+    只对非终态（非 xfail/tbd）条目生效——终态条目没有成功解析出的正文可供抽取链接，
+    它们有自己的 _backend_changed/_entry_converged 机制负责重试，不需要这个额外触发。
+    """
+    return bool(entry) and not _skipped(entry) and "links" not in entry
 
 
 class LockBusyError(RuntimeError):
@@ -154,6 +185,18 @@ _progress_lock = threading.Lock()
 HEARTBEAT_INTERVAL = CFG["heartbeat_interval"]   # 心跳线程写盘间隔（秒）
 HEARTBEAT_TIMEOUT = CFG["heartbeat_timeout"]     # 心跳停止判定（3 × interval）
 STALL_TIMEOUT = CFG["stall_timeout"]             # 进度停滞判定（5 × interval）
+
+# 停滞判定的合法长静默宽限（问题 32）：模型加载 / 等写锁 / 写库清理这类
+# 「心跳正常但进度必然长时间不推进」的阶段，在进入前写入一段自过期宽限
+# （进度 JSON 键 stall_grace_until = 绝对截止时间戳），停滞看门狗在宽限内
+# 不判 stalled。硬编码不进 config：宽限一旦可配置就成了"永久静默开关"。
+# 升级矩阵与阈值漂移声明（方案 §7.1）：若用户把 lock_timeout_seconds 调到
+# > STALL_GRACE_WRITE(180) 或模型冷加载实际超过 STALL_GRACE_MODEL_LOAD(300)，
+# 对应窗口超出宽限 → 行为回退为现状（照旧误报停滞），不会比引入本机制前更糟；
+# 任意方向的新旧版本混跑同理（旧代码读不到字段按原逻辑走）。
+STALL_GRACE_MAX_S = 600.0        # 单次宽限时长 clamp 上限
+STALL_GRACE_MODEL_LOAD = 300.0   # 模型冷加载 / CUDA 切换重载（fp16→fp32 双次加载同盖）
+STALL_GRACE_WRITE = 180.0        # 写锁排队 + 写库清理（> 默认 lock_timeout 60s 全覆盖）
 
 _heartbeat_thread = None
 _heartbeat_stop = threading.Event()
@@ -238,9 +281,21 @@ def update_progress(**fields):
 
     事件更新即"进度推进"——刷新 last_advance_at（停滞判定依据）。
     心跳线程不经过本函数，因此不会掩盖停滞。
+
+    停滞宽限字段（问题 32）的一次性豁免语义：
+    - 写入方传 stall_grace_s（相对秒数，**永不落盘**）；进度 JSON 里只存
+      绝对截止时间戳 stall_grace_until；
+    - 每次调用默认移除既有 stall_grace_until——宽限只覆盖「本次调用之后
+      那一段合法静默窗」，任何普通进度事件都会终止它（心跳整表拷贝除外，
+      宽限在静默窗口内存活靠心跳原样保留该字段）；
+    - 带 stall_grace_s 且为正数值时才重新写回：
+      until = max(旧值, now + min(grace_s, STALL_GRACE_MAX_S))——
+      max 合并防「后写者反向缩短已有宽限」（回退攻击），clamp 防永久静默；
+      非数值 / ≤0 一律不写（fail-closed）。
     """
     global _progress
     now = time.time()
+    grace_s = fields.pop("stall_grace_s", None)
     with _progress_lock:
         base = dict(_progress)
         base.update(fields)
@@ -248,6 +303,14 @@ def update_progress(**fields):
         base.setdefault("started_at", now)
         base["updated_at"] = now
         base["last_advance_at"] = now
+        # 宽限：先默认清除，再按需 max 合并重写（语义见 docstring）
+        prev_grace = base.pop("stall_grace_until", None)
+        if (isinstance(grace_s, (int, float))
+                and not isinstance(grace_s, bool) and grace_s > 0):
+            until = now + min(float(grace_s), STALL_GRACE_MAX_S)
+            if isinstance(prev_grace, (int, float)):
+                until = max(until, float(prev_grace))
+            base["stall_grace_until"] = until
         elapsed = now - base["started_at"]
         base["elapsed_s"] = round(elapsed, 1)
         done = base.get("chunks_done") or 0
@@ -298,6 +361,12 @@ def progress_start(phase, files_total, message="", library=""):
     """索引开始：重置进度，置 running，启动心跳线程。"""
     global _heartbeat_thread, _heartbeat_stop
     _heartbeat_stop = threading.Event()
+    # 显式清空上一任务的宽限残留（与 update_progress 的默认 pop 双保险）：
+    # server 长驻进程背靠背索引多库时，上一库 writing 宽限若不清会泄漏进
+    # 下一任务，抑制其早期的停滞判定。注意不能在持锁状态下调 update_progress
+    # （其内部也要拿同一把非重入锁 → 死锁），所以先独立 pop，再走正常更新路径。
+    with _progress_lock:
+        _progress.pop("stall_grace_until", None)
     update_progress(running=True, phase=phase, message=message, library=library,
                     files_total=files_total, files_done=0,
                     chunks_total=None, chunks_done=0, error=None,
@@ -364,22 +433,31 @@ def progress_text(p):
         gap = now - last
         advance = p.get("last_advance_at") or last
         stall = now - advance
+        # 分支顺序即判定优先级（与 gui/store.heartbeat_state 镜像，勿重排）：
+        # 心跳停止(DEAD) 先于一切豁免 → converting 白名单 → 停滞宽限 → stalled。
         if gap > HEARTBEAT_TIMEOUT:
             tip = ""
             if (p.get("elapsed_s") or 0) < 300 and (p.get("chunks_done") or 0) == 0:
                 tip = "（任务早期：首次加载 embedding 模型可能耗时 1-2 分钟，若进程 CPU 仍活跃属正常）"
             lines.append(f"  ⚠ 疑似卡死：心跳已停 {int(gap)}s（> {int(HEARTBEAT_TIMEOUT)}s）{tip}")
             lines.append(f"  建议检查 PID {p.get('pid')} 是否存活；确认卡死可结束该进程后重试。")
+        elif p.get("phase") == "converting":
+            # 文档转换（pdf/docx→md）相位豁免：单文件转换耗时与页数相关，
+            # 大文件超过 STALL_TIMEOUT 属预期，不判"批次内卡死"（白名单无条件
+            # 生效、不依赖宽限字段——旧版本读新文件同样豁免，升级过渡期安全）
+            lines.append(f"  · 文档转换中（进度 {int(stall)}s 未推进，属大文件转换预期，"
+                         f"心跳 {int(gap)}s 前正常）")
+        elif _stall_grace_left(p, now) is not None:
+            # 停滞宽限内（模型加载/等写锁/写库等合法长静默）：信息行而非告警，
+            # 不含任何告警字样；宽限绝不掩盖心跳停止（上面 DEAD 分支优先）
+            left = int(_stall_grace_left(p, now) or 0)
+            pid_txt = p.get("pid") if p.get("pid") is not None else "?"
+            lines.append(f"  · 模型加载/写库中（合法长静默，宽限内）：已安静 {int(stall)}s，"
+                         f"宽限剩余 {left}s（PID {pid_txt}），心跳 {int(gap)}s 前正常")
         elif stall > STALL_TIMEOUT:
-            if p.get("phase") == "converting":
-                # 文档转换（pdf/docx→md）相位豁免：单文件转换耗时与页数相关，
-                # 大文件超过 STALL_TIMEOUT 属预期，不判"批次内卡死"
-                lines.append(f"  · 文档转换中（进度 {int(stall)}s 未推进，属大文件转换预期，"
-                             f"心跳 {int(gap)}s 前正常）")
-            else:
-                lines.append(f"  ⚠ 进度停滞：心跳正常（{int(gap)}s 前）但进度已 {int(stall)}s 未推进"
-                             f"（> {int(STALL_TIMEOUT)}s），疑似批次内卡死（假活）")
-                lines.append(f"  建议检查 PID {p.get('pid')} 是否仍在消耗 CPU；确认卡死可结束该进程后重试。")
+            lines.append(f"  ⚠ 进度停滞：心跳正常（{int(gap)}s 前）但进度已 {int(stall)}s 未推进"
+                         f"（> {int(STALL_TIMEOUT)}s），疑似批次内卡死（假活）")
+            lines.append(f"  建议检查 PID {p.get('pid')} 是否仍在消耗 CPU；确认卡死可结束该进程后重试。")
         else:
             lines.append(f"  心跳: {int(gap)}s 前（正常） · 进度推进: {int(stall)}s 前")
     return "\n".join(lines)
@@ -424,6 +502,47 @@ def _report_device(device, note=""):
             base["device"] = device
             _write_progress_file(base)
             _progress = base
+
+
+def _stall_grace(seconds, **fields):
+    """给当前索引进度写入一段停滞宽限（两段式快照守卫，复刻 _report_device 先例）。
+
+    两段式原因（防不可重入死锁）：update_progress 内部要拿 _progress_lock，
+    本函数若在锁内直接调它必然自死锁——所以先锁内取内存快照做守卫判断，
+    锁外再调 update_progress(stall_grace_s=..., **fields)。
+
+    守卫两条：
+    - 内存快照无运行中任务不写：无任务时写宽限纯属噪音进度记录；
+    - pid 不是本进程不写：进度文件可能是强杀残留（running=True 冻结），
+      本进程绝不能"接手复活"它——否则 server._index_running 会把死任务当
+      活任务，新索引被多挡一整个宽限期。守卫只读内存（_progress 从不从
+      文件水合），残留文件天然不满足条件。
+    """
+    with _progress_lock:
+        snap = dict(_progress)  # 段1：锁内仅取快照
+    if not snap.get("running"):
+        return
+    if snap.get("pid") != os.getpid():
+        return
+    # 段2：锁外调用（结构断言由 audit 用例钉死：调用点不得在 with 块内）
+    update_progress(stall_grace_s=seconds, **fields)
+
+
+def _stall_grace_left(p, now=None):
+    """判定侧唯一入口（index 侧）：宽限是否有效 → 剩余秒数；无效返回 None。
+
+    有效当且仅当：任务 running、字段为数值、now < 截止时间戳。非法值
+    （字符串/None/负数残留）一律视为无宽限（fail-closed）。
+    ⚠ gui/store.py 心跳判定里有一份逐字镜像的同一表达式——双看门狗口径
+    必须同步修改，否则一边显示「宽限内」另一边报停滞（镜像样本用例压住）。
+    """
+    if not p.get("running"):
+        return None
+    until = p.get("stall_grace_until")
+    now = now if now is not None else time.time()
+    if isinstance(until, (int, float)) and not isinstance(until, bool) and now < until:
+        return until - now
+    return None
 
 
 def _cuda_probe():
@@ -509,14 +628,24 @@ def _load_model(device):
 def _try_switch_back_cuda():
     """CPU 模型中且探测到显存恢复：释放 CPU 模型 → 加载 CUDA；失败回滚并冷却。"""
     global _model, _device
+    # 埋点②（问题 32）：CUDA 切回是完整的一段模型冷加载（fp16→fp32 回退时是
+    # 两次串行加载），期间进度完全安静。宽限必须在进入加载前就位，且要盖住
+    # 最坏路径——加载失败回滚 CPU 再恢复的全程都在这段宽限内，故放函数入口、
+    # 先于 old=_model 与任何 _load_model 调用，而非加载语句旁边。失败回滚后
+    # 由埋点③（fallback_to_cpu 收尾）另起一段新宽限接续。
+    _stall_grace(STALL_GRACE_MODEL_LOAD,
+                 message="显存恢复，尝试自动切回 CUDA...")
     old = _model
     try:
         _model = None  # 先释放 CPU 模型，避免新旧模型双份内存峰值
         new, _ = _load_model("cuda")
         _model, _device = new, "cuda"
-        del old
         log("显存已恢复，自动切回 CUDA")
         _report_device("cuda", note="auto-switched-back")
+        old = None  # 引用释放收尾（B1）：不用 del——except 回滚分支要靠 old
+                    # 恢复 _model，收尾代码自己抛异常（log 管道断裂/
+                    # _report_device 失败）绝不能让回滚名字解绑定
+                    # （同红线1）。置于全部可抛操作之后，此后无失败路径。
     except Exception as e:
         _model, _device = old, "cpu"  # 回滚，继续用 CPU
         _cooldown_cuda(str(e))
@@ -537,6 +666,10 @@ def get_model():
     if _cuda_ready():
         try:
             log("加载 embedding 模型（device=cuda）...")
+            # 埋点①cuda（问题 32）：冷加载全程在宽限内。必须在缓存未命中的
+            # 实际加载分支里、_load_model 调用之前写——放函数入口会随每次
+            # get_model 调用（每批一次）反复刷新宽限，等于把停滞看门狗永久静音。
+            _stall_grace(STALL_GRACE_MODEL_LOAD)
             _model, _device = _load_model("cuda")
             _report_device("cuda")
             return _model
@@ -549,6 +682,8 @@ def get_model():
             except Exception:
                 pass
     log("加载 embedding 模型（device=cpu）...")
+    # 埋点①cpu（问题 32）：同 cuda 分支——只在真实加载前写一次，禁止入口化。
+    _stall_grace(STALL_GRACE_MODEL_LOAD)
     _model, _device = _load_model("cpu")
     _report_device("cpu", note="cuda-init-failed")
     return _model
@@ -676,6 +811,13 @@ def fallback_to_cpu(reason=""):
         log(f"卸载 CUDA 模型失败（忽略）：{e}")
     _device = None
     log("已切换到 CPU 模式")
+    # 埋点③（问题 32，降级收尾标记）：随后的批次重试会经 get_model 缓存未命中
+    # 分支重新加载模型（埋点①cpu 以 max 合并续写宽限），但重载由调用方静默
+    # 发生（见 _encode），若调用方是检索路径或索引已收尾则没有后续埋点——这里
+    # 收尾补写一段，盖住「卸载 + 冷加载」整段安静。显式用 STALL_GRACE_MODEL_LOAD：
+    # 降级后的首次重载与冷启动同量级。
+    _stall_grace(STALL_GRACE_MODEL_LOAD,
+                 message="CUDA 不可用，已切换 CPU 模式（正在重新加载模型）")
 
 
 def split_by_headings(text):
@@ -887,6 +1029,25 @@ def clean_wikilinks(text):
     return re.sub(r"!?\[\[([^\]]*)\]\]", _repl, text)
 
 
+def extract_wikilink_targets(text):
+    """抽取正文中出现的 wiki 链接目标笔记名（去重、排序），供双链关系图使用。
+
+    与 clean_wikilinks 共用同一条 [[...]] 语法规则，但取「目标」而非「显示文字」：
+    [[目标|别名]] 取目标，[[目标#标题]] 去锚点取目标，![[嵌入]] 视为附件不计入关系，
+    [[#本文件标题]]（无目标头）不计入。不参与嵌入/BM25，纯粹是关系数据的旁路产出。
+    """
+    targets = set()
+    for m in re.finditer(r"!?\[\[([^\]]*)\]\]", text):
+        if m.group(0).startswith("!"):
+            continue
+        inner = m.group(1).replace(r"\|", "|")
+        target = inner.split("|", 1)[0].strip()
+        head = target.partition("#")[0].strip()
+        if head:
+            targets.add(head.rsplit("/", 1)[-1].strip())
+    return sorted(targets)
+
+
 def load_meta(path=INDEX_META):
     if Path(path).exists():
         return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -905,6 +1066,50 @@ def save_meta(meta, path=INDEX_META):
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, p)
+
+
+def resolve_note_relations(meta_file, target):
+    """双链关系查询：给定笔记标识（库内相对路径，或不含扩展名的标题），
+    返回其出链（本文链接到谁）与入链（谁链接到本文）。
+
+    完全基于当前 meta 现算，不持久化 inlinks（入链是全局反向索引，任何一个
+    文件的出链变化都会影响别的文件的入链，与其维护一份容易过期的反向缓存，
+    不如每次现查——库规模是个人笔记量级，现算成本可忽略）。
+    标题重名时按 meta 字典迭代顺序任取其一命中，与 Obsidian 本身对同名笔记
+    的处理一样存在这种歧义，不追求消歧。
+    """
+    meta = load_meta(meta_file)
+    real = {k: v for k, v in meta.items() if isinstance(v, dict)}
+    by_stem = {}
+    for rel in real:
+        by_stem[Path(rel).stem] = rel  # 重名时后出现的覆盖前面的（顺序即 meta 顺序）
+
+    def _resolve(name):
+        if name in real:
+            return name
+        return by_stem.get(Path(name).stem)
+
+    rel = _resolve(target)
+    if rel is None:
+        return {"resolved": False, "file": None, "outlinks": [], "inlinks": []}
+
+    outlinks = set()
+    for name in real[rel].get("links", []):
+        r = _resolve(name)
+        if r and r != rel:
+            outlinks.add(r)
+
+    inlinks = set()
+    for other, info in real.items():
+        if other == rel:
+            continue
+        for name in info.get("links", []):
+            if _resolve(name) == rel:
+                inlinks.add(other)
+                break
+
+    return {"resolved": True, "file": rel,
+            "outlinks": sorted(outlinks), "inlinks": sorted(inlinks)}
 
 
 def collect_md_files(vault, exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_FILES,
@@ -1012,13 +1217,14 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
         entry = meta.get(rel)
         # 快速路径：size+mtime 未变即稳——对 xfail/tbd 终态条目同等适用，
         # 终态持久化在 meta 里，O(1) 跳过，绝不读全文、绝不跑转换。
-        if entry and entry.get("size") == st.st_size and entry.get("mtime") == st.st_mtime_ns:
+        if (entry and entry.get("size") == st.st_size and entry.get("mtime") == st.st_mtime_ns
+                and not _links_missing(entry)):
             seen.add(rel)
             continue
         text, bhash = _load_text(fpath)
         if bhash == _UNREADABLE:
             # 终态一致即稳定（罕见：mtime 变了但仍读不了）；否则计一次待重试
-            if entry and entry.get("xfail") and entry.get("reason") == "unreadable":
+            if _entry_converged(entry, REASON_UNREADABLE):
                 seen.add(rel)
                 continue
             changed += 1
@@ -1027,19 +1233,19 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
         if suffix in TEXT_EXTS and text is None:
             # 空文件落 empty 终态。历史上空正文 md 不落 meta，导致每轮重计
             # added → 每轮判 stale（「明确不做」备案的既有隐患，随终态机制一并收敛）
-            if entry and entry.get("xfail") and entry.get("reason") == "empty":
+            if _entry_converged(entry, REASON_EMPTY):
                 seen.add(rel)
                 continue
             changed += 1
             continue
         if suffix in TEXT_EXTS and is_tbd_heavy(text or "", tbd_ratio):
-            if entry and entry.get("xfail") and entry.get("reason") == "tbd":
+            if _entry_converged(entry, REASON_TBD):
                 seen.add(rel)
                 continue
             changed += 1
             continue
         # 二进制源走到这里只做字节哈希比对（绝不提取）；文本源同旧语义。
-        if entry and entry.get("hash") == bhash:
+        if entry and entry.get("hash") == bhash and not _links_missing(entry):
             seen.add(rel)
             continue
         if entry:
@@ -1287,7 +1493,8 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
             # 例外：OCR 能力签名变化（启用后端/补 Key）→ 穿透快速路径重试转正。
             if (incremental and old and old.get("size") == st.st_size
                     and old.get("mtime") == st.st_mtime_ns
-                    and not _backend_changed(old, xsig)):
+                    and not _backend_changed(old, xsig)
+                    and not _links_missing(old)):
                 unchanged += 1
                 update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
                 continue
@@ -1295,7 +1502,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
 
             # ---- 统一终态出口（封堵死循环入口）：None 判定严格先于 is_tbd_heavy ----
             if bhash == _UNREADABLE:
-                meta[rel] = _terminal_entry(st, bhash, "unreadable")
+                meta[rel] = _terminal_entry(st, bhash, REASON_UNREADABLE)
                 log(f"{tag}文件不可读（锁定/权限？），记入 unreadable 终态待重试：{rel}")
                 changed += 1
                 update_progress(files_done=unchanged + changed, message=f"跳过不可读 {rel}")
@@ -1305,12 +1512,13 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
             if is_text and text is None:
                 # 空文件（含仅 frontmatter 的 md）落 empty 终态。历史上空正文不落
                 # meta，导致每轮重计 added → 每轮误判 stale（备案隐患，就此收敛）
-                meta[rel] = _terminal_entry(st, bhash, "empty")
+                meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
                 log(f"{tag}空文件（无正文），记入 empty 终态：{rel}")
                 changed += 1
                 update_progress(files_done=unchanged + changed, message=f"跳过空文件 {rel}")
                 continue
-            if incremental and old and not _skipped(old) and old.get("hash") == bhash:
+            if (incremental and old and not _skipped(old) and old.get("hash") == bhash
+                    and not _links_missing(old)):
                 unchanged += 1
                 update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
                 continue
@@ -1319,13 +1527,14 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
             if is_text:
                 if is_tbd_heavy(text or "", tbd_ratio):
                     # 占位重文件落 tbd 终态；其旧块由 chunks=0 驱动清理阶段删除
-                    meta[rel] = _terminal_entry(st, bhash, "tbd")
+                    meta[rel] = _terminal_entry(st, bhash, REASON_TBD)
                     log(f"{tag}跳过占位重文件（TBD 占比 ≥ {tbd_ratio:.0%}）：{rel}")
                     changed += 1
                     update_progress(files_done=unchanged + changed,
                                     message=f"跳过占位重文件 {rel}")
                     continue
                 front, body = extract_frontmatter(text or "")
+                links = extract_wikilink_targets(body)
                 body = clean_wikilinks(body)
             else:
                 # 二进制源：转 Markdown 后走同一条切块管线。converting 相位在
@@ -1333,17 +1542,23 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 update_progress(phase="converting", message=f"转换 {rel}...")
                 converted += 1
                 body, reason = extract_to_markdown(fpath)
+                # G7 单点还原（问题 32）：converting 置位后有提取失败 / 空 body
+                # 防御 / 成功切块三个出口，在此一处还原 scanning 即全覆盖——
+                # 转换豁免窗口严格闭合于 extract_to_markdown 的真实耗时，绝不
+                # 泄漏进后续相位（600s 级 MinerU 云端 OCR 也完全在这段窗口内）。
+                update_progress(phase="scanning", message=f"已转换 {rel}")
                 if body is None:
-                    meta[rel] = _terminal_entry(st, bhash, reason or "extract-failed",
+                    meta[rel] = _terminal_entry(st, bhash, reason or REASON_EXTRACT_FAILED,
                                                 xsrc=xsig)
                     log(f"{tag}提取失败（{reason or 'extract-failed'}），记入终态待重试：{rel}")
                     changed += 1
                     update_progress(files_done=unchanged + changed, message=f"提取失败 {rel}")
                     continue
+                links = extract_wikilink_targets(body)
                 body = clean_wikilinks(body)
             # 防御分支：正常不应到达（文本空已归一为终态、提取器保证非空产出）
             if not body.strip():
-                meta[rel] = _terminal_entry(st, bhash, "empty")
+                meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
                 changed += 1
                 update_progress(files_done=unchanged + changed, message=f"跳过空内容 {rel}")
                 continue
@@ -1447,7 +1662,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                     "ctx": ctx,
                 })
             meta[rel] = {"hash": bhash, "chunks": len(chunks), "size": st.st_size,
-                         "mtime": st.st_mtime_ns, "tbd": False}
+                         "mtime": st.st_mtime_ns, "tbd": False, "links": links}
             changed += 1
             update_progress(files_done=unchanged + changed, message=f"切块 {rel}")
 
@@ -1475,8 +1690,17 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
             _release_cuda_cache()
 
         # 写锁包住全部写操作（delete/upsert/清理/save_meta）
+        # 埋点④（问题 32）：等锁排队最长可达 lock_timeout_seconds（默认 60s，
+        # 远超 STALL_TIMEOUT），且无变更路径会直达这里——先置 waiting-lock 相位
+        # 并写宽限再开始排队；拿到锁后置 writing 相位并续一段宽限（upsert/清理/
+        # save_meta 本身也可能超过 STALL_TIMEOUT）。waiting-lock 是新增 phase 值，
+        # 全部消费方已核对安全降级（widgets stepper idx=-1 兜底、PHASE_COLOR.get
+        # 默认值、progress_ratio 走 else 分支、server 不消费 phase）。
+        update_progress(phase="waiting-lock", message="等待写锁...",
+                        stall_grace_s=STALL_GRACE_WRITE)
         with write_lock():
-            update_progress(phase="writing", message="写库与清理...")
+            update_progress(phase="writing", message="写库与清理...",
+                            stall_grace_s=STALL_GRACE_WRITE)
             if full:
                 log(f"{tag}全量重建：清空旧库后写入...")
                 client.delete_collection(collection_name)

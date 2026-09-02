@@ -75,6 +75,71 @@ def test_groups_cover_all_defaults():
     assert not missing, "设置页遗漏配置项: %s" % missing
 
 
+def test_groups_structure_valid():
+    """GROUPS 升级为 dict 后的结构契约（2026-08-26 问题31）：
+    必备键齐全、level 只取两值、常用组排在开发者组之前、键不跨组重复。
+    """
+    seen = set()
+    levels = []
+    for g in ce.GROUPS:
+        for required in ("title", "level", "icon", "desc", "fields"):
+            assert required in g, "分组缺字段 %s: %r" % (required, g.get("title"))
+        assert g["level"] in ("basic", "advanced"), \
+            "level 非法: %r" % g["level"]
+        levels.append(g["level"])
+        for key, kind in g["fields"]:
+            assert key not in seen, "配置项重复分组: %s" % key
+            assert kind in ("str", "int", "float", "bool", "list"), \
+                "kind 非法: %s %s" % (key, kind)
+            seen.add(key)
+    assert levels.index("advanced") == len(levels) - sum(
+        1 for x in levels if x == "advanced"), \
+        "常用组必须整体排在开发者组之前: %r" % levels
+    assert "basic" in levels and "advanced" in levels, "两级分组缺一"
+
+
+def test_field_meta_complete():
+    """每个暴露的配置项都要有中文标签与说明；FIELD_META 不得含幽灵键。
+
+    这是"用户咋知道有什么模型和如何选"问题的兜底：新键漏写 meta 时
+    GUI 回退显示裸 key 且无提示——静态断言让它在测试期就红。
+    """
+    for key in ce.ALL_KEYS:
+        meta = ce.FIELD_META.get(key)
+        assert meta is not None, "FIELD_META 缺少键: %s" % key
+        assert isinstance(meta.get("label"), str) and meta["label"], \
+            "%s 缺中文标签" % key
+        assert isinstance(meta.get("hint"), str) and meta["hint"], \
+            "%s 缺一句话说明" % key
+    ghost = set(ce.FIELD_META) - set(ce.ALL_KEYS)
+    assert not ghost, "FIELD_META 含设置页没有的键: %s" % ghost
+
+
+def test_choice_fields_match_defaults():
+    """枚举字段的选项集必须包含出厂默认值；云端选项必须存在且拼写正确。
+
+    下拉渲染的是 choices 的 key——若 DEFAULTS 值不在其中，GUI 打开时
+    会回退成"当前配置值"假选项甚至取首个选项，保存即静默改写配置。
+    """
+    scan = dict(ce.FIELD_META["pdf_scan_backend"]["choices"])
+    text = dict(ce.FIELD_META["pdf_text_backend"]["choices"])
+    from config import DEFAULTS
+    assert DEFAULTS["pdf_scan_backend"] in scan, "scan 默认值不在选项集"
+    assert DEFAULTS["pdf_text_backend"] in text, "text 默认值不在选项集"
+    assert scan.get("mineru-cloud"), "扫描件云端 OCR 选项缺失"
+    assert text.get("mineru-cloud"), "文字层云端选项缺失"
+
+
+def test_structural_keys_marked_rebuild():
+    """结构类配置必须标 rebuild=True（GUI 据此打 ⟳ 提醒需全量重建）。"""
+    for key in ("vault", "model_name", "collection_name",
+                "chunk_char_limit", "short_doc_char_limit",
+                "exclude_dirs", "exclude_files", "exclude_patterns",
+                "tbd_exclude_ratio"):
+        assert ce.FIELD_META[key].get("rebuild") is True, \
+            "%s 应标记 rebuild=True" % key
+
+
 def test_kind_of():
     assert ce.kind_of("default_top_k") == "int"
     assert ce.kind_of("vault") == "str"

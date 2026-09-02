@@ -1125,3 +1125,135 @@ R1 提交（177ede6）后的 GUI 层配套，全部为展示/判定口径对齐�
 5. 渲染净化：新增 sanitize_render_md——<b>/<i> 转 **/*，<u>/<span> 等裸 HTML 剥除（flet Markdown 不渲染裸 HTML 会原样显示）；源码页保持原样以源码为准；
 6. 复用实例打开时重置为干净待命态（防上次中途关闭遗留禁用按钮）。
 测试：test_extractors **25 用例全过**（+sanitize 净化、+backend 单次覆盖不污染全局）；gui_store 0 failures；audit 19/19。
+
+## 问题 28：双链关系图——出链/入链查询（不影响检索排序）（2026-08-25）
+
+用户想要类似 Obsidian 反向链接面板的能力：给定一篇笔记，查它链接到谁（出链）、谁链接到它（入链）。问题15（2026-08-10）已经把 `clean_wikilinks()` 定成"清洗 `[[wiki链接]]` 为纯阅读文字后再切块/嵌入"——链接目标词绝不能重新混进嵌入文本，那正是问题15要修的污染（例如"蛋糕的制作方法.md"提了一句 `[[如何制作奶油]]`，链接目标词留在嵌入文本里会导致搜"制作奶油"命中错的那篇）。这条清洗行为本轮完全不动。设计上把关系数据做成与检索完全旁路的第二条管道：两条管道共享同一段原始正文，一条不变（清洗→切块→嵌入排序），另一条纯粹旁路（抽取链接目标→存进 meta→按需反查），后者不进嵌入、不进 BM25、不影响任何排序。本轮只做后端 + MCP 工具，GUI 展示留待下一轮。
+
+### 实现
+- **index.py**：新增 `extract_wikilink_targets(text)`，与 `clean_wikilinks` 共用同一条 `[[...]]` 正则与解析规则，但取"目标"而非"显示文字"（`[[目标|别名]]` 取目标、`[[目标#标题]]` 去锚点取目标、`![[嵌入]]` 与 `[[#本文锚点]]` 不计入）。`_index_core` 的文本与二进制两条正文分支里，都在 `clean_wikilinks(body)` 清洗**之前**先算出 links，清洗动作本身一字未改；meta 成功条目新增 `links` 字段（去重排序后的目标名列表）。
+- **回填机制**：新增 `_links_missing(entry)`——非终态条目缺 `links` 键即判定需要重跑，与既有的 `_backend_changed` 同属"惰性触发重试"：不强制 `--full`，下一轮增量索引里该文件自然穿透快速路径重新处理一次（因为快速路径不区分"只是缺个字段"与"内容变了"，穿透后走的是完整的重新分块+重新嵌入），之后即收敛。终态（xfail/tbd）条目天然没有 `links`、也不该有——`_skipped` 已排除它们，不会被这个机制误拉回正常处理分支。`_index_core` 两处快速路径（size+mtime 分支、hash 分支）与 `kb_stale` 对应两处同步加了 `not _links_missing(...)` 判断（AGENTS.md 架构红线 6 的教训：Agent 门禁那次两侧必须同步改，否则一侧收敛一侧不收敛，永远误报/漏报 stale）。
+- **`resolve_note_relations(meta_file, target)`**：出链/入链查询，完全基于当前 meta 现算、不持久化 inlinks（入链是全局反向索引，维护缓存比现查更容易过期；库是个人笔记量级，现算成本可忽略）。target 支持库内相对路径或不含扩展名的标题（按文件 stem 匹配，同 Obsidian wikilink 引用写法）；标题重名时任取其一，不追求消歧（与 Obsidian 本身行为一致）；断链（目标文件不存在）静默不出现在出链里；自链不计入自己的出链/入链。
+- **server.py**：新增 MCP 工具 `note_relations(path, library="")`，库选择语义对齐 `search_knowledge`（空 = 默认库，经 `resolve_entries` 解析；只能定位单库，不支持 "all"，因为一篇笔记只属于一个库；默认库解析出多个时报错提示显式指定 library）。
+- 零新增配置键（无需开关，没有链接的库自然空转）；`META_VERSION`（仍 9）与 `extractors.EXTRACT_VERSION` 均未动——这次改动不影响切块/嵌入的文本内容，不在这两个版本号的语义范围内。
+
+### 测试
+- **audit_regression_test.py** 新增 `test_extract_wikilink_targets`（裸链接取目标、带别名取目标而非别名——与 `clean_wikilinks` 方向相反、路径+锚点剥离、嵌入不计入、纯锚点不计入、去重、表格转义管道），**21/21 通过**（+1）。
+- **test_extractors.py** 新增 6 例（`_IsoEnv` 隔离 + 假编码器，不加载真模型/真 Chroma）：链接抽取基本用例；回填机制端到端（手工删 meta 条目的 `links` 键模拟"功能上线前的旧索引"→下轮自动补齐且其余字段不变、编码调用次数证明确实被重新处理而非跳过）；`kb_stale` 同步生效（缺 `links` 判 stale/changed，验证两侧机制真的同步而非只改了一边）；终态条目缺 `links` 不被强制重跑；`resolve_note_relations` 端到端（含自链排除、断链静默丢弃、查询不存在标题返回 `resolved=False`）；同名标题歧义不崩溃。**38/38 通过**（+6）。
+- 七件套回归全绿：audit_regression **21/21**、test_extractors **38/38**、library_registry **15/15**、server_singleton **5/5**、test_config_editor 0 failures、test_gui_store 0 failures、verify_export_import **39/39**（真库导出/导入/检索演练，含一次真实 hybrid_search）。
+
+### 遗留
+- ~~GUI 展示（关联笔记入口，"这篇笔记的出链/入链"面板）留待下一轮~~ 已在问题29完成。
+- 真实 vault 的现有 meta 条目普遍缺 `links` 字段：下一次任何增量索引运行（含 `search_knowledge` 触发的自动同步）会对当前已索引的每个非终态文件穿透一次快速路径、重新分块+重新嵌入以补齐该字段，效果上类似一次全库重跑，但只发生一次，之后恢复正常增量跳过。这是 `_links_missing` 机制的预期行为（用于在不动 `META_VERSION` 的前提下补齐存量数据），非 bug，但用户下次触发索引时应预期到这次性能开销。本轮跑七件套回归时（2026-08-25）该次性重建已实际触发（Chroma 2674 块 vs meta 1898 块 → 自动全量重建），验证了这条预期成立，且与本轮 GUI 改动无关。
+
+---
+
+## 问题 29：双链关系图——GUI 展示（关联笔记内联展开）（2026-08-25）
+
+问题28完成了双链关系查询的后端与 MCP 工具，GUI 展示留到了这一轮。本轮把这条能力接进语义检索卡：检索到一条结果后，除了展开正文，还能再点一下同一行新增的"关联笔记"按钮，内联看到这篇笔记的出链（它链接到谁）与入链（谁链接到它），不用切到 Obsidian 里翻反向链接面板。纯展示层接线，`resolve_note_relations` 原样复用、一字未改。
+
+### 实现
+- **gui/store.py**：新增 `note_relations_for(cfg, target)`，模式照抄既有的 `meta_issues_for`——只读该库 meta 指纹文件，不加载模型、不碰 Chroma；任何异常（含 meta 缺失/损坏）一律折叠为安全默认值 `{"resolved": False, "file": None, "outlinks": [], "inlinks": []}`，不外泄异常。内部调用 `index.resolve_note_relations(meta_path(cfg["name"]), target)`。
+- **gui/widgets.py**（`SearchCard`）：`__init__` 新增可选回调 `on_relations=None`。`show_results()` 的 `_render_state` 新增 `relations_shown`（当前展开"关联笔记"区的结果下标集合）与 `relations_cache`（下标→查询结果，避免同一条结果反复展开时重复调用回调）。每条结果标题行在"在 Obsidian 中打开"按钮旁新增一个图标按钮（`ft.Icons.HUB`，实测在项目当前 flet 0.86.5 环境下存在，无需换用候补图标），tooltip"查看关联笔记（双链）"，点击走独立的 `_toggle_relations(i, rel)`——与控制正文展开的 `_toggle`/`expanded` 完全独立的另一个开关，互不干扰：只看正文、只看关系、两者都看、两者都不看，四种组合都成立。展开态下追加渲染"出链（本文链接到）：…\n入链（谁链接到本文）：…"；`resolved=False`（笔记已改名/移动，meta 里查无）时给出"未找到该笔记的索引记录，可能已重命名或移动"的兜底提示，不留空白也不报错。未接 `on_relations`（默认 None）时按钮不挂点击事件（与 `open_btn` 无 `on_open` 时的处理方式一致）。
+- **gui/app.py**：`SearchCard` 构造新增 `on_relations=self._note_relations`；新增 `App._note_relations(rel)`，复用 `_open_result` 已在用的 `_split_lib_rel`/`_lib_by_name` 把结果行的 `<库名>/<相对路径>` 前缀解析回库配置，再调 `note_relations_for`；库名未知（旧格式结果行、或库已被移除）时直接返回 `resolved=False`，不抛异常。
+- 零新增配置键；未改动 `index.py`/`server.py`/`extractors.py`——后端与 MCP 工具在问题28已验证正确，本轮纯粹是给已有能力接一个 GUI 入口。
+
+### 测试
+- **test_gui_store.py** 新增 `test_note_relations_for`：照抄 `test_meta_issues_for_counts_xfail_by_reason` 的打桩模式（`patch.object(gstore, "meta_path", ...)` 指向临时 meta.json），验证出链/入链解析正确（含按文件 stem 匹配不含扩展名的标题查询）；meta 指纹文件不存在时返回 `resolved=False` 而不抛异常。
+- 新增 3 例：本项目第一次直接单测 `SearchCard`，不搭真实 flet Page/窗口——`_render_results()` 本身不碰 page，测试绕开真实点击事件派发，直接调用 `_toggle_relations(i, rel)`：①首次展开触发一次查询、收起不重查、再展开命中缓存不重复查询，且验证关系展开不影响正文展开的 `expanded` 集合（两个开关互相独立）；②`resolved=False` 时结果卡片渲染兜底文案；③未接 `on_relations` 时直接调用 `_toggle_relations` 也不抛异常、不产生缓存条目。
+- 七件套回归全绿：audit_regression **21/21**、library_registry **15/15**、server_singleton **5/5**、test_config_editor 0 failures、**test_gui_store 0 failures（43 例，+4）**、test_extractors **38/38**、verify_export_import **39/39**（真库导出/导入/检索演练）。
+
+至此双链关系图功能全部完成（后端 + MCP 问题28、GUI 问题29）。
+
+## 问题 30：MinerU 云端 API 路径 bug 修复 + 文字层 PDF 可选送 MinerU（`pdf_text_backend`）（2026-08-26）
+
+用户今天配好真实 `mineru_api_key` 后做的首次真实冒烟测试意外发现一个既有 bug：`_mineru_cloud_extract` 里硬编码的两处接口路径是错的——提交用的 `{_MINERU_BASE}/file-protocol/batch`、轮询用的 `{_MINERU_BASE}/file-protocol/batch/{batch_id}`，实测均返回 HTTP 404（纯文本 `404 page not found`，路由层面不存在，不是鉴权/参数错误）。查官方文档（https://mineru.net/apiManage/docs）并实测校正，正确路径是提交 `POST {_MINERU_BASE}/file-urls/batch`、轮询 `GET {_MINERU_BASE}/extract-results/batch/{batch_id}`（请求/响应体字段名本身没错，只是 URL 路径错）。**后果：`pdf_scan_backend=mineru-cloud` 这个功能自问题26（R3a）上线以来，任何真实调用都会 404**，被异常折叠机制悄悄吞成 `extract-failed`/`scanned` 终态，表现为"静默跳过"而非崩溃或报错——不会引发用户警觉，但从未真正 OCR 成功过一次。既有 `test_extractors.py` 的 mock HTTP 用例全部显示通过，是因为 mock 只验证"代码怎么调用 requests"，从不检查 URL 字符串是否是服务器上真实存在的路径，这类 bug 结构性地不在其覆盖范围内。
+
+顺带落地了 2026-08-25/26 讨论、记录在 TODO.md Backlog 里的一个架构问题：`pdf_scan_backend` 此前只在"扫描件"分支生效（本地对扫描件零处理能力，该开关实质是"要不要为唯一能用的路径 MinerU 付费"）；有文字层的正常 PDF 分支完全写死走本地 `pymupdf4llm`，没有任何开关——而这条分支恰恰存在真实的质量/成本权衡（MinerU 结构识别更准，用户可能想为质量付费）。本次新增独立开关 `pdf_text_backend`（local/mineru-cloud），语义与 `pdf_scan_backend` 不同、不复用同一个键；送云端时 `is_ocr=False`，不为已有文字重复付 OCR 的钱。
+
+### 实现
+- **extractors.py**：
+  - `_mineru_cloud_extract(path, is_ocr)` 签名新增必填参数 `is_ocr`（不设默认值，两个调用点都必须显式传），修正两处 URL，docstring 同步更正契约描述并记录本次修复。
+  - 新增 `get_text_backend()` / `TEXT_BACKENDS = ("local", "mineru-cloud")`，写法照抄 `get_scan_backend()` 的防御风格（非法值回退 local）。
+  - `_extract_pdf` 重构：删掉函数顶部"提前 resolve backend"那行（旧代码在还不知道文件是否扫描件之前就把 `backend` 无条件解释成扫描件语义，会污染文字层分支）；改为两个分支各自独立 resolve 自己的配置键——扫描件分支 `scan_backend = backend or get_scan_backend()`（语义不变），文字层分支新增 `text_backend = backend or get_text_backend()`，`== "mineru-cloud"` 才送云端（`is_ocr=False`，路由标"mineru-text"），其余任何值（含扫描件分支专用的 "none"/"mineru-local"）一律安全落到本地直提，不报错不崩溃。
+  - `_extract_full` 的缓存路由候选列表新增独立标签 `"mineru-text"`（不复用 `"ocr:mineru-cloud"`），换后端旧缓存天然失效。**在此基础上发现并修正一个必要的额外问题**：字面按方案给的 `routes` 4 元素恒定列表（`["ocr:mineru-cloud","ocr:mineru-local","mineru-text","local"]` 无条件全查）会让 `_cache_get` 的"任一路由命中即真"逻辑失效——该逻辑的正确性建立在"同一文件字节只会由一条路由成功产出"这个假设上，扫描件相关的两个 `ocr:*` 路由仍满足这个假设（文件是否扫描件由内容确定性判定，与配置无关），但 `local`/`mineru-text` 不再满足：同一份文字层 PDF 在不同 `pdf_text_backend` 下会产生两个都合法但内容不同的成功结果。若不修，切换 `pdf_text_backend` 后如果另一路由恰好已有历史缓存，会被假命中，切换永远不生效——这正好是任务给出的测试要求 4 明确要锁死的行为，字面实现和这条测试要求相互矛盾。修法：`_extract_full` 现在按当前 `backend` 覆盖/全局 `pdf_text_backend` 只计算并加入**唯一**一个文字层路由标签（`mineru-text` 或 `local`，二选一），扫描件的两个 `ocr:*` 路由不受影响、逻辑不变。
+  - `_mineru_cloud_extract` 的"未配 Key"分支按 `is_ocr` 拆分处理：`is_ocr=True`（扫描件）保持原样返回 `(None, "scanned")`；`is_ocr=False`（文字层）改返回 `(None, "extract-failed")`——沿用 "scanned" 会让 GUI 提示"发现扫描件 PDF...或改用文字层版本"，而触发这个分支的文件本来就是文字层，这条建议对用户是自相矛盾的误导。
+  - 模块顶部 docstring 补文字层 PDF 路由说明段。
+- **config.py**：DEFAULTS 新增 `"pdf_text_backend": "local"`；CONFIG_TEMPLATE 对应位置加注释块（紧跟 `pdf_scan_backend` 之后、`mineru_api_key` 之前，共用同一账号/Key/超时预算），第八节标题从"扫描件 OCR"改为"PDF 提取后端"（现在管两类场景）；`template_consistency_errors()` 校验通过。
+- **gui/config_editor.py**：GROUPS 里"扫描件 OCR"分组改名"PDF 提取后端"并加入 `pdf_text_backend` 字段。
+- **gui/widgets.py**（`ExtractLabDialog` 试验台 + `SettingsDialog` 设置页）：
+  - 试验台"跟随全局 / 本地直提 / MinerU 云端"下拉的值是 `"auto"/"none"/"mineru-cloud"`（穿透为 `backend=None/"none"/"mineru-cloud"`）。`_extract_pdf` 重构前，这个下拉对文字层文件是**完全的死选项**——`backend` 只在扫描件分支被读取，选"MinerU 云端 OCR"对着一份正常 PDF 点提取，界面不报错但也绝不会真的调云端，静默照常走本地直提。重构后自动生效，新增端到端测试 `test_extract_preview_backend_override_reaches_text_layer_branch` 验证。
+  - **顺带发现并修复一个上传前置确认的漏问缺口**：试验台的"云端上传需先弹确认框"逻辑（`_run` 里 `if self._effective_backend() == "mineru-cloud"`）原本只读 `get_scan_backend()`；dropdown=auto 时，若用户只把 `pdf_text_backend`（而非 `pdf_scan_backend`）设为 mineru-cloud，这个判断会漏判——文字层文件会在用户没看到任何确认框的情况下被真实上传到第三方。修：新增 `_effective_text_backend()` + `_will_call_cloud()`（两个后端任一为 mineru-cloud 即需确认，宁可多问不能漏问），`_run()` 改用后者。确认框文案同步改为不预设"一定是 OCR"（文字层送云端时实际是 `is_ocr=False` 的结构识别，不是 OCR）。
+  - 设置页 `SettingsDialog._save()` 存在同构的既有确认机制（`pdf_scan_backend` 切到 mineru-cloud 需先确认，因为库里存量扫描件会被批量外传），但只检查这一个键——新增的 `pdf_text_backend` 若不纳入同一机制，用户在设置页把它切到 mineru-cloud（今后每份文字层 PDF 都会被上传）会完全没有任何确认提示，与既有设计原则不一致。已将检查泛化为对两个键都生效（`_switches_to_cloud` 提取为独立方法，`_confirm_cloud_backend` 接收本次触发的键集合、按实际涉及的键列出对应文件类别）。
+  - 试验台底部动态提示（`_hint_text`，即 TASK_LOG 问题26 记录的"本地直提→扫描件将被跳过；云端→可能数十秒"那段）原文只讲扫描件场景，对文字层文件场景完全沉默（不是说错，是没提，但现在这个下拉对文字层文件也真正生效了，沉默会让用户读不到任何与自己文件相关的信息）。最小化调整：在原有文案后追加一句读 `get_text_backend()` 的独立分句，说明文字层 PDF 在当前后端下的实际处理方式，不改动原有那两句的措辞。
+- **is_ocr 参数改动波及的既有测试**：4 处 `ex._mineru_cloud_extract = lambda p: (...)` monkeypatch 补上 `**_kw` 容错（否则新的关键字参数 `is_ocr=` 会让这些桩函数抛 TypeError）；`_FakeRequests` 的 `get()` 轮询 URL 匹配、`post()` 请求体记录同步改为新路径/可断言的 json 载荷。
+
+### 测试
+- **URL 回归**：`test_mineru_cloud_extract_uses_correct_api_urls_both_is_ocr_values`（直接断言 mock 记录到的 POST/GET URL 字符串本身，覆盖 is_ocr=True/False 两个调用点，而非只看"提取成功"这种弱结论）；`test_mineru_cloud_happy_path_and_cache_route` 同步补强 URL 断言。
+- **pdf_text_backend 默认值零行为回归**：`test_pdf_text_backend_default_local_unchanged`（不设置/显式设为 local 时路由仍是 "local"，且用调用计数断言绝不触达 `_mineru_cloud_extract`）。
+- **pdf_text_backend=mineru-cloud 开启行为**：`test_pdf_text_backend_mineru_cloud_routes_with_is_ocr_false`（断言 is_ocr=False 参数值、路由 "mineru-text"、缓存命中/未命中）。
+- **缓存路由隔离**：`test_pdf_text_backend_cache_route_isolation`（同文件先 local 后切 mineru-cloud 不假命中旧缓存，两条缓存独立共存，切回 local 仍命中原缓存）——这条测试就是抓住上面那个"字面 routes 列表与测试要求矛盾"问题的用例。
+- **is_ocr 两个调用点**：直接调用层面 `test_mineru_cloud_extract_uses_correct_api_urls_both_is_ocr_values` 覆盖两者；路由层面扫描件走 `test_mineru_cloud_happy_path_and_cache_route`（True）、文字层走 `test_pdf_text_backend_mineru_cloud_routes_with_is_ocr_false`（False）分别覆盖。
+- **未配 Key 时文字层分支的 reason 值**：`test_mineru_no_key_text_branch_folds_to_extract_failed_not_scanned`。
+- **试验台端到端**：`test_extract_preview_backend_override_reaches_text_layer_branch`（文字层文件 + backend="mineru-cloud" 真调云端且 is_ocr=False，backend=None 时真走本地，两条路径内容互斥验证未被串用）；`test_extract_lab_auto_backend_confirms_when_only_text_backend_is_cloud` + 对照组 `test_extract_lab_auto_backend_no_confirm_when_both_local`（消费上面发现的漏问缺口修复）；`test_settings_text_backend_switch_requires_confirm`（设置页仅切 `pdf_text_backend` 同样需确认）。
+- 六件套 + 本轮涉及套件全绿：`test_extractors` **44/44**、`test_gui_store` **0 failures**（含全部新增用例）、`test_config_editor` **0 failures**、`audit_regression` **21/21**、`library_registry` **15/15**、`server_singleton` **5/5**、`config.template_consistency_errors()` 通过、`verify_export_import` **39/39**（真库导出/导入/检索演练）。
+
+### 遗留
+- 本项目实际生产库目前**没有**真正开着 `pdf_scan_backend=mineru-cloud` 跑过（已向用户确认），因此这次不存在需要手动挽救的存量数据。但如果以后出现类似情况——曾经开着某个 MinerU 相关后端真实跑过、产生了失败终态——这些条目会卡在旧 `xsrc` 签名下不会被 `current_backend_sig()` 的自动重试机制捡回来（签名字符串本身没变，变的只是代码内部行为/URL），需要用户手动 `--full` 才会重新受益于本次修复。
+- 已用本地直提成功索引过的文字层 PDF，用户开启 `pdf_text_backend=mineru-cloud` 后**不会自动重新处理**（这类文件不是终态失败条目，不在 `current_backend_sig`/自动重试机制的适用范围内），需要用户 `--full` 重建才会用新后端重新提取——与 `chunk_char_limit` 等配置类改动的一贯做法一致，本次未新增"检测到配置变化就自动重建"的机制。
+- 线B（图片语义描述）、线C（MinerU 结果 LLM 后处理去噪）本轮未动代码，讨论/决策/开放问题原样保留在 TODO.md，留待以后单独开轮。
+
+## 问题 31：GUI 设置页重构——分类导航 + 常用/开发者分层 + 枚举可视化选择（2026-08-26）
+
+用户反馈设置页三个可用性问题：①44 个字段平铺在一个长列表里滚动，"文本混在一起难以定位"；②常用设置和开发者参数没有区分，锁轮询间隔这类几乎永不动的东西和知识库路径并列；③封闭枚举/布尔/模型名全靠手输文本——用户面对 `pdf_scan_backend` 不知道合法值是 `mineru-cloud` 这种魔法字符串，面对 `model_name` 不知道有什么模型可选、`true/false` 也要手打。纯 GUI 层重构，不触碰索引/检索管线，META_VERSION / EXTRACT_VERSION 均不变。
+
+### 实现
+- **gui/config_editor.py**：GROUPS 从"组名→字段列表"的二元组列表升级为带元数据的 dict 列表——每组含 `title`/`level`（basic=常用 / advanced=开发者，basic 组整体排在前面）/`icon`/`desc` 一句话说明；分组从 10 个按使用频率重组为 11 个（知识库、模型、PDF 与云端 OCR、检索输出为常用组；融合与排序调优、切块粒度、排除规则、HyDE、性能与硬件、锁与心跳、导出导入为开发者组）。新增 FIELD_META 每键元数据：中文 `label`（吸收原 widgets._cli_name 的映射并补齐此前裸奔的 hyde_*/pdf_*/rerank_* 等 16 键）、`hint` 一句话说明（CONFIG_TEMPLATE 注释的浓缩版）、`rebuild` 标记（结构类配置，GUI 据此打 ⟳ 提醒）、`choices` 封闭枚举（pdf_scan_backend: none/mineru-cloud；pdf_text_backend: local/mineru-cloud）、`suggest` 推荐候选芯片（model_name 四个嵌入模型、rerank_model 三个重排模型，开放值仍可手输不设限）、`secret`（mineru_api_key 渲染成密码框可反显）。写回层（load_raw/save_value/_replace_value/apply_updates/_value_to_json/kind_of/missing_keys/ALL_KEYS）全部原样保留，云端上传确认的数据契约不受影响。
+- **gui/widgets.py** `SettingsDialog` 重构为主从布局：左侧 196px 导航列分「常用」「开发者」两小节（含 rebuild 组的 ⟳ 角标），右侧单组详情面板（组图标+说明+该组字段），一次只看一组，彻底消灭长滚动。控件按元数据分流渲染：bool→Switch（不再手打 true/false）；有 choices→Dropdown（选项即合法值，不再猜字符串；若 config.json 被手改成枚举外的值会保真显示为"（当前配置值）"，保存不会静默改写）；有 suggest→输入框+推荐模型芯片（点击回填，仍可自由输入任意 HF 模型标识）；secret→密码框。每个字段的 hint 直接展示在控件下方（⟳ 开头的说明 = 改后需全量重建），标题栏常驻图例。对话框尺寸 680×540→800×560。删除已无引用的 `_cli_name`/`_kind_hint`。
+- **打开即刷新**：新增 `_refresh_values()`，每次 open() 从最新 CFG 回填全部控件值——修复既有缺陷（对话框对象随 App 常驻，外部手改 config.json 后再开设置页看到的还是构造时的旧值）。
+- 对外契约保持：`_fields[key]=(输入控件, kind)` 结构、`_save`→`_switches_to_cloud`→`_confirm_cloud_backend` 云端二次确认链路原样，tests/test_gui_store.py 三个设置页用例不改一字通过；smoke_gui 的 `_fields`/`_dlg` 断言同样兼容。
+
+### 后记（同日）：「知识库」组语义澄清
+用户指出多库架构下设置页却只见"一个库"，误导源头是重构时沿袭的组描述"数据源根目录"。事实：真正的库列表在 `data/libraries.json` 注册表（GUI 工具栏「📚 库管理」管理，每库可覆盖 extensions/exclude/collection），config.json 的 `vault`/`collection_name` 是单库时代遗留的全局默认——现仅剩三个作用：`_migrate_legacy()` 首库自动迁移源（迁移完成后改它对已注册库零影响）、GUI 打开非注册库结果时的兜底路径（app.py `VAULT_DIR`）、接收端 `OBSIDIAN_VAULT` 场景。已把组名改为「知识库（全局默认）」、desc 明确指向库管理、两键 label/hint 同步改写；不隐藏这两键是因为测试契约要求设置页覆盖全部 DEFAULTS 键（test_groups_cover_all_defaults），且旧单库路径（`index_vault(VAULT)`）仍是受支持用法。
+
+追加（用户追问模型与排除语义后）：①澄清推荐芯片≠本机已装清单——本机 RAG 管线实际只有 bge-m3 + bge-reranker-v2-m3 两个模型，芯片是 HuggingFace 推荐候选、点选后首次使用才下载，现芯片行上方有说明文案、当前在用的候选标「✓ 使用中」并高亮描边；②重排/HyDE 组 desc 与 hint 改为白话两步走解释（融合粗筛→cross-encoder 精排；HyDE=先让本地 LLM 写假设答案再检索）；③排除规则与切块粒度组 desc 及字段 hint 明确"全局默认值、可在库管理→库配置按库覆盖"，其中 tbd_exclude_ratio 标注仅全局生效（不在 library.OVERRIDE_KEYS 内）。
+
+### 测试
+- test_config_editor.py 新增 4 条静态契约（10 用例全绿）：`test_groups_structure_valid`（dict 结构必备键、level 只取两值、常用组整体在前、键不跨组重复）、`test_field_meta_complete`（每个暴露键必须有非空中文 label 与 hint，FIELD_META 无幽灵键——新键漏写 meta 在测试期就红）、`test_choice_fields_match_defaults`（枚举 choices 必须包含 DEFAULTS 默认值与 mineru-cloud 选项，防止下拉默认值错位导致保存静默改写）、`test_structural_keys_marked_rebuild`（9 个结构类配置必须标 rebuild=True）。
+- 六件套全绿：config_editor 0 failures、smoke_gui 全过（44 字段构建）、audit_regression **21/21**、test_gui_store **0 failures**（46 用例，含三个设置页云端确认用例零改动通过）、library_registry **15/15**、server_singleton **5/5**、test_extractors **44/44**、verify_export_import **39/39**。
+
+### 遗留
+- SettingsDialog.apply(colors) 仍只存色不重绘（主题切换后已打开的设置对话框沿用旧配色）——重构前即如此，本轮未扩大范围。
+- default_libraries 等列表类字段仍是逗号分隔文本输入（写回层 `_value_to_json` 已能拆分），后续可考虑做成勾选块，但库集合是动态注册的，需要先解决"对话框打开时拉取注册表"的依赖方向，本轮不做。
+
+## 问题 32：索引进度看板误报修复——停滞宽限机制 `stall_grace_until`（2026-08-26）
+
+council 两轮评审（`.council-state/round-plan-3/4/`）确认的四个「正常运行被误报心跳停滞」根因：**R1** update_progress 合并语义导致宽限/状态字段跨事件、跨任务残留；**R2** 宽限若用"后写者胜"合并会被更短的值反向缩短；**R3** converting 相位置位后有三个未还原出口（提取失败/空 body/切块），豁免窗口泄漏；**R4** write_lock 排队上限 60s 远超 STALL_TIMEOUT 25s，等锁必误报，且无变更路径直达时 phase 还停在 scanning。机制经方案门两轮评审定稿（maker-v2 + 复审六条强制/建议项）：给进度报告引入**自过期、默认自清**的宽限字段——写入方传相对秒数 `stall_grace_s`（永不落盘），落盘键为绝对截止时间戳 `stall_grace_until`；停滞看门狗在宽限内不判 stalled，心跳停止（DEAD）判定永远优先于一切豁免。
+
+### 实现
+- **index.py**：
+  - 新增硬编码常量（不进 config，防"永久静默开关"；注释含升级矩阵与阈值漂移声明：lock_timeout>180 或冷加载>300 时对应窗口回退现状误报，非恶化）：`STALL_GRACE_MAX_S=600 / STALL_GRACE_MODEL_LOAD=300 / STALL_GRACE_WRITE=180`。
+  - update_progress 改造：pop 掉 kwarg `stall_grace_s` → 默认移除既有 `stall_grace_until`（一次性豁免语义：任何普通进度事件终止宽限）→ 正数值才按 `max(旧值, now+min(grace_s, MAX))` 重写（防回退攻击）→ 非数值/≤0 不写（fail-closed）；docstring 注明语义。心跳 `_heartbeat_tick` 整表拷贝原样保留该字段（宽限在静默窗口内存活靠它）。progress_start 锁下独立 pop 显式清残留（与默认 pop 双保险；不持锁调 update_progress 防不可重入死锁）。
+  - 新增 `_stall_grace(seconds, **fields)` 两段式守卫助手（复刻 _report_device 先例）：锁内取内存快照判 running+pid==本进程，锁外才调更新——守卫挡住"无任务写噪音"与"接手强杀残留文件复活死任务"（后者会拖垮 server._index_running 放行逻辑）。判定侧新增 `_stall_grace_left(p, now)` 唯一入口（running + isinstance 数值 + now<截止，非法值视为无宽限）。
+  - 四个埋点：①get_model 缓存未命中实际加载分支内 cuda/cpu 两路各一处（显式 MODEL_LOAD 常量；禁止放函数入口——否则每批刷新等于永久静音看门狗）；②_try_switch_back_cuda 入口（盖住 fp16→fp32 双次串行加载与失败回滚恢复全程）；③fallback_to_cpu 收尾标记（其后的静默重载发生在调用方 _encode 内，由埋点①cpu max 合并续写）；④write_lock 前 `phase="waiting-lock"` + 宽限 → 拿锁后 `phase="writing"` 续宽限（waiting-lock 为新增 phase 值，全部消费方核对安全降级：widgets stepper idx=-1 兜底、PHASE_COLOR.get 默认值、progress_ratio 走 else、server 不消费 phase）。
+  - G7 单点还原：extract_to_markdown 返回处立即 `update_progress(phase="scanning")`，一处覆盖三个出口——converting 豁免窗口严格闭合于转换真实耗时（600s 级 MinerU 云端 OCR 也完全在窗内，MinerU 不加埋点）。
+  - progress_text 分支重排（优先级即判定顺序，与 GUI 镜像勿重排）：DEAD 原文不动 → converting 白名单原文不动（无条件生效不依赖字段，旧读新兼容）→ 宽限内信息行（含 PID[缺失容错为 ?]+已安静秒数+剩余秒数，无告警字样）→ stalled 告警原文 → 正常行。
+- **gui/store.py**：heartbeat_state 插宽限分支（DEAD 先于一切 → converting 白名单保留 → in_grace 改判 RUNNING 色/呼吸不变 → stalled），判定表达式与 index._stall_grace_left 逐字镜像、互指注释；新增纯函数 `heartbeat_note(progress)`：DEAD-first 短路（红 DEAD 胶囊绝不配"宽限内"文案）、converting 文案保留、宽限内输出"模型加载/写库中（已安静 Ns，宽限内）"、否则 None。
+- **gui/app.py**：内联三元换 heartbeat_note 调用；KPI 行阶段名经 PHASE_TEXT 中文映射（waiting-lock 不裸显英文内部值）。
+- **gui/widgets.py**：仅 PHASE_TEXT/PHASE_COLOR 各加一行 `"waiting-lock": "等锁"/"accent"` 映射（不进 stepper）。
+- **gui/config_editor.py**：stall_timeout hint 追加"；特定阶段（转换/模型加载/写库）有内置宽限"。
+- server.py / extractors.py / config.py 零改动；META_VERSION=9 / EXTRACT_VERSION=2 未动（不影响切块与提取内容）。
+
+### 测试
+- **audit_regression_test.py** +16 例（21→37，风格对齐既有 PASS/FAIL + `_ProgressIso` 隔离：清内存表 + PROGRESS_FILE/DATA_DIR/DEVICE_STATE_FILE 重定向临时目录，save/restore 全局）：写侧 G1①普通更新清除、G1②跨任务残留（progress_start 双保险+结构断言 pop 在锁外）、G2 max 合并+clamp、G3 守卫四分支（空内存不写/异 pid 字节不变/同 pid≈now+s/残留文件原样）、助手不可重入死锁（行为探针 acquire(False)+AST 结构断言 With 块内无调用）、类型防御+clamp+判侧 fail-closed、kwarg 永不落盘；判定侧 C2 核心 test_progress_text_grace_states 三断言（宽限信息行含 PID+安静秒数无告警字样/过期恢复告警/心跳冻结仍 DEAD）+ PID None 容错 + G8 converting 无字段白名单边界 + 心跳 tick 保留宽限字段；C3 六条 CUDA 用例（fake torch 注入 sys.modules，index 全懒加载已验证）：②切回入口结构（先于 old=_model 与 _load_model("cuda")，注释含回滚覆盖声明）、③降级收尾标记存在性与尾部顺序+_encode 调用方重载、①双分支结构（缓存命中分支之后、各自先于加载、恰两处）、冷却期内重复降级/切回序列 clamp≤600 且 max 不回退（慢批降级链：③→get_model 重写→②回滚全序列）、无运行任务全部埋点零写入、④waiting-lock→writing spy 序列（真 Chroma 仅落临时目录+假编码器，断言紧邻顺序+两相位带宽限+done 终态无宽限）。
+- **test_extractors.py** +1（44→45）：test_converting_phase_restored_after_extract——spy 快照序列断言 converting 后紧跟 scanning、后续无 converting 残留 + 结构断言还原语句位于提取调用与第一个出口分支之间（单点物理覆盖三出口）。
+- **test_gui_store.py** +4（46→50 用例 0 failures）：C2 的 test_heartbeat_grace_running_then_expired_then_dead、非法类型 fail-closed、heartbeat_note 六态（含 DEAD-first 短路与已安静秒数）、双看门狗一致性（六个样本两侧结论逐一对照，压住镜像表达式漂移）。
+- 六件套全绿：audit_regression **37/37**、library_registry **15/15**、server_singleton **5/5**、test_config_editor **0 failures**、test_gui_store **0 failures（50 例）**、test_extractors **45/45**、verify_export_import **39/39**（真库导出/导入/检索演练）。
+
+### 备注
+- 升级过渡期矩阵（方案 §7.1）：旧代码读新文件 = 现状行为（缺字段走原逻辑，converting 白名单无条件兜底）；新代码读旧文件 = 宽限缺失照旧告警；任意方向混跑不劣于引入前。阈值漂移同理：用户调大 lock_timeout 超 180 或冷加载实际超 300 时对应窗口回退现状误报，非恶化。
+- 备案（reliability N2）：同进程并发污染（server 后台索引中检索线程触发设备切换写宽限进索引记录）——有界、fail-open、下次进度事件即清除，不改。
+- 已知残余：embedding 单批 >25s 仍会暴露（现状如此，批次间有进度事件，属真实病态应暴露）；MinerU 600s 级安静期靠 converting 白名单而非宽限覆盖（§7.2 覆盖链，锁定用例成对）。
+
+### diff 门后记（同日）
+council diff 门 6 委员评审：security/product/redteam/performance 四席 PASS；architect 与 reliability 独立报告同一 blocker——_try_switch_back_cuda 的 del old 位于 try 块内且先于 log()/_report_device()，这两句抛异常（stderr 管道断裂等）时 except 回滚分支引用已删除的名字 → UnboundLocalError 掩盖原始异常、回滚未完成，与红线 1"收尾代码自己抛异常击穿容错承诺"同构。修复采用强化变体：引用释放改 old = None 并移至 try 块末尾全部可抛调用之后（若仅原位替换 del→None，_report_device 抛异常时回滚会把 _model 恢复成 None 丢掉 CPU 模型）。按纪律先写复现用例验证 RED 再修绿：test_switchback_rollback_survives_report_device_crash（monkeypatch _report_device 抛哨兵，断言不外泄 + index._model is cpu_model 身份比对恢复 + 冷却重武装 + 原始异常折叠进诊断）。checker 复核 9/9 PASS（audit 38/38、registry 15/15、singleton 5/5、config_editor/gui_store 0 failures、extractors 45/45、verify_export_import 39/39），LSP possibly-unbound 报警消除。

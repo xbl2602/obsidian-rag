@@ -221,9 +221,11 @@ class HeartbeatPill:
 
 PHASES = ["scanning", "converting", "embedding", "writing", "done"]
 PHASE_TEXT = {"scanning": "扫描", "converting": "转换",
-              "embedding": "嵌入", "writing": "写库", "done": "完成"}
+              "embedding": "嵌入", "writing": "写库", "done": "完成",
+              "waiting-lock": "等锁"}  # 问题32：等锁排队相位（不进 stepper，仅文案映射）
 PHASE_COLOR = {"scanning": "scan", "converting": "accent",
-               "embedding": "accent", "writing": "accent", "done": "success"}
+               "embedding": "accent", "writing": "accent", "done": "success",
+               "waiting-lock": "accent"}
 
 
 def _parse_src(src):
@@ -431,12 +433,15 @@ class SearchCard:
     """语义检索卡：输入行(44) + 状态条(20) + 结果列表（三层，父卡高锚定）。
 
     on_open(rel, heading)：点击结果项时回调（跳转源文件）。
+    on_relations(rel)：点击"关联笔记"按钮时回调（查双链出链/入链），返回
+    resolve_note_relations 的结果字典；与正文展开是两个独立开关。
     """
 
     TOP_K_CHOICES = (3, 5, 8, 10, 15)
 
-    def __init__(self, on_search, on_open=None, colors=DARK):
+    def __init__(self, on_search, on_open=None, on_relations=None, colors=DARK):
         self._on_open = on_open
+        self._on_relations = on_relations
         self.title = ft.Text("语义检索", size=15, weight=ft.FontWeight.W_600,
                              color=colors["t1"], font_family=FONT_UI)
         self.input = ft.TextField(
@@ -535,7 +540,22 @@ class SearchCard:
 
     def show_results(self, text, colors, elapsed_s=None, show_body=True):
         self._render_state = {"text": text, "colors": colors,
-                              "show_body": show_body, "expanded": set()}
+                              "show_body": show_body, "expanded": set(),
+                              "relations_shown": set(), "relations_cache": {}}
+        self._render_results()
+
+    def _toggle_relations(self, i, rel):
+        """展开/收起第 i 条结果的"关联笔记"区。首次展开才查询，之后走缓存
+        （同一条结果反复展开/收起不重复调用 on_relations）。与正文展开
+        （_toggle/expanded）是独立开关，互不干扰。"""
+        shown = self._render_state["relations_shown"]
+        if i in shown:
+            shown.discard(i)
+        else:
+            shown.add(i)
+            cache = self._render_state["relations_cache"]
+            if i not in cache and self._on_relations:
+                cache[i] = self._on_relations(rel)
         self._render_results()
 
     def _render_results(self):
@@ -571,6 +591,7 @@ class SearchCard:
             body_preview = "\n".join(b["body"][:3]) if show_body else ""
             src = b["src"] if show_body else rel
             is_open = i in expanded and bool(body_full)
+            rel_open = i in st["relations_shown"]
 
             body_text = ft.Text(body_full if is_open else body_preview,
                                 size=13, font_family=FONT_UI, color=colors["t1"],
@@ -579,12 +600,26 @@ class SearchCard:
                                 selectable=True)
             body_box = ft.Container(content=body_text,
                                     padding=ft.Padding.only(top=6))
+
+            def make_rel_toggle(i=i, rel=rel):
+                def _toggle_rel(e):
+                    self._toggle_relations(i, rel)
+                    e.control.page.update()
+                return _toggle_rel
+
             open_btn = ft.IconButton(
                 icon=ft.Icons.OPEN_IN_NEW, icon_size=14,
                 icon_color=colors["t3"], padding=2, width=24, height=24,
                 tooltip="在 Obsidian 中打开源文件",
                 on_click=(lambda e, r=rel, h=heading: self._fire_open(r, h))
                          if self._on_open else None,
+            )
+            rel_btn = ft.IconButton(
+                icon=ft.Icons.HUB, icon_size=14,
+                icon_color=colors["accent"] if rel_open else colors["t3"],
+                padding=2, width=24, height=24,
+                tooltip="查看关联笔记（双链）",
+                on_click=make_rel_toggle() if self._on_relations else None,
             )
             chevron = ft.Icon(ft.Icons.EXPAND_MORE if is_open
                               else ft.Icons.CHEVRON_RIGHT,
@@ -602,6 +637,7 @@ class SearchCard:
                     bgcolor=ft.Colors.with_opacity(0.14, conf_color),
                     visible=bool(conf_txt),
                 ),
+                rel_btn,
                 open_btn,
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
@@ -622,8 +658,22 @@ class SearchCard:
                 content=header, padding=0,
                 on_click=make_toggle() if body_full else None,
             )
-            card_controls = ([head_container] if not is_open
-                             else [head_container, body_box])
+            card_controls = [head_container]
+            if is_open:
+                card_controls.append(body_box)
+            if rel_open:
+                rel_data = st["relations_cache"].get(i) or {}
+                if not rel_data.get("resolved"):
+                    rel_txt = "（未找到该笔记的索引记录，可能已重命名或移动）"
+                else:
+                    out = "、".join(rel_data.get("outlinks") or []) or "（无）"
+                    inn = "、".join(rel_data.get("inlinks") or []) or "（无）"
+                    rel_txt = "出链（本文链接到）：%s\n入链（谁链接到本文）：%s" % (out, inn)
+                card_controls.append(ft.Container(
+                    content=ft.Text(rel_txt, size=12, font_family=FONT_UI,
+                                    color=colors["t2"], selectable=True),
+                    padding=ft.Padding.only(top=6),
+                ))
             controls.append(ft.Container(
                 content=ft.Column(card_controls, spacing=0),
                 padding=ft.Padding.all(10),
@@ -824,15 +874,25 @@ class DeviceBar:
 
 
 class SettingsDialog:
-    """设置对话框：按 config_editor.GROUPS 分组展示 config.json 字段。
+    """设置对话框（问题31 重构）：左侧导航 + 右侧当前分组详情。
 
+    导航分「常用」「开发者」两小节（config_editor.GROUPS 的 level 字段），
+    每组一页，解决 44 个字段平铺难定位的问题。字段控件按 FIELD_META 渲染：
+    bool→Switch、choices→Dropdown（不再手输 mineru-cloud 这类魔法字符串）、
+    suggest→输入框 + 推荐模型芯片、secret→密码框，其余→TextField。
+    _fields[key]=(输入控件, kind) 是对外契约：_save 统一收集其 .value，
+    tests/test_gui_store.py 的云端确认用例直接改它来模拟用户输入。
     on_saved(errors)：点保存后回调，errors 为空 dict 表示成功。
     """
 
     def __init__(self, on_saved, colors=DARK):
         self._on_saved = on_saved
         self._cols = colors
-        self._fields = {}   # key -> 输入控件
+        self._fields = {}       # key -> (输入控件, kind)
+        self._nav_btns = {}     # 组序号 -> 导航按钮
+        self._group_children = []  # 每组的右侧面板子控件列表
+        self._detail_col = None
+        self._cur_group = -1
         self._ok = ft.FilledButton(
             "保存", style=ft.ButtonStyle(
                 bgcolor=colors["accent"], color=colors["on_accent"],
@@ -851,51 +911,194 @@ class SettingsDialog:
         )
         self._status = ft.Text("", size=12, color=colors["warning"],
                                font_family=FONT_UI, visible=False, expand=True)
+        self._page = None
         self._dlg = None
         self._build()
 
     # ---- 构建 ----
 
-    def _build(self):
+    def _caption(self, text):
+        return ft.Text(text or "", size=11, color=self._cols["t4"],
+                       font_family=FONT_UI, height=1.35)
+
+    def _make_chip(self, ctrl, val, text):
+        def _fill(_e):
+            ctrl.value = val
+            try:
+                ctrl.update()
+            except (RuntimeError, AttributeError, AssertionError):
+                pass  # 未挂载（构造期/冒烟环境）
+        return ft.OutlinedButton(
+            "%s · %s" % (text, val),
+            style=ft.ButtonStyle(
+                text_style=ft.TextStyle(size=11, font_family=FONT_UI),
+                color=self._cols["t2"],
+                shape=ft.RoundedRectangleBorder(radius=SIZE["radius_pill"]),
+            ),
+            height=30,
+            on_click=_fill,
+        )
+
+    def _make_field(self, key, kind):
+        """渲染单个字段的整块控件，返回 (块控件, 输入控件)。"""
         import config_editor as ce
         from config import CFG
+        c = self._cols
+        meta = ce.FIELD_META.get(key, {})
+        label = meta.get("label", key)
+        hint = meta.get("hint", "")
+        if meta.get("rebuild"):
+            hint = "⟳ 改后需全量重建 · " + hint if hint else "⟳ 改后需全量重建"
+        cur = CFG.get(key)
 
-        body = ft.ListView(spacing=10, expand=True, padding=0)
-        for group, fields in ce.GROUPS:
-            body.controls.append(ft.Text(group, size=12, weight=ft.FontWeight.W_700,
-                                         color=self._cols["t2"],
-                                         font_family=FONT_UI))
-            for key, kind in fields:
-                cur = CFG.get(key)
-                if kind == "list":
-                    val = ", ".join(str(x) for x in cur) if cur else ""
-                elif cur is None:
-                    val = ""
-                else:
-                    val = str(cur)
-                inp = ft.TextField(
-                    label=_cli_name(key), value=val,
-                    height=46, dense=True,
-                    border_radius=SIZE["radius_control"],
-                    filled=True, fill_color=self._cols["sunken"],
-                    border_color=self._cols["border"],
-                    text_size=13,
-                    text_style=ft.TextStyle(font_family=FONT_UI),
-                    label_style=ft.TextStyle(size=12, font_family=FONT_UI),
-                    helper="" if kind == "str" else _kind_hint(kind),
-                    expand=True,
-                )
-                self._fields[key] = (inp, kind)
-                body.controls.append(inp)
-        body.controls.append(ft.Text(
-            "提示：检索/格式化类改动即时生效；知识库路径、模型名、切块、排除名单"
-            "等改动需要 python index.py --full 全量重建。",
-            size=11, color=self._cols["t4"], font_family=FONT_UI, height=1.4))
+        if kind == "bool":
+            ctrl = ft.Switch(
+                value=bool(cur), label=label,
+                label_text_style=ft.TextStyle(size=13, font_family=FONT_UI),
+                active_color=c["accent"], inactive_thumb_color=c["t3"],
+            )
+            return ft.Column([
+                ft.Row([ctrl], spacing=0), self._caption(hint),
+            ], spacing=2), ctrl
+
+        if meta.get("choices"):
+            opts = [ft.DropdownOption(key=k2, text=t2) for k2, t2 in meta["choices"]]
+            val = "" if cur is None else str(cur)
+            known = {k2 for k2, _ in meta["choices"]}
+            if val and val not in known:
+                # 用户手改过 config.json：保真展示原值，保存时不静默改写
+                opts.append(ft.DropdownOption(key=val, text="%s（当前配置值）" % val))
+            elif not val:
+                val = meta["choices"][0][0]
+            ctrl = ft.Dropdown(
+                value=val, options=opts, label=label,
+                height=SIZE["input_h"], dense=True,
+                filled=True, fill_color=c["sunken"],
+                border_color=c["border"], border_radius=SIZE["radius_control"],
+                label_style=ft.TextStyle(size=12, font_family=FONT_UI),
+                text_style=ft.TextStyle(size=13, font_family=FONT_UI),
+                expand=True,
+            )
+            return ft.Column([
+                ft.Row([ctrl], spacing=0), self._caption(hint),
+            ], spacing=2), ctrl
+
+        # 文本类：list 以逗号拼接展示，写回时由 config_editor 拆回
+        if kind == "list":
+            val = ", ".join(str(x) for x in cur) if cur else ""
+        elif cur is None:
+            val = ""
+        else:
+            val = str(cur)
+        ctrl = ft.TextField(
+            label=label, value=val,
+            height=None if hint else 46, dense=True,
+            border_radius=SIZE["radius_control"],
+            filled=True, fill_color=c["sunken"],
+            border_color=c["border"],
+            text_size=13,
+            text_style=ft.TextStyle(font_family=FONT_UI),
+            label_style=ft.TextStyle(size=12, font_family=FONT_UI),
+            helper=hint or None,
+            helper_style=ft.TextStyle(size=11, font_family=FONT_UI),
+            password=bool(meta.get("secret")),
+            can_reveal_password=bool(meta.get("secret")),
+            expand=True,
+        )
+        block = ctrl
+        if meta.get("suggest"):
+            # 芯片是推荐候选而非"本机已装清单"——点选填入后首次使用才下载；
+            # 与当前配置值相同的芯片标「✓ 使用中」，让用户一眼看清现状。
+            cur_txt = "" if cur is None else str(cur)
+            chips = ft.Row([], spacing=8, wrap=True)
+            for mval, mtext in meta["suggest"]:
+                in_use = (mval == cur_txt)
+                chip = self._make_chip(
+                    ctrl, mval,
+                    "✓ 使用中 · %s" % mtext if in_use else mtext)
+                if in_use:
+                    chip.style = ft.ButtonStyle(
+                        text_style=ft.TextStyle(size=11, font_family=FONT_UI),
+                        color=c["accent"],
+                        side=ft.BorderSide(1, c["accent"]),
+                        shape=ft.RoundedRectangleBorder(radius=SIZE["radius_pill"]),
+                    )
+                chips.controls.append(chip)
+            block = ft.Column([
+                ctrl,
+                self._caption("推荐候选（HuggingFace 模型标识，点击填入；"
+                              "未下载过的会在首次使用时自动拉取）："),
+                chips,
+            ], spacing=4)
+        return block, ctrl
+
+    def _build(self):
+        import config_editor as ce
+
+        c = self._cols
+        self._fields.clear()
+        nav_controls = []
+        self._group_children = []
+        self._nav_btns = {}
+        last_level = None
+        for gi, g in enumerate(ce.GROUPS):
+            if g["level"] != last_level:
+                last_level = g["level"]
+                nav_controls.append(ft.Container(
+                    content=ft.Text("常用" if g["level"] == "basic" else "开发者",
+                                    size=11, weight=ft.FontWeight.W_700,
+                                    color=c["t4"], font_family=FONT_UI),
+                    padding=ft.Padding(left=10, top=6, bottom=2),
+                ))
+            needs_rebuild = any(ce.FIELD_META.get(k, {}).get("rebuild")
+                                for k, _ in g["fields"])
+            children = [
+                ft.Row([
+                    ft.Icon(getattr(ft.Icons, g["icon"]), size=16,
+                            color=c["accent"]),
+                    ft.Text(g["title"], size=14, weight=ft.FontWeight.W_600,
+                            color=c["t1"], font_family=FONT_UI),
+                ], spacing=8),
+                ft.Text(g["desc"], size=11, color=c["t3"],
+                        font_family=FONT_UI, height=1.4),
+            ]
+            for key, kind in g["fields"]:
+                block, ctrl = self._make_field(key, kind)
+                self._fields[key] = (ctrl, kind)
+                children.append(block)
+            self._group_children.append(children)
+            btn = ft.Container(
+                content=ft.Row([ft.Text(
+                    g["title"] + (" ⟳" if needs_rebuild else ""),
+                    size=12, color=c["t2"], font_family=FONT_UI)], spacing=6),
+                height=32, border_radius=SIZE["radius_control"],
+                padding=ft.Padding.symmetric(horizontal=10),
+                alignment=ft.alignment.Alignment.CENTER_LEFT, ink=True,
+                on_click=lambda _e, i=gi: self._select(i),
+            )
+            self._nav_btns[gi] = btn
+            nav_controls.append(btn)
+
+        self._detail_col = ft.Column(spacing=14, scroll=ft.ScrollMode.AUTO,
+                                     expand=True)
+        body = ft.Row([
+            ft.Container(width=196, content=ft.Column(
+                nav_controls, spacing=2, scroll=ft.ScrollMode.AUTO)),
+            ft.VerticalDivider(width=1, color=c["border_faint"]),
+            self._detail_col,
+        ], spacing=14, expand=True,
+           vertical_alignment=ft.CrossAxisAlignment.STRETCH)
 
         self._dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("设置", size=18, weight=ft.FontWeight.W_600,
-                          font_family=FONT_UI),
+            title=ft.Row([
+                ft.Icon(ft.Icons.SETTINGS_OUTLINED, size=18, color=c["accent"]),
+                ft.Text("设置", size=18, weight=ft.FontWeight.W_600,
+                        font_family=FONT_UI),
+                ft.Container(expand=True),
+                ft.Text("⟳ = 改动需 python index.py --full 全量重建",
+                        size=11, color=c["t4"], font_family=FONT_UI),
+            ], spacing=8),
             content=ft.Container(
                 content=ft.Column([
                     body,
@@ -903,23 +1106,156 @@ class SettingsDialog:
                             self._cancel, self._ok],
                            spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ], spacing=12, expand=True),
-                width=680, height=540,
+                width=800, height=560,
             ),
             actions_alignment=ft.MainAxisAlignment.END,
             shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
         )
+        self._select(0)
+
+    def _select(self, idx):
+        """切换导航选中态与右栏内容；未挂载时静默（构造期/冒烟环境）。"""
+        c = self._cols
+        self._cur_group = idx
+        for j, btn in self._nav_btns.items():
+            sel = (j == idx)
+            btn.bgcolor = c["active"] if sel else None
+            t = btn.content.controls[0]
+            t.color = c["t1"] if sel else c["t2"]
+            t.weight = ft.FontWeight.W_600 if sel else ft.FontWeight.W_400
+        if self._detail_col is not None and \
+                0 <= idx < len(self._group_children):
+            self._detail_col.controls = self._group_children[idx]
+        try:
+            if self._dlg is not None:
+                self._dlg.update()
+        except (RuntimeError, AttributeError, AssertionError):
+            pass  # 对话框尚未挂载到页面
+
+    def _refresh_values(self):
+        """每次打开时从最新 CFG 回填控件值（外部改过 config.json 也能看到新值）。"""
+        import config_editor as ce
+        from config import CFG
+        for key, (ctrl, kind) in self._fields.items():
+            cur = CFG.get(key)
+            if kind == "bool":
+                ctrl.value = bool(cur)
+                continue
+            meta = ce.FIELD_META.get(key, {})
+            if meta.get("choices"):
+                opts = [ft.DropdownOption(key=k2, text=t2)
+                        for k2, t2 in meta["choices"]]
+                val = "" if cur is None else str(cur)
+                known = {k2 for k2, _ in meta["choices"]}
+                if val and val not in known:
+                    opts.append(ft.DropdownOption(
+                        key=val, text="%s（当前配置值）" % val))
+                elif not val:
+                    val = meta["choices"][0][0]
+                ctrl.options = opts
+                ctrl.value = val
+                continue
+            if kind == "list":
+                ctrl.value = ", ".join(str(x) for x in cur) if cur else ""
+            else:
+                ctrl.value = "" if cur is None else str(cur)
 
     # ---- 交互 ----
 
     def open(self, page):
+        self._refresh_values()
+        self._select(0)
         self.show_status("", None)
+        self._page = page
         page.show_dialog(self._dlg)
 
     def _save(self, e):
-        import config_editor as ce
+        from config import CFG
         updates = {}
         for key, (inp, kind) in self._fields.items():
             updates[key] = (kind, inp.value)
+        # 从"非云端"切到 mineru-cloud = 相应文件的原始字节会被上传到第三方，属于
+        # 不可撤销的外传决定，必须先取得明示同意。两个键各自独立控制不同的文件
+        # 类别（pdf_scan_backend=库里全部存量扫描件，下次索引即批量上传；
+        # pdf_text_backend=今后每份有文字层的 PDF），任一新切到 mineru-cloud 都要
+        # 确认；本来就是 mineru-cloud 的键改别的字段不再打扰用户。
+        newly_cloud = [k for k in ("pdf_scan_backend", "pdf_text_backend")
+                       if self._switches_to_cloud(updates, CFG, k)]
+        if newly_cloud:
+            self._confirm_cloud_backend(updates, newly_cloud)
+            return
+        self._apply_updates(updates)
+
+    @staticmethod
+    def _switches_to_cloud(updates, CFG, key):
+        raw = updates.get(key)
+        new_val = str((raw[1] if raw else "") or "").strip().lower()
+        cur_val = str(CFG.get(key) or "").strip().lower()
+        return new_val == "mineru-cloud" and cur_val != "mineru-cloud"
+
+    def _confirm_cloud_backend(self, updates, keys):
+        """启用云端处理前的二次确认框。
+
+        keys：本次保存里新切到 mineru-cloud 的配置键集合（"pdf_scan_backend"
+        和/或 "pdf_text_backend"），文案按实际涉及的键列出对应文件类别，
+        不管哪个键触发都点名 MinerU 与"原始文件上传"这个核心事实。
+        """
+        c = self._cols
+        lines = ["开启后，以下文件的原始内容会被上传至第三方服务 MinerU（mineru.net）："]
+        if "pdf_scan_backend" in keys:
+            lines.append("· 扫描件 PDF——库中已有的存量扫描件也会在下次索引时被自动批量上传")
+        if "pdf_text_backend" in keys:
+            lines.append("· 有文字层的 PDF——今后每次索引新增/变更的此类文件都会被上传"
+                         "（只做版面/表格结构识别，is_ocr=False 不重复计费 OCR）")
+        lines.append("请确认知识库中没有你不希望上传的敏感文件。")
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("确认启用云端处理", size=16, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Text(
+                "\n".join(lines),
+                size=13, font_family=FONT_UI, height=1.6, color=c["t2"]),
+            actions=[
+                ft.TextButton(
+                    "取消",
+                    on_click=lambda _e: self._cancel_cloud_backend(dlg)),
+                ft.FilledButton(
+                    "确认启用",
+                    style=ft.ButtonStyle(
+                        bgcolor=c["accent"], color=c["on_accent"],
+                        shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                        text_style=ft.TextStyle(font_family=FONT_UI,
+                                                weight=ft.FontWeight.W_600)),
+                    on_click=lambda _e: self._confirmed_apply(dlg, updates),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+        try:
+            if self._page is not None:
+                self._page.show_dialog(dlg)
+        except Exception:
+            pass  # 冒烟/无窗口环境：不真实挂载
+
+    @staticmethod
+    def _close_confirm(dlg):
+        try:
+            dlg.open = False
+            dlg.update()
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _cancel_cloud_backend(self, dlg):
+        self._close_confirm(dlg)
+        self.show_status("已取消（未保存）", None)
+
+    def _confirmed_apply(self, dlg, updates):
+        self._close_confirm(dlg)
+        self._apply_updates(updates)
+
+    def _apply_updates(self, updates):
+        import config_editor as ce
         errors = ce.apply_updates(updates)
         if errors:
             first = next(iter(errors))
@@ -947,33 +1283,6 @@ class SettingsDialog:
 
     def apply(self, colors):
         self._cols = colors
-
-
-def _cli_name(key):
-    """字段显示名：key → 中文友好名（无映射时回退 key）。"""
-    names = {
-        "vault": "知识库路径", "exclude_dirs": "排除目录（逗号分隔）",
-        "exclude_files": "排除文件（逗号分隔）", "exclude_patterns": "排除前缀（逗号分隔）",
-        "model_name": "嵌入模型", "collection_name": "向量库名",
-        "chunk_char_limit": "单块最大字符", "short_doc_char_limit": "短文档整篇阈值",
-        "embed_batch_size": "索引嵌入批次", "encode_batch_size": "查询嵌入批次",
-        "cuda_cooldown_seconds": "CUDA 冷却秒数",
-        "lock_timeout_seconds": "锁等待上限（秒）", "lock_poll_seconds": "锁轮询间隔（秒）",
-        "heartbeat_interval": "心跳间隔（秒）", "heartbeat_timeout": "心跳停止判定（秒）",
-        "stall_timeout": "进度停滞判定（秒）",
-        "return_chunk_limit": "单块返回字符上限", "max_chunks_per_file": "同文件最多块数",
-        "truncate_mark": "截断标记", "bm25_k1": "BM25 k1", "bm25_b": "BM25 b",
-        "fusion_dense_weight": "语义权重", "fusion_bm25_weight": "关键词权重",
-        "dense_candidate_factor": "候选池系数", "dense_min_candidates": "候选池下限",
-        "default_top_k": "默认返回条数", "keep_exports": "保留导出包数",
-        "import_upsert_batch": "导入批量",
-    }
-    return names.get(key, key)
-
-
-def _kind_hint(kind):
-    return {"int": "整数", "float": "小数", "list": "逗号分隔的多个值",
-            "bool": "true / false"}[kind]
 
 
 # ---- 库选择下拉 ----
@@ -1476,7 +1785,8 @@ class LibraryManagerDialog:
                     color=colors["t2"], font_family=FONT_UI),
             fmt_row,
             ft.Text("AI Agent 权限（关 = 非文本格式仅由你手动索引入库；"
-                    "开 = 一次授权长期有效，取消勾选即收回；扫描件 PDF 暂不支持 OCR）",
+                    "开 = 一次授权长期有效，取消勾选即收回；"
+                    "扫描件 PDF 的 OCR 处理取决于设置中的 pdf_scan_backend）",
                     size=11, color=colors["t4"], font_family=FONT_UI, height=1.4),
             self._agent_switch,
         ], spacing=6))
@@ -1675,12 +1985,35 @@ class ExtractLabDialog:
         self._stop = threading.Event()
         self._t0 = 0.0
         self._proc = None
+        self._run_id = 0  # 自增运行代号：轮询线程据此认领"这是不是我那一轮"
 
     # ---- 打开 / 构建 ----
+
+    @staticmethod
+    def _sweep_orphan_preview_dirs():
+        """清扫 %TEMP% 下 >24h 的孤儿 extract_preview_*（父进程自己也崩过的残留）。
+
+        对齐 extractors._sweep_orphan_tmp 的定位：纯卫生措施，失败一律静默。
+        24h 阈值保证绝不会碰到任何正在跑的预览。
+        """
+        import shutil
+        import tempfile
+        from pathlib import Path as _P
+        try:
+            cutoff = time.time() - 24 * 3600
+            for d in _P(tempfile.gettempdir()).glob("extract_preview_*"):
+                try:
+                    if d.is_dir() and d.stat().st_mtime < cutoff:
+                        shutil.rmtree(d, ignore_errors=True)
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def open(self, page):
         if self._dlg is None:
             self._build()
+        self._sweep_orphan_preview_dirs()
         self._page = page
         self._reset_idle_ui()
         self._refresh_backend_ui()
@@ -1796,6 +2129,8 @@ class ExtractLabDialog:
                 "mineru-local": "本地部署（未支持）"}.get(b, b)
 
     def _effective_backend(self):
+        """扫描件分支下，本次运行实际生效的后端（dropdown 覆盖，或跟随全局
+        pdf_scan_backend）。"""
         val = getattr(self, "_dd_backend", None)
         sel = val.value if val is not None else "auto"
         if sel == "auto":
@@ -1803,13 +2138,49 @@ class ExtractLabDialog:
             return ex.get_scan_backend()
         return sel
 
+    def _effective_text_backend(self):
+        """有文字层 PDF 分支下，本次运行实际生效的后端（同一个下拉覆盖，或跟随
+        全局 pdf_text_backend）——与 `_effective_backend()` 对应扫描件分支是
+        两个独立的全局配置键，dropdown=auto 时可能给出不同答案（如只给文字层
+        开了云端、扫描件仍关）。dropdown 为具体值时两个分支共用同一个覆盖值
+        （extractors._extract_pdf 对文字层分支的判断只认 "是不是 mineru-cloud"，
+        "none" 这类扫描件专用取值在文字层分支天然落回本地，见该函数注释）。
+        """
+        val = getattr(self, "_dd_backend", None)
+        sel = val.value if val is not None else "auto"
+        if sel == "auto":
+            import extractors as ex
+            return ex.get_text_backend()
+        return sel
+
+    def _will_call_cloud(self):
+        """本次提取是否可能把文件送 MinerU 云端——上传前二次确认弹窗据此判断。
+
+        文件在真正打开前不知道是扫描件还是有文字层，两者分别跟随不同的全局配置键；
+        dropdown=auto 时二者可能不一致（如用户只为文字层 PDF 开了云端换结构识别，
+        扫描件 OCR 仍关）。只要有一个分支会送云端就必须先问，宁可多问一次也不能
+        漏问——否则文件会在用户不知情的情况下被上传到第三方（AGENTS.md 架构红线 7）。
+        """
+        return (self._effective_backend() == "mineru-cloud"
+                or self._effective_text_backend() == "mineru-cloud")
+
     def _hint_text(self):
-        base = "与索引用同一条提取管线（含缓存）；预览不写入索引。"
+        base = ("与索引用同一条提取逻辑；预览使用独立临时缓存，"
+                "不写入/读取生产缓存，也不写入索引。")
         tail = {"none": "当前后端：本地直提——扫描件将被跳过并说明原因。",
                 "mineru-cloud": "当前后端：MinerU 云端——每个扫描件可能需要数十秒。",
                 "mineru-local": "本地部署属 R3b 尚未支持，扫描件将跳过。",
                 }.get(self._effective_backend(), "")
-        return base + tail
+        # 上面这段只讲扫描件；有文字层的 PDF 走另一个独立配置键（pdf_text_backend），
+        # 同一个下拉现在对它也生效（详见 _effective_text_backend），必须一并说明，
+        # 否则用户拿一份文字层文件预览时读不到任何与它实际相关的说明。
+        text_tail = {
+            "local": "有文字层的 PDF 本地直提。",
+            "none": "有文字层的 PDF 本地直提。",
+            "mineru-cloud": "有文字层的 PDF 会送 MinerU 云端换版面/表格识别"
+                            "（不重复计费 OCR），可能需要数十秒。",
+        }.get(self._effective_text_backend(), "")
+        return base + tail + ("　" + text_tail if text_tail else "")
 
     def _refresh_hint(self):
         if getattr(self, "_hint", None) is not None:
@@ -1866,12 +2237,84 @@ class ExtractLabDialog:
     def _run(self, _e=None):
         if self._busy or not self._file_path:
             return  # 防重入：进行中/未选文件一律忽略
+        # 云端后端 = 真实文件将离开本机上传第三方，必须先取得用户明示同意。
+        # 扫描件（pdf_scan_backend）与文字层 PDF（pdf_text_backend）任一会送云端
+        # 都要确认——文件类型要打开后才知道，此刻不能只看其中一个分支。
+        # 此处尚未改动 _busy / 按钮状态，取消分支无需复位任何东西。
+        if self._will_call_cloud():
+            self._confirm_cloud()
+            return
+        self._start_extraction()
+
+    def _confirm_cloud(self):
+        """云端 OCR 上传前的二次确认框（确认后才真正启动提取）。"""
+        c = self._cols
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("确认上传到云端", size=16, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Text(
+                "该文件将被上传至第三方服务 MinerU（mineru.net）进行版面/OCR 识别"
+                "（具体处理方式取决于文件是否已有文字层：扫描件走 OCR，已有文字层的"
+                "PDF 只做版面/表格结构识别）。\n"
+                "上传的是原始文件本身，请确认它不含你不希望外传的敏感内容。\n"
+                "是否继续？",
+                size=13, font_family=FONT_UI, height=1.6, color=c["t2"]),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _e: self._close_confirm(dlg)),
+                ft.FilledButton(
+                    "确认上传并提取",
+                    style=ft.ButtonStyle(
+                        bgcolor=c["accent"], color=c["on_accent"],
+                        shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
+                        text_style=ft.TextStyle(font_family=FONT_UI,
+                                                weight=ft.FontWeight.W_600)),
+                    on_click=lambda _e: self._confirmed_start(dlg),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+        try:
+            if self._page is not None:
+                self._page.show_dialog(dlg)
+        except Exception:
+            pass  # 冒烟/无窗口环境：不真实挂载
+
+    @staticmethod
+    def _close_confirm(dlg):
+        try:
+            dlg.open = False
+            dlg.update()
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _confirmed_start(self, dlg):
+        self._close_confirm(dlg)
+        self._start_extraction()
+
+    def _start_extraction(self):
+        """真正启动子进程提取（"直接开始"与"确认后开始"共用同一条路径）。
+
+        防重入下沉到这里，不再只靠调用方：_run 的入口检查管不到确认框那条路径
+        （弹框后 _run 直接 return，_busy 仍是 False），确认按钮被派发两次
+        （双击 / 触屏重复事件）就会起两个子进程、把同一份文件重复上传第三方。
+        "检查 + 置位"必须紧挨着放在唯一的启动入口里，以后新增调用路径也漏不掉。
+        """
         import multiprocessing as mp
+        import tempfile
+        if self._busy:
+            return
         self._busy = True
         self._btn_run.disabled = True
         self._btn_run.content = "提取中…"
         self._btn_pick.disabled = True  # 运行中锁定文件选择，防状态错乱
-        self._stop.clear()
+        # 每一轮 run 发一个自增代号 + 一个全新的取消事件：轮询线程只认自己那一轮，
+        # 关闭对话框后快速重开再点提取，旧线程不会误杀新进程、不会串改新 UI 状态。
+        self._run_id += 1
+        run_id = self._run_id
+        stop_event = threading.Event()
+        self._stop = stop_event
         self._t0 = time.monotonic()
         backend = self._dd_backend.value
         budget = self._budget_for(backend)
@@ -1882,13 +2325,22 @@ class ExtractLabDialog:
 
         q = mp.Queue()
         from extractors import _preview_job
-        self._proc = mp.Process(target=_preview_job,
-                                args=(q, str(self._file_path),
-                                      None if backend == "auto" else backend),
-                                daemon=True)
-        self._proc.start()
-        threading.Thread(target=self._poll, args=(q, budget), daemon=True,
-                         name="extract-lab-poll").start()
+        # 临时缓存目录由父进程创建、父进程清理：子进程会被 terminate() 硬杀，
+        # 杀掉的进程执行不到任何 Python 收尾，自删承诺必然落空（见 _preview_job）。
+        try:
+            tmp_dir = tempfile.mkdtemp(prefix="extract_preview_")
+        except OSError:
+            tmp_dir = None  # 建不出来就退回子进程自建自清的老路径
+        proc = mp.Process(target=_preview_job,
+                          args=(q, str(self._file_path),
+                                None if backend == "auto" else backend,
+                                tmp_dir),
+                          daemon=True)
+        self._proc = proc
+        proc.start()
+        threading.Thread(target=self._poll,
+                         args=(q, budget, run_id, proc, stop_event, tmp_dir),
+                         daemon=True, name="extract-lab-poll").start()
         self._safe_update(self._btn_run, self._btn_pick,
                           self._live_row, self._chips)
 
@@ -1896,8 +2348,23 @@ class ExtractLabDialog:
         return (f"⏱ {time.monotonic() - self._t0:.0f}s 运行中"
                 f" · 超时预算 ~{int(budget)}s")
 
-    def _poll(self, q, budget):
-        """轮询子进程结果 + 秒表心跳；超时/取消即 terminate 强杀。"""
+    def _poll(self, q, budget, run_id, proc, stop_event, tmp_dir=None):
+        """轮询子进程结果 + 秒表心跳；超时/取消即 terminate 强杀。
+
+        proc / stop_event / run_id 一律走参数，绝不事后从 self.* 读取——
+        那些共享属性随时可能已被下一轮 run 覆盖（误杀新进程 + 串改新 UI 状态）。
+
+        tmp_dir（父进程建的预览缓存目录）在 finally 里无条件清理：done / timeout /
+        cancelled、子进程善终还是被强杀，都必然走到这一点，绝不留残留。
+        """
+        try:
+            self._poll_loop(q, budget, run_id, proc, stop_event)
+        finally:
+            if tmp_dir:
+                import shutil
+                shutil.rmtree(tmp_dir, ignore_errors=True)  # 纯卫生，失败不打扰
+
+    def _poll_loop(self, q, budget, run_id, proc, stop_event):
         import queue as _q
         deadline = time.monotonic() + max(30.0, budget) + 15  # 宽限 15s 给下载收尾
         payload = None
@@ -1911,7 +2378,7 @@ class ExtractLabDialog:
             except Exception as e:
                 payload = {"ok": False, "error": f"queue:{e.__class__.__name__}"}
                 break
-            if self._stop.is_set():
+            if stop_event.is_set():
                 outcome = "cancelled"
                 break
             if time.monotonic() > deadline:
@@ -1922,16 +2389,19 @@ class ExtractLabDialog:
                 self._live_text.update()
             except RuntimeError:
                 return  # 页面销毁：随 daemon 进程退出
-        proc = getattr(self, "_proc", None)
+        # 先清理"自己那一轮"的子进程——无论这一轮是否已被新一轮取代，
+        # 这个进程都只有本线程持有引用，不清理就成孤儿。
         if proc is not None and proc.is_alive():
             try:
                 proc.terminate()
                 proc.join(timeout=5)
             except Exception:
                 pass
-        if outcome != "done" and self._stop.is_set():
-            return  # 用户主动关闭对话框：静默，_close 已复位 UI
-        self._stop.set()
+        if run_id != self._run_id:
+            return  # 用户已开新一轮：旧线程只负责清进程，绝不碰任何共享 UI 状态
+        if outcome == "cancelled":
+            return  # 本轮被 _close 主动取消：_close 已复位 UI，无需重复
+        stop_event.set()
         self._busy = False
         try:
             self._btn_run.disabled = False

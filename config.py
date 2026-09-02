@@ -81,6 +81,7 @@ DEFAULTS = {
     "pdf_scan_backend": "none",       # none | mineru-cloud（mineru-local 属 R3b 未支持）
     "mineru_api_key": "",             # mineru.net 个人中心 API Token；GUI/config 双端可改
     "mineru_timeout_seconds": 600,    # 单个扫描件 提交+轮询+下载 的总预算（秒）
+    "pdf_text_backend": "local",      # local | mineru-cloud（有文字层 PDF 可选送 MinerU 换更准的结构识别，is_ocr=False 不重复付OCR的钱）
 }
 
 CONFIG_TEMPLATE = """\
@@ -292,7 +293,7 @@ CONFIG_TEMPLATE = """\
   "confidence_drop_threshold": 0.40,
 
   // ----------------------------------------------------------
-  // 八、扫描件 OCR（MinerU 云端 API，默认关）
+  // 八、PDF 提取后端（MinerU 云端 API，默认关）
   // ----------------------------------------------------------
 
   // 扫描件（无文字层 PDF）的 OCR 后端：
@@ -300,6 +301,12 @@ CONFIG_TEMPLATE = """\
   //   mineru-cloud = 调 MinerU 云端 API（mineru.net），需在下方填 API Key
   // 改动后无需重建：已跳过的扫描件会在下一轮索引自动重试转正（xsrc 失配机制）。
   "pdf_scan_backend": "none",
+
+  // 有文字层 PDF 的提取后端：
+  //   local        = 本地直提（默认，免费、快）
+  //   mineru-cloud = 送 MinerU 云端换更准的版面/表格结构识别（is_ocr=False，不为已有
+  //                  文字重复付 OCR 的钱），需在下方填 API Key
+  "pdf_text_backend": "local",
 
   // MinerU 云端 API Key：mineru.net → 个人中心 → API Token。
   // 可在本 config 与 GUI 设置页两处修改——同一份文件、后保存者生效。

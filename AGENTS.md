@@ -12,8 +12,11 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 
 - META_VERSION **9**：多格式提取 + 统一终态 + 原始字节指纹
 - 多格式默认开启（`extensions=md,pdf,docx`）；扫描件 OCR 经 MinerU 云端 API（`pdf_scan_backend`，默认 none）
+- 有文字层 PDF 可选 `pdf_text_backend` 送 MinerU 换更准的版面/表格结构识别（`is_ocr=False`，默认 local）
 - **人机分权门禁**：Agent 触发的索引默认只处理文本类 + `agent_formats` 已批准格式，
   未授权二进制文件被冻结（保留条目与块）；批准一次长期有效、可撤销
+- 笔记双链关系查询（出链/入链）：GUI 语义检索卡结果可内联展开"关联笔记"，
+  另有 MCP 工具 `note_relations`
 - 详细机制：`AI_GUIDE.md`（部署/使用）、Vault 内 `20-Projects/Obsidian RAG/` 文档组、
   开发史 `TASK_LOG.md`（问题 1–27）、路线 `TODO.md`
 
@@ -40,6 +43,12 @@ $env:PYTHONIOENCODING = "utf-8"
 
 1. **extractors 契约**：`extract_to_markdown` 绝不抛异常、绝不写源目录；
    失败一律折叠 `(None, reason)`。新增格式先进 `SUPPORTED_EXTS` 单一事实来源。
+   `finally` 块里的清理调用（如 `doc.close()`）也要包一层 `try/except: pass`——
+   `finally` 内代码自己抛异常会覆盖 `except` 分支已产生的 return 值并继续外泄，
+   等于让"绝不抛异常"这句承诺在收尾这一步失效（2026-08-25 council 审计实测）。
+   同理：except 回滚分支引用的变量必须在进入 try 前绑定，用 `x = None` 替代
+   `del x` 且置于作用域内最后一个可抛调用之后——`del` 后引用即 UnboundLocalError
+   掩盖原始异常（2026-08-26 council 实测，index.py `_try_switch_back_cuda`）。
 2. **统一终态**：一切"不产块的文件"必须落持久化终态（`_terminal_entry`，
    reason ∈ unreadable/extract-failed/empty/tbd/scanned），否则每轮误判 stale 死循环。
    二进制失败终态必须带 `xsrc=current_backend_sig()`。
@@ -51,7 +60,11 @@ $env:PYTHONIOENCODING = "utf-8"
 6. **Agent 门禁语义不可回退**：`agent_allowed` 冻结分支在最早期（stat 前），
    保证未授权文件零 I/O 且条目永不被裁剪；kb_stale 与 _index_core 必须同步修改。
 7. **GUI 是零侵入观察者**：不加载模型索引、不直写 Chroma；进程治理只用
-   `gui/stop.py`（禁止单杀 PID，flet.exe 会成孤儿）。
+   `gui/stop.py`（禁止单杀 PID，flet.exe 会成孤儿）。任何"仅供预览/测试"的旁路
+   工具（如提取试验台）若复用与正式索引相同的共享状态（缓存目录等），必须显式
+   隔离（`tempfile` + `set_cache_dir` 之类），否则会静默绕开用户配置的隐私/后端
+   开关——一次性的手动测试会在用户不知情下变成正式生效的内容（2026-08-25 council
+   审计发现：试验台测云端 OCR 曾写进生产缓存，之后 backend=none 的索引照样命中）。
 8. **API Key 不进日志**：MinerU 客户端的错误消息只含类型与摘要。
 
 ## 测试纪律

@@ -22,15 +22,15 @@ from theme import DARK, LIGHT, FONT_UI, SIZE  # noqa: E402
 from store import (  # noqa: E402
     STATE_NONE,
     index_state, index_busy, meta_stats, progress_ratio,
-    heartbeat_state, read_progress, library_entries, library_snapshot,
-    meta_issues_for, ISSUE_TEXT,
-    is_library_dir,
+    heartbeat_state, heartbeat_note, read_progress, library_entries,
+    library_snapshot, meta_issues_for, ISSUE_TEXT,
+    is_library_dir, note_relations_for,
 )
 from worker import IndexWorker, read_history  # noqa: E402
 from widgets import (  # noqa: E402
     KpiCard, StatusCard, HeartbeatPill, ProgressCard, SearchCard, LogView,
     DeviceBar, SettingsDialog, LibraryPicker, LibraryManagerDialog,
-    ALL_LIBRARIES,
+    ALL_LIBRARIES, PHASE_TEXT,
 )
 
 MODEL_NAME = CFG["model_name"]
@@ -173,7 +173,8 @@ class App:
         self.progress = ProgressCard()
         self.progress.btn_inc.on_click = lambda e: self._start_index(False)
         self.progress.btn_full.on_click = self._confirm_full
-        self.search = SearchCard(self._do_search, on_open=self._open_result)
+        self.search = SearchCard(self._do_search, on_open=self._open_result,
+                                 on_relations=self._note_relations)
         self.log_view = LogView()
         self.device = DeviceBar(self._open_vault, self._open_logs)
         self.lib_picker = LibraryPicker(self._on_library_selected)
@@ -289,10 +290,10 @@ class App:
         self.progress.update(progress, ratio, colors, elapsed_txt, eta_txt, idle_summary)
 
         hb = heartbeat_state(progress)
-        # converting 相位：停滞豁免已在 store.heartbeat_state 对齐；这里把
-        # 「心跳正常」文案换成转换中提示，让用户知道不是卡死
-        hb_note = ("文档转换中（大文件耗时属预期）"
-                   if running and progress.get("phase") == "converting" else None)
+        # 心跳胶囊文案收敛到 store.heartbeat_note（纯函数）：converting 提示
+        # 保留，新增停滞宽限期提示（模型加载/写库等合法长静默）；DEAD 时返回
+        # None，红胶囊绝不会被「宽限内」文案污染。
+        hb_note = heartbeat_note(progress)
         self.heartbeat.set_state(hb, datetime.datetime.now(), colors, note=hb_note)
         self.heartbeat.tick()
         if hb == "dead" and running and not self._dead_reported:
@@ -440,7 +441,8 @@ class App:
             self.kpi_time.set_value(format_mmss(el) if el is not None else "…",
                                     color=colors["accent"])
             phase = progress.get("phase") or ""
-            self.kpi_time.set_sub("进行中 · 阶段：%s" % phase)
+            # 阶段名经中文映射（waiting-lock 等内部值不裸显给用户）
+            self.kpi_time.set_sub("进行中 · 阶段：%s" % PHASE_TEXT.get(phase, phase))
             return
         if self._last_completed is None:
             self.kpi_time.set_value("—", color=colors["t4"])
@@ -657,6 +659,14 @@ class App:
             except OSError as ex2:
                 self._snack("无法打开：%s" % ex2, is_error=True)
                 self._log_line("ERROR [GUI] 打开源文件失败：%s" % ex2)
+
+    def _note_relations(self, rel):
+        """查询某条检索结果对应笔记的双链关系，供 SearchCard 内联展开使用。"""
+        lib_name, inner = self._split_lib_rel(rel)
+        lib_cfg = self._lib_by_name.get(lib_name) if lib_name else None
+        if lib_cfg is None:
+            return {"resolved": False, "file": None, "outlinks": [], "inlinks": []}
+        return note_relations_for(lib_cfg, inner)
 
     @staticmethod
     def _split_lib_rel(rel):

@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -172,6 +173,31 @@ def test_bare_wikilink_kept():
         assert got == want, f"{src!r} -> {got!r}，期望 {want!r}"
 
 
+# ---------- 问题28：wikilink 目标抽取（双链关系图，与 clean_wikilinks 取值方向相反）----------
+
+def test_extract_wikilink_targets():
+    """extract_wikilink_targets 与 clean_wikilinks 共用同一条 [[...]] 语法规则，
+    但取「目标」而非「显示文字」——两者在带别名场景下取值方向相反，容易搞反。
+    """
+    cases = {
+        "[[机器]]": ["机器"],
+        "[[机器|好机器]]": ["机器"],          # 取目标非别名，与 clean_wikilinks 相反
+        "[[folder/机器#说明]]": ["机器"],      # 剥路径、剥锚点
+        "![[图片.png]]": [],                  # 嵌入不计入关系
+        "[[#标题]]": [],                      # 纯锚点（无目标头）不计入
+        "见 [[机器]]，又见 [[机器]] 一次": ["机器"],  # 去重
+        "[[机器\\|说明]]": ["机器"],           # 表格转义管道
+    }
+    for src, want in cases.items():
+        got = index.extract_wikilink_targets(src)
+        assert got == want, f"{src!r} -> {got!r}，期望 {want!r}"
+    # 去重 + 排序：重复目标只算一次，多目标按 sorted() 顺序返回
+    dup = "见 [[目标]]，又见一次 [[目标]]"
+    assert index.extract_wikilink_targets(dup) == ["目标"]
+    multi = "[[乙笔记]] 与 [[甲笔记]] 都提到 [[甲笔记]]"
+    assert index.extract_wikilink_targets(multi) == sorted({"乙笔记", "甲笔记"})
+
+
 # ---------- F19：frontmatter ----------
 
 def test_frontmatter_yaml_lists():
@@ -315,6 +341,533 @@ def test_confidence_matches_display_order():
     src = inspect.getsource(retriever.hybrid_search)
     assert "rr_conf" in src and "math.exp" in src, "重排生效时应以重排分派生置信度"
     assert "_top1_confidence" not in dir(retriever), "HyDE 不应再靠多跑一轮检索取置信度"
+
+
+def test_terminal_reason_constants_single_source_of_truth():
+    """新增终态 reason 类型时，kb_stale 与 _index_core 必须共用同一组 REASON_* 常量与
+    _entry_converged 谓词，禁止走回各自手写字面量字符串对比的老路——否则两侧字符串
+    静默失配会导致 kb_stale 永远判定未收敛，每轮误报 stale、无谓重建。
+    """
+    src_stale = inspect.getsource(index.kb_stale)
+    src_core = inspect.getsource(index._index_core)
+    for name in ("REASON_UNREADABLE", "REASON_EXTRACT_FAILED", "REASON_EMPTY",
+                 "REASON_TBD", "REASON_SCANNED"):
+        assert hasattr(index, name), f"缺少常量 {name}"
+    # 常量值即持久化数据格式，改值等于毁掉既有 meta 的终态判定
+    assert index.REASON_UNREADABLE == "unreadable"
+    assert index.REASON_EXTRACT_FAILED == "extract-failed"
+    assert index.REASON_EMPTY == "empty"
+    assert index.REASON_TBD == "tbd"
+    assert index.REASON_SCANNED == "scanned"
+    assert "_entry_converged(" in src_stale, \
+        "kb_stale 的终态收敛判定必须走 _entry_converged 单点谓词"
+    # kb_stale 侧不应再出现三类文本终态的裸字面量对比
+    for literal in ('"unreadable"', '"empty"', '"tbd"'):
+        assert f"== {literal}" not in src_stale, \
+            f"kb_stale 不得再用裸字面量 {literal} 判定终态收敛，须走 REASON_* 常量"
+    # _index_core 落盘终态也必须用同一组常量，不得写回裸字面量
+    for literal in ('"unreadable"', '"empty"', '"tbd"', '"extract-failed"'):
+        assert f"_terminal_entry(st, bhash, {literal}" not in src_core, \
+            f"_index_core 不得用裸字面量 {literal} 落终态，须走 REASON_* 常量"
+    assert "REASON_UNREADABLE" in src_core and "REASON_EMPTY" in src_core \
+        and "REASON_TBD" in src_core, "_index_core 落盘 reason 必须引用 REASON_* 常量"
+    # _backend_changed 的重试判定同样走常量
+    src_bc = inspect.getsource(index._backend_changed)
+    assert "REASON_SCANNED" in src_bc and "REASON_EXTRACT_FAILED" in src_bc, \
+        "_backend_changed 的重试 reason 集合必须引用 REASON_* 常量"
+    # 谓词语义（与被替换掉的三处手写判断严格等价）
+    assert index._entry_converged({"xfail": True, "reason": "tbd"}, index.REASON_TBD)
+    assert not index._entry_converged({"xfail": True, "reason": "tbd"},
+                                      index.REASON_EMPTY)
+    assert not index._entry_converged({"reason": "tbd"}, index.REASON_TBD)
+    assert not index._entry_converged(None, index.REASON_TBD)
+
+
+# ---------- 问题32：停滞宽限机制（写侧） ----------
+
+class _ProgressIso:
+    """隔离 index 进度状态：清空内存表 + 全部落盘路径重定向临时目录。
+
+    save/restore 模块全局（测试纪律），绝不碰真实 data/index_progress.json、
+    真实 device_state.json。
+    """
+
+    _PATHS = ("DATA_DIR", "PROGRESS_FILE", "LOCK_FILE", "DEVICE_STATE_FILE")
+
+    def __init__(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.dir = Path(self._td.name)
+
+    def __enter__(self):
+        self._saved_progress = index._progress
+        self._saved_paths = {n: getattr(index, n) for n in self._PATHS}
+        index._progress = {}
+        index.DATA_DIR = self.dir
+        index.PROGRESS_FILE = self.dir / "index_progress.json"
+        index.LOCK_FILE = self.dir / "index.lock"
+        index.DEVICE_STATE_FILE = self.dir / "device_state.json"
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            index._heartbeat_stop.set()  # 兜底掐掉本用例可能拉起的心跳线程
+        except AttributeError:
+            pass
+        index._progress = self._saved_progress
+        for n, v in self._saved_paths.items():
+            setattr(index, n, v)
+        self._td.cleanup()
+
+    def file_bytes(self):
+        f = index.PROGRESS_FILE
+        return f.read_bytes() if f.exists() else None
+
+
+def _running_p(**kw):
+    """构造判定侧输入样本（不落盘，纯 dict）。"""
+    now = time.time()
+    base = dict(running=True, phase="scanning", pid=4242, updated_at=now,
+                last_advance_at=now - 60, files_total=9, files_done=3)
+    base.update(kw)
+    return base
+
+
+def test_stall_grace_cleared_by_normal_update():
+    """G1①：任何不带 stall_grace_s 的普通进度事件都终止宽限（一次性豁免）。"""
+    with _ProgressIso():
+        index.update_progress(running=True, phase="scanning")
+        index.update_progress(stall_grace_s=120, message="加载中...")
+        assert "stall_grace_until" in index.read_progress()
+        index.update_progress(files_done=1, message="推进")
+        assert "stall_grace_until" not in index.read_progress()
+        assert "stall_grace_until" not in index._progress
+
+
+def test_stall_grace_no_cross_task_residue():
+    """G1②：新任务 progress_start 必须清掉上一任务的宽限残留。"""
+    with _ProgressIso():
+        index.update_progress(running=True, phase="writing", stall_grace_s=180)
+        assert "stall_grace_until" in index.read_progress()
+        index.progress_start("scanning", 5)
+        try:
+            assert "stall_grace_until" not in index.read_progress(), \
+                "跨任务残留会抑制下一任务早期的停滞判定"
+            # 结构双保险：progress_start 显式 pop 存在，且 pop 不在持锁状态下
+            # 调 update_progress（不可重入死锁）
+            src = inspect.getsource(index.progress_start)
+            assert "_progress.pop(\"stall_grace_until\", None)" in src
+            assert src.index("_progress.pop") < src.index("update_progress(")
+            seg = src[src.index("with _progress_lock:"):src.index("update_progress(")]
+            assert "update_progress" not in seg
+        finally:
+            index.progress_finish("done", "t")
+
+
+def test_stall_grace_merge_takes_max():
+    """G2/红队B4：后写更短的宽限不得反向缩短已有宽限；clamp 上限生效。"""
+    with _ProgressIso():
+        index.update_progress(running=True, phase="embedding")
+        index.update_progress(stall_grace_s=300)
+        u1 = index.read_progress()["stall_grace_until"]
+        index.update_progress(stall_grace_s=60)
+        u2 = index.read_progress()["stall_grace_until"]
+        assert u2 >= u1 - 1e-6, "max 合并被破坏（回退攻击面）"
+        index.update_progress(stall_grace_s=10 ** 6)
+        u3 = index.read_progress()["stall_grace_until"]
+        assert u3 - time.time() <= index.STALL_GRACE_MAX_S + 1, "clamp 失效"
+
+
+def test_stall_grace_guard_running_and_pid():
+    """G3/红队B2 守卫四分支：空内存不写 / 异 pid 不写且文件字节不变 /
+    同 pid 写入 ≈ now+s / 残留文件+空内存 → 原样（绝不接手复活）。"""
+    with _ProgressIso() as iso:
+        # 分支1：无运行中任务 → 不写、不产生进度文件
+        index._stall_grace(60)
+        assert not index.PROGRESS_FILE.exists() and index._progress == {}
+        # 分支2：pid 非本进程 → 不写且 PROGRESS_FILE 字节不变
+        index.update_progress(running=True, phase="scanning")
+        index.update_progress(stall_grace_s=30)
+        before = iso.file_bytes()
+        index._progress = {"running": True, "pid": 999999}
+        index._stall_grace(60)
+        assert index._progress == {"running": True, "pid": 999999}
+        assert iso.file_bytes() == before
+        # 分支3：同 pid 且 running → 写入 ≈ now + s
+        index._progress = {"running": True, "pid": os.getpid()}
+        t0 = time.time()
+        index._stall_grace(60)
+        g = index.read_progress()["stall_grace_until"]
+        assert t0 + 59 <= g <= t0 + 61.5, g - t0
+        # 分支4：强杀残留文件 + 本进程内存为空 → 原样保留，绝不复活
+        stale = {"running": True, "pid": 4242, "updated_at": 1.0}
+        index.PROGRESS_FILE.write_text(json.dumps(stale), encoding="utf-8")
+        index._progress = {}
+        index._stall_grace(60)
+        assert json.loads(index.PROGRESS_FILE.read_text(encoding="utf-8")) == stale
+
+
+def test_stall_grace_helper_no_reentrant_deadlock():
+    """红队B5/reliability B2：助手调用 update_progress 时锁必须已释放
+    （行为断言）+ 调用点位于 with 块之外（结构断言）。"""
+    captured = {}
+    real = index.update_progress
+
+    def probe(**fields):
+        # 若助手在持锁状态调本函数（死锁形态），acquire(False) 必然失败；
+        # 正确的两段式实现里锁已释放，acquire 应成功。
+        captured["lock_free"] = index._progress_lock.acquire(blocking=False)
+        if captured["lock_free"]:
+            index._progress_lock.release()
+        return real(**fields)
+
+    with _ProgressIso():
+        index.update_progress(running=True, phase="scanning")
+        index.update_progress = probe
+        try:
+            index._stall_grace(60)
+        finally:
+            index.update_progress = real
+        assert captured.get("lock_free") is True, \
+            "update_progress 在持锁状态被调用 → 不可重入死锁"
+    # 结构断言（AST 级，免疫注释/docstring 文本）：函数体形态必须是
+    # docstring → With(_progress_lock) → 守卫 If ×2 → 尾部裸调用 update_progress；
+    # 且 With 块体内绝不出现 update_progress 调用。
+    import ast as _ast
+    tree = _ast.parse(inspect.getsource(index._stall_grace))
+    assert isinstance(tree.body[0], _ast.FunctionDef)
+    body = tree.body[0].body  # [docstring, With, If, If, Expr(call)]
+    assert isinstance(body[1], _ast.With), "段1（锁内快照）缺失"
+    for node in _ast.walk(body[1]):
+        if isinstance(node, _ast.Call) and \
+                getattr(node.func, "id", "") == "update_progress":
+            raise AssertionError("update_progress 不得在 with _progress_lock 块内被调用")
+    tail = body[-1]
+    assert isinstance(tail, _ast.Expr) and isinstance(tail.value, _ast.Call) \
+        and getattr(tail.value.func, "id", "") == "update_progress", \
+        "update_progress 调用必须位于全部守卫之后的函数尾部（锁外）"
+
+
+def test_stall_grace_type_defense_and_clamp():
+    """安全 S1/S2：非数值/≤0 一律不写（fail-closed）；判侧非法值照常告警。"""
+    with _ProgressIso():
+        index.update_progress(running=True, phase="scanning")
+        for bad in ("300", -5, 0, None, True):
+            index.update_progress(stall_grace_s=bad)
+            assert "stall_grace_until" not in index.read_progress(), repr(bad)
+    # 判侧 fail-closed：非法 stall_grace_until 视为无宽限 → 照常停滞告警
+    for junk in ("abc", None, [], {}):
+        txt = index.progress_text(_running_p(stall_grace_until=junk))
+        assert "进度停滞" in txt, repr(junk)
+
+
+def test_stall_grace_kwarg_never_persisted():
+    """红队 B5 防呆：相对秒数 kwarg 绝不落盘，JSON 里只有绝对截止时间戳。"""
+    with _ProgressIso():
+        index.update_progress(running=True, stall_grace_s=120)
+        raw = json.loads(index.PROGRESS_FILE.read_text(encoding="utf-8"))
+        assert "stall_grace_s" not in raw
+        assert isinstance(raw["stall_grace_until"], float)
+
+
+# ---------- 问题32：停滞宽限机制（判定侧 / C2） ----------
+
+def test_progress_text_grace_states():
+    """C2 核心：正常运行不再被误报心跳停滞——宽限内信息行（含 PID+安静秒数+
+    剩余秒数，无告警字样）/ 过期恢复告警 / 心跳冻结仍 DEAD 优先。"""
+    now = time.time()
+    # ① 进度已停 60s（> STALL_TIMEOUT）但宽限未过期 → 信息行而非告警
+    t = index.progress_text(_running_p(stall_grace_until=now + 120))
+    assert "宽限剩余" in t and "已安静 60s" in t and "PID 4242" in t, t
+    assert "⚠" not in t and "停滞" not in t and "疑似卡死" not in t, t
+    # ② 宽限过期 → 恢复停滞告警
+    t2 = index.progress_text(_running_p(stall_grace_until=now - 5))
+    assert "进度停滞" in t2, t2
+    # ③ 宽限内但心跳冻结 > HEARTBEAT_TIMEOUT → DEAD 先于一切豁免
+    t3 = index.progress_text(_running_p(stall_grace_until=now + 300,
+                                        updated_at=now - 30))
+    assert "疑似卡死" in t3 and "宽限" not in t3, t3
+    # ④ PID 缺失时格式化容错（红team 补充项）
+    t4 = index.progress_text(_running_p(pid=None, stall_grace_until=now + 120))
+    assert "PID ?" in t4, t4
+
+
+def test_progress_text_converting_whitelist_without_grace_field():
+    """G8 升级过渡边界：converting 白名单无条件生效、不依赖宽限字段——
+    旧版本代码读新进度文件同样豁免，任意方向混跑不劣于现状。"""
+    txt = index.progress_text(_running_p(phase="converting",
+                                         last_advance_at=time.time() - 999))
+    assert "文档转换中" in txt, txt
+    assert "⚠" not in txt and "进度停滞" not in txt, txt
+
+
+def test_heartbeat_tick_preserves_grace_field():
+    """reliability N3：心跳整表拷贝必须原样保留宽限字段——宽限在静默窗口内
+    存活全靠它（显式锁定，防未来心跳重写丢字段）。"""
+    with _ProgressIso():
+        index.update_progress(running=True, phase="writing", stall_grace_s=180)
+        before = index.read_progress()["stall_grace_until"]
+        index._heartbeat_tick()
+        p = index.read_progress()
+        assert abs(p["stall_grace_until"] - before) < 1e-9
+        assert p.get("running") is True
+
+
+# ---------- 问题32 / C3：CUDA 冷却与切换路径的宽限埋点 ----------
+
+def _make_fake_torch():
+    """构造假 torch 模块（types.ModuleType）：只实现冷却/切换路径触达的最小表面。
+
+    index.py 对 torch 全懒加载（函数内 import），注入 sys.modules 即生效，
+    全程不碰真模型/真 GPU。
+    """
+    import types
+    m = types.ModuleType("torch")
+
+    class _Cuda:
+        @staticmethod
+        def is_available():
+            return False
+
+        @staticmethod
+        def empty_cache():
+            pass
+
+        @staticmethod
+        def mem_get_info():
+            return (8 * 1024 ** 3, 16 * 1024 ** 3)
+
+    m.__dict__["cuda"] = _Cuda
+    m.__dict__["empty"] = lambda *a, **k: None
+    return m
+
+
+class _LoadSentinel(Exception):
+    pass
+
+
+def _sentinel_load(device):
+    raise _LoadSentinel(device)
+
+
+def _inject_fake_torch():
+    """返回还原函数：注入假 torch，finally 里调用还原。"""
+    real = sys.modules.get("torch")
+    sys.modules["torch"] = _make_fake_torch()
+    return lambda: (
+        sys.modules.__setitem__("torch", real) if real is not None
+        else sys.modules.pop("torch", None))
+
+
+def test_cuda_instrument_switchback_entry_structure():
+    """C3-1 埋点②结构：_stall_grace 写入位于 _try_switch_back_cuda 入口，
+    先于 old=_model 与 _load_model("cuda")；注释声明覆盖回滚恢复全程。"""
+    src = inspect.getsource(index._try_switch_back_cuda)
+    i_grace = src.index("_stall_grace(")
+    i_old = src.index("old = _model")
+    i_load = src.index('_load_model("cuda")')
+    assert i_grace < i_old < i_load, "埋点②必须在入口、先于释放与加载"
+    assert "STALL_GRACE_MODEL_LOAD" in src, "埋点②须显式用 MODEL_LOAD 常量"
+    assert "回滚" in src, "须注释说明宽限覆盖「切回失败回滚 CPU 恢复」全程"
+
+
+def test_cuda_instrument_fallback_tail_marker_order():
+    """C3-2 埋点③结构：fallback_to_cpu 收尾标记存在且在函数尾部；
+    其静默重载发生在调用方（_encode 内 fallback 之后紧跟 get_model）。"""
+    src = inspect.getsource(index.fallback_to_cpu)
+    assert "_stall_grace(" in src
+    i_tail = src.index('log("已切换到 CPU 模式")')
+    i_grace = src.index("_stall_grace(")
+    assert i_tail < i_grace, "埋点③是收尾标记，必须在尾部日志之后"
+    assert "STALL_GRACE_MODEL_LOAD" in src
+    enc = inspect.getsource(index._encode)
+    i_fb = enc.index("fallback_to_cpu(")
+    i_gm = enc.index("get_model()", i_fb)
+    assert i_fb < i_gm, "降级后的静默重载必须发生在调用方"
+
+
+def test_cuda_instrument_get_model_branches_structure():
+    """C3-3 埋点①双分支结构：cuda/cpu 两路 _stall_grace 都在缓存未命中的实际
+    加载分支内、各自先于 _load_model，且不在函数入口（防每批刷新静音看门狗）。"""
+    src = inspect.getsource(index.get_model)
+    assert src.count("_stall_grace(") == 2, "cuda/cpu 两路各恰好一个埋点"
+    assert src.count("STALL_GRACE_MODEL_LOAD") == 2
+    i_entry_guard = src.index("if _model is not None:")
+    i_first = src.index("_stall_grace(")
+    assert i_first > i_entry_guard, "埋点①不得放函数入口（否则每批刷新=永久静音）"
+    i_cg = src.index("_stall_grace(")
+    i_cl = src.index('_load_model("cuda")')
+    i_pg = src.index("_stall_grace(", i_cg + 1)
+    i_pl = src.index('_load_model("cpu")')
+    assert i_cg < i_cl and i_pg < i_pl, "两路埋点都必须先于各自的加载调用"
+
+
+def test_cuda_cooldown_sequence_clamp_and_max_merge():
+    """C3-4 行为：冷却期内重复「降级→切回失败」序列下宽限 clamp≤600 且
+    max 合并绝不回退（fake torch 注入 + 假加载抛哨兵，try/finally 还原）。"""
+    real_torch = sys.modules.get("torch")
+    saved = {n: getattr(index, n) for n in
+             ("_model", "_device", "_cuda_cooldown_until", "_load_model")}
+    restore_torch = _inject_fake_torch()
+    index._load_model = _sentinel_load
+    try:
+        with _ProgressIso():
+            index.update_progress(running=True, phase="embedding")
+            prev = None
+            for _ in range(3):
+                index.fallback_to_cpu("test-slow-batch")       # 埋点③
+                u_fb = index.read_progress().get("stall_grace_until")
+                assert u_fb is not None, "降级收尾必须写宽限"
+                assert u_fb - time.time() <= index.STALL_GRACE_MAX_S + 1
+                try:
+                    index.get_model()                          # 埋点①cpu 重写
+                except _LoadSentinel:
+                    pass
+                u_gm = index.read_progress()["stall_grace_until"]
+                assert u_gm >= u_fb - 1e-6, "重载路径不得缩短宽限"
+                index._model, index._device = object(), "cpu"
+                index._try_switch_back_cuda()                  # 埋点②→假加载失败回滚
+                u_sb = index.read_progress()["stall_grace_until"]
+                assert u_sb >= (prev or u_sb) - 1e-6, "序列整体不得回退"
+                assert u_sb - time.time() <= index.STALL_GRACE_MAX_S + 1
+                prev = u_sb
+    finally:
+        restore_torch()
+        for n, v in saved.items():
+            setattr(index, n, v)
+
+
+def test_cuda_instruments_zero_write_without_running_task():
+    """C3-5：无运行中任务时全部 CUDA 埋点零写入（守卫短路，不产生噪音进度，
+    不接手他进程记录）；_load_model 若被守卫后的主流程触达属加载行为本身，
+    用哨兵异常隔离。"""
+    real_torch = sys.modules.get("torch")
+    saved = {n: getattr(index, n) for n in
+             ("_model", "_device", "_cuda_cooldown_until", "_load_model")}
+    restore_torch = _inject_fake_torch()
+    index._load_model = _sentinel_load
+    try:
+        with _ProgressIso() as iso:
+            index.fallback_to_cpu("x")            # 埋点③守卫拦截
+            assert index._progress == {} and iso.file_bytes() is None
+            index._model, index._device = object(), "cpu"
+            index._try_switch_back_cuda()         # 埋点②守卫拦截
+            assert index._progress == {}, index._progress
+            try:
+                index.get_model()                 # 埋点①守卫拦截（加载尝试照常）
+            except _LoadSentinel:
+                pass
+            raw = iso.file_bytes()
+            assert raw is None or "stall_grace_until" not in json.loads(raw), \
+                "无运行中任务时埋点必须零写入"
+    finally:
+        restore_torch()
+        for n, v in saved.items():
+            setattr(index, n, v)
+
+
+def test_switchback_rollback_survives_report_device_crash():
+    """B1（2026-08-26 council diff）：成功路径收尾代码（log/_report_device）抛
+    异常时，except 回滚分支引用的名字必须恒已绑定。修复前 `del old` 先于这两句，
+    任一抛异常即 UnboundLocalError：①掩盖原始异常；②_model 已指向新 CUDA 模型
+    但回滚中断——长驻进程模型状态损坏（红线1同构：收尾代码自己抛异常击穿容错）。
+    四断言：调用不外抛 / 原始哨兵异常被折叠进冷却诊断 / _model 身份恢复为原
+    CPU 模型对象 / 冷却重新武装。monkeypatch 使加载成功、仅 _report_device 抛哨兵，
+    全程不碰真模型/真 GPU。"""
+    class _ReportCrash(Exception):
+        pass
+
+    cpu_model = object()   # 哨兵对象：身份可比对
+    new_cuda = object()
+
+    def fake_load(device):
+        return (new_cuda, "cuda")          # 加载成功，故障注入在加载之后的收尾
+
+    def crashing_report(device, note=""):
+        raise _ReportCrash("report-crash-sentinel-B1")
+
+    saved = {n: getattr(index, n) for n in
+             ("_model", "_device", "_cuda_cooldown_until",
+              "_load_model", "_report_device")}
+    try:
+        with _ProgressIso():
+            index.update_progress(running=True, phase="embedding")
+            index._model, index._device = cpu_model, "cpu"
+            index._cuda_cooldown_until = 0.0
+            index._load_model = fake_load
+            index._report_device = crashing_report
+            t0 = time.time()
+            index._try_switch_back_cuda()  # 修复前此处 UnboundLocalError 外泄
+            assert index._model is cpu_model, \
+                "回滚必须恢复原 CPU 模型对象（状态不得停在半切换态）"
+            assert index._device == "cpu", "设备必须回滚为 cpu"
+            assert index._cuda_cooldown_until > t0, "冷却必须重新武装"
+            ds = json.loads(index.DEVICE_STATE_FILE.read_text(encoding="utf-8"))
+            assert "report-crash-sentinel-B1" in ds.get("reason", ""), ds
+            assert "failed_at" in ds, "折叠进冷却诊断的必须是原始异常而非解绑定错误"
+    finally:
+        for n, v in saved.items():
+            setattr(index, n, v)
+
+
+def test_waiting_lock_sequence_with_grace():
+    """C3-6/埋点④接线（reliability N3）：waiting-lock → write_lock → writing
+    埋点顺序 + waiting-lock/writing 快照带宽限字段 + done 终态无宽限。
+
+    隔离：落盘路径重定向临时目录 + 假编码器（numpy 零向量）+ 真 Chroma 仅落在
+    临时目录——对齐 test_extractors 的 _IsoEnv 模式，不碰真实模型/库。
+    Chroma 在 Windows 上持有句柄，目录用 mkdtemp + rmtree(ignore_errors)
+    收尾（同 _IsoEnv.cleanup），绝不用 TemporaryDirectory 上下文硬删。
+    """
+    import shutil
+    import numpy as np
+    calls = []
+    real_update = index.update_progress
+    real_encode = index.encode_safe
+
+    def spy(**fields):
+        real_update(**fields)
+        calls.append(dict(index._progress))
+
+    def fake_encode(texts, batch_size=None):
+        return np.zeros((len(texts), 8), dtype="float32")
+
+    paths = ("DATA_DIR", "CHROMA_DIR", "LOCK_FILE", "PROGRESS_FILE",
+             "DEVICE_STATE_FILE")
+    saved_paths = {n: getattr(index, n) for n in paths}
+    saved_progress = index._progress
+    td = Path(tempfile.mkdtemp(prefix="rag-audit-wl-"))
+    try:
+        vault = td / "v"
+        vault.mkdir()
+        (vault / "a.md").write_text("# 标题\n\n正文内容足够成块。\n", encoding="utf-8")
+        index.DATA_DIR = td / "data"
+        index.CHROMA_DIR = td / "chroma"
+        index.LOCK_FILE = td / "data" / "index.lock"
+        index.PROGRESS_FILE = td / "data" / "index_progress.json"
+        index.DEVICE_STATE_FILE = td / "data" / "device_state.json"
+        index.encode_safe = fake_encode
+        index.update_progress = spy
+        try:
+            index._index_core(str(vault), "col_audit_wl", td / "meta.json",
+                              set(), set(), (), ["md"], 600, 200,
+                              library_label="t", incremental=False, full=True)
+        finally:
+            index.update_progress = real_update
+            index.encode_safe = real_encode
+            index._progress = saved_progress
+            for n, v in saved_paths.items():
+                setattr(index, n, v)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+    phases = [c.get("phase") for c in calls]
+    assert "waiting-lock" in phases and "writing" in phases, phases
+    i_wl = phases.index("waiting-lock")
+    i_wr = phases.index("writing")
+    assert i_wl == i_wr - 1, f"waiting-lock 必须紧邻 writing 之前：{phases}"
+    assert calls[i_wl].get("stall_grace_until"), "waiting-lock 相位必须带宽限"
+    assert calls[i_wr].get("stall_grace_until"), "writing 相位必须带宽限"
+    assert calls[-1].get("phase") == "done"
+    assert "stall_grace_until" not in calls[-1], "终态永无宽限"
 
 
 def _run_all():

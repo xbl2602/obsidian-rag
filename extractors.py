@@ -10,10 +10,14 @@
   - 扫描件 PDF（文字层覆盖率 < 0.5 页占比）按 pdf_scan_backend 路由：
       none         → (None, "scanned") 跳过并记终态（默认）
       mineru-cloud → MinerU 云端 API OCR，成功则照常入索引
+  - 有文字层 PDF 按 pdf_text_backend 路由：
+      local        → 本地 pymupdf4llm 直提（默认）
+      mineru-cloud → 送 MinerU 云端换更准的版面/表格识别（is_ocr=False，不为已有文字重复
+                      付 OCR 的钱）
   - 缓存键 = <字节md5>.<route>.v<EXTRACT_VERSION>（route 标记产出路径：
-    local=本地直提 / ocr:mineru-cloud=云端 OCR），升提取器或换后端旧缓存
-    天然失效；原子写（tmp 带 pid + os.replace）；写失败仅跳过缓存、照常返回
-    结果；None 结果不写缓存。
+    local=本地直提 / ocr:mineru-cloud=扫描件云端OCR / mineru-text=文字层送MinerU换结构
+    识别），换后端旧缓存天然失效；原子写（tmp 带 pid + os.replace）；写失败仅跳过缓存、
+    照常返回结果；None 结果不写缓存。
 """
 import hashlib
 import os
@@ -27,12 +31,15 @@ TEXT_EXTS = {"md", "txt"}
 BINARY_EXTS = {"pdf", "docx"}
 SUPPORTED_EXTS = TEXT_EXTS | BINARY_EXTS
 
-EXTRACT_VERSION = 2  # 提取逻辑版本：v2 起缓存键含产出路由（local / ocr:后端）
+EXTRACT_VERSION = 2  # 提取逻辑版本：v2 起缓存键含产出路由（local / ocr:后端 / mineru-text）
 
 DEFAULT_CACHE_DIR = Path(__file__).parent / "data" / "extract_cache"
 
 # 扫描件 OCR 后端（config.pdf_scan_backend 的合法值）
 SCAN_BACKENDS = ("none", "mineru-cloud", "mineru-local")
+
+# 有文字层 PDF 的提取后端（config.pdf_text_backend 的合法值）
+TEXT_BACKENDS = ("local", "mineru-cloud")
 
 _MINERU_BASE = "https://mineru.net/api/v4"
 _POLL_INTERVAL = 3.0  # 云端任务轮询间隔（秒）
@@ -46,6 +53,16 @@ def get_scan_backend():
         return b if b in SCAN_BACKENDS else "none"
     except Exception:
         return "none"
+
+
+def get_text_backend():
+    """有文字层 PDF 的提取后端（config.pdf_text_backend）。非法值回退 local。"""
+    try:
+        from config import CFG
+        b = str(CFG.get("pdf_text_backend", "local")).lower()
+        return b if b in TEXT_BACKENDS else "local"
+    except Exception:
+        return "local"
 
 
 def current_backend_sig():
@@ -176,9 +193,20 @@ def _extract_full(path, backend=None):
     """
     path = Path(path)
     ext = path.suffix.lower().lstrip(".")
-    # 缓存按产出路由分键；同一文件的字节只会由一条路由成功产出（确定性），
-    # 因此 pdf 恒查全部路由、与当前配置无关——后端切换不丢历史成果
-    routes = ["ocr:mineru-cloud", "ocr:mineru-local", "local"] if ext == "pdf" else ["local"]
+    # 缓存按产出路由分键。扫描件相关路由（ocr:*）之间仍然互斥——一份文件是否
+    # 扫描件由内容本身确定性判定，与配置无关，因此这两个可以无条件全查、
+    # 后端切换不丢历史成果。但 local / mineru-text 不再是这种关系（问题30起）：
+    # 同一份有文字层的 PDF 在不同 pdf_text_backend 下会产生两种都合法、但内容
+    # 不同的成功结果（本地原文 vs MinerU 结构识别版），缓存命中必须只认"当前
+    # 配置实际会选中的那一个"，否则切换 pdf_text_backend 会被另一个后端的历史
+    # 缓存假命中，切换永远不生效——只查与当前 backend 覆盖/全局配置一致的那一个
+    # 文字层路由标签（scanned 分支两个路由不受影响，逻辑不变）。
+    if ext == "pdf":
+        text_route = ("mineru-text" if (backend or get_text_backend()) == "mineru-cloud"
+                      else "local")
+        routes = ["ocr:mineru-cloud", "ocr:mineru-local", text_route]
+    else:
+        routes = ["local"]
     try:
         key = _file_md5(path)
     except OSError:
@@ -327,13 +355,16 @@ _TEXT_PAGE_RATIO = 0.5
 
 
 def _extract_pdf(path, backend=None):
-    """PDF 提取路由：文字层 → 本地直提；扫描件 → 按 pdf_scan_backend 分发。
+    """PDF 提取路由：文字层 → 本地直提或按 pdf_text_backend 送 MinerU（is_ocr=False）；
+    扫描件 → 按 pdf_scan_backend 分发（is_ocr=True）。
 
     返回 (markdown|None, reason, route)：route 标记产出路径，进缓存键
-    （local=本地直提 / ocr:mineru-cloud=云端 OCR），换后端旧缓存天然失效。
-    backend：单次覆盖（试验台用），None = 跟随全局配置。
+    （local=本地直提 / ocr:mineru-cloud=扫描件云端OCR / mineru-text=文字层送MinerU换结构识别），
+    换后端旧缓存天然失效。
+    backend：单次覆盖（试验台用）。扫描件分支按 pdf_scan_backend 语义解释
+    （none/mineru-cloud/mineru-local），文字层分支按 pdf_text_backend 语义解释
+    （local/mineru-cloud）；None 时各自跟随对应全局配置，两个分支互不干扰。
     """
-    backend = backend or get_scan_backend()
     try:
         import pymupdf
         import pymupdf4llm
@@ -360,25 +391,41 @@ def _extract_pdf(path, backend=None):
                          if len(_page_text(pg).strip()) >= _TEXT_PAGE_MIN_CHARS)
         if text_pages / doc.page_count < _TEXT_PAGE_RATIO:
             # 扫描件：按配置（或单次覆盖）路由 OCR 后端
-            if backend == "none":
+            scan_backend = backend or get_scan_backend()
+            if scan_backend == "none":
                 _warn_once("scanned",
                            "发现扫描件 PDF（无文字层），当前未启用 OCR 后端，已跳过"
                            "（可在设置中把 pdf_scan_backend 设为 mineru-cloud）")
-                return None, "scanned", f"ocr:{backend}"
-            if backend == "mineru-local":
+                return None, "scanned", f"ocr:{scan_backend}"
+            if scan_backend == "mineru-local":
                 _warn_once("mineru-local",
                            "mineru-local（本地部署）属 R3b 尚未支持，扫描件继续跳过")
-                return None, "scanned", f"ocr:{backend}"
-            md, reason = _mineru_cloud_extract(path)
-            return md, reason, f"ocr:{backend}"
+                return None, "scanned", f"ocr:{scan_backend}"
+            md, reason = _mineru_cloud_extract(path, is_ocr=True)
+            return md, reason, f"ocr:{scan_backend}"
+
+        # 有文字层：默认本地直提；可选送 MinerU 只买版面/结构识别（不为已有文字重复付 OCR 的钱）
+        text_backend = backend or get_text_backend()
+        if text_backend == "mineru-cloud":
+            md, reason = _mineru_cloud_extract(path, is_ocr=False)
+            return md, reason, "mineru-text"
         try:
             out = pymupdf4llm.to_markdown(doc)
         except Exception as e:
             _warn_once(f"pdf-conv:{e.__class__.__name__}",
                        f"PDF 转 Markdown 失败（按提取失败处理）：{e}")
             return None, "extract-failed", "local"
+    except Exception as e:
+        # 外层兜底：page_count / 逐页 get_text / OCR 路由这几段一旦抛异常，
+        # 必须折叠成终态，绝不外抛（模块契约 + AGENTS.md 架构红线 1）。
+        _warn_once(f"pdf-scan:{e.__class__.__name__}",
+                   f"PDF 逐页扫描/路由异常（按提取失败处理）：{e}")
+        return None, "extract-failed", "local"
     finally:
-        doc.close()
+        try:
+            doc.close()
+        except Exception:
+            pass
     if isinstance(out, str):
         md = out
     elif isinstance(out, list):
@@ -397,13 +444,19 @@ def _extract_pdf(path, backend=None):
 
 # ---------- 扫描件 OCR：MinerU 云端 API（R3a） ----------
 
-def _mineru_cloud_extract(path):
+def _mineru_cloud_extract(path, is_ocr):
     """MinerU 云端 API：申请批任务 → 预签名 PUT 上传 → 轮询 → 下载 zip 取正文 .md。
 
-    契约（mineru.net 官方文档，2026-08）：POST {BASE}/file-protocol/batch 携带
-    Bearer Token 取得 batch_id 与预签名上传地址；PUT 上传原始字节（无鉴权头）；
-    GET {BASE}/file-protocol/batch/{id} 轮询 extract_result[0].state 至 done，
-    取 full_zip_url 下载 zip，正文取其中最大的 .md。
+    契约（mineru.net 官方文档 https://mineru.net/apiManage/docs，2026-08-26 实测校正）：
+    POST {BASE}/file-urls/batch 携带 Bearer Token 取得 batch_id 与预签名上传地址；
+    PUT 上传原始字节（无鉴权头）；GET {BASE}/extract-results/batch/{id} 轮询
+    extract_result[0].state 至 done，取 full_zip_url 下载 zip，正文取其中最大的 .md。
+    （2026-08-26 修：此前两处路径误写成 file-protocol/batch[/{id}]，实测服务器对该
+    路径返回 HTTP 404 纯文本 "page not found"——路由层面不存在，不是鉴权/参数错误，
+    导致该功能自上线以来任何真实调用都会失败，被下方异常折叠机制悄悄吞成
+    scanned/extract-failed 终态，从未真正 OCR 成功过一次；详见 TASK_LOG 问题30。）
+    is_ocr：调用方显式传入，不设默认值——扫描件分支传 True；文字层 PDF 分支传
+    False（只买版面/表格结构识别，不为已有文字重复付 OCR 的钱）。
     所有异常折叠为 (None, reason)；任何日志绝不包含 api_key 与响应体全文。
     """
     try:
@@ -415,9 +468,20 @@ def _mineru_cloud_extract(path):
     from config import CFG
     api_key = str(CFG.get("mineru_api_key", "")).strip()
     if not api_key:
-        _warn_once("mineru-key",
-                   "pdf_scan_backend=mineru-cloud 但 mineru_api_key 为空，扫描件继续跳过")
-        return None, "scanned"
+        # 缺 Key 的落地 reason 按调用分支区分：扫描件本地零处理能力，"scanned"
+        # 语义仍然成立（且是既有行为，不动）；文字层 PDF 本地能提取，缺 Key 只是
+        # 拿不到云端结构识别这个可选增值项，绝不能沿用"scanned"——那会让 GUI
+        # 提示"发现扫描件 PDF...或改用文字层版本"，而这份文件本来就是文字层，
+        # 这条建议对用户是自相矛盾的误导。
+        if is_ocr:
+            _warn_once("mineru-key",
+                       "pdf_scan_backend=mineru-cloud 但 mineru_api_key 为空，扫描件继续跳过")
+            return None, "scanned"
+        _warn_once("mineru-key-text",
+                   "pdf_text_backend=mineru-cloud 但 mineru_api_key 为空，"
+                   "文字层 PDF 云端结构识别失败（请在设置中补齐 Key，或把"
+                   "pdf_text_backend 改回 local）")
+        return None, "extract-failed"
     try:
         budget = float(CFG.get("mineru_timeout_seconds") or 600)
     except Exception:
@@ -428,10 +492,10 @@ def _mineru_cloud_extract(path):
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         resp = requests.post(
-            f"{_MINERU_BASE}/file-protocol/batch",
+            f"{_MINERU_BASE}/file-urls/batch",
             headers={**headers, "Content-Type": "application/json"},
             json={"enable_formula": True, "enable_table": True,
-                  "files": [{"name": fname, "is_ocr": True, "data_id": "doc"}]},
+                  "files": [{"name": fname, "is_ocr": is_ocr, "data_id": "doc"}]},
             timeout=30)
         data = resp.json()
         if resp.status_code != 200 or data.get("code") not in (0, 200):
@@ -447,7 +511,7 @@ def _mineru_cloud_extract(path):
         zip_url = None
         while time.monotonic() < deadline:
             poll = requests.get(
-                f"{_MINERU_BASE}/file-protocol/batch/{batch_id}",
+                f"{_MINERU_BASE}/extract-results/batch/{batch_id}",
                 headers=headers, timeout=30)
             pdata = poll.json()
             if poll.status_code != 200 or pdata.get("code") not in (0, 200):
@@ -482,14 +546,42 @@ def _mineru_cloud_extract(path):
         return None, "extract-failed"
 
 
-def _preview_job(q, path_str, backend=None):
+def _preview_job(q, path_str, backend=None, cache_dir=None):
     """子进程入口（GUI 提取试验台用）：结果经队列返回父进程。
 
     独立进程彻底绕开 GIL——重转换期间 UI 线程零争抢；
     超时/取消由父进程 terminate() 即时强杀，无残留状态可担心。
+
+    缓存隔离：预览全程用一次性临时缓存目录，读写都不碰生产缓存
+    （data/extract_cache）。否则试验台里手选 mineru-cloud 的产物会写进生产缓存，
+    之后即使全局 pdf_scan_backend=none，正式索引也会在查缓存那步直接命中这份
+    云端 OCR 产物、跳过 backend=none 本该走的"跳过"分支——一次随手预览变成了
+    正式索引里不可追溯、不可撤销的既成事实。读也要隔离：预览的意图是"看这次
+    用这个后端会提取出什么"，读到别的后端产出的历史缓存同样会误导用户。
+
+    临时目录归属（2026-08-25 修订）：调用方传了 cache_dir 就直接用、绝不删除——
+    父进程随时会 terminate() 强杀本进程（超时/用户取消），TerminateProcess 不给
+    任何 Python 层收尾机会，"子进程退出即自删"的承诺必然落空，装着云端 OCR 文字
+    产物的目录会永久残留在 %TEMP%。所以清理责任上移给必然活着的父进程；
+    只有在 cache_dir=None（不经 GUI 的直调，如测试）时才自建自清。
+
+    q.put 紧跟在拿到 info 之后：收尾（还原 cache_dir / 自清目录）一律放 finally，
+    否则收尾里的 rmtree 失败（Windows 上杀软、索引服务短暂占用是真实情况）
+    会被 except 捕获，把一次已经成功、结果已到手的提取误报成失败。
     """
+    import shutil
+    import tempfile
+    own_dir = cache_dir is None
+    if own_dir:
+        cache_dir = tempfile.mkdtemp(prefix="extract_preview_")
+    prev = _cache_dir  # 直接读模块全局：None（=用默认目录）也能原样还原
     try:
+        set_cache_dir(cache_dir)
         info = extract_preview(Path(path_str), backend=backend)
         q.put({"ok": True, "info": info})
     except Exception as e:
         q.put({"ok": False, "error": f"{e.__class__.__name__}: {e}"})
+    finally:
+        set_cache_dir(prev)
+        if own_dir:
+            shutil.rmtree(cache_dir, ignore_errors=True)

@@ -23,7 +23,8 @@ from mcp.server import MCPServer
 from config import CFG
 from extractors import BINARY_EXTS, TEXT_EXTS
 from index import (HEARTBEAT_TIMEOUT, LockBusyError, collect_md_files,
-                   index_library, kb_stale, log, progress_text, read_progress)
+                   index_library, kb_stale, log, progress_text, read_progress,
+                   resolve_note_relations)
 from library import (effective_config, list_summary, load_registry, meta_path,
                      resolve_entries, set_config)
 from retriever import hybrid_search_hyde, reset_bm25_index
@@ -236,6 +237,34 @@ def list_libraries() -> str:
             datetime.fromtimestamp(r["last_indexed"]).strftime("%Y-%m-%d %H:%M")
         over = f"（覆盖：{r['overrides']}）" if r["overrides"] else ""
         lines.append(f"  {r['name']:<22}{blocks:>7}  {last:<17}{r['path']} {over}")
+    return "\n".join(lines)
+
+
+@server.tool()
+def note_relations(path: str, library: str = "") -> str:
+    """查询某篇笔记的双链关系（出链=本文链接到谁、入链=谁链接到本文），基于 Obsidian
+    [[wiki链接]] 语法。这是独立于 search_knowledge 的关系查询，不参与语义检索排序，
+    用于在搜到一篇笔记后"顺着链接找相关笔记"。
+
+    path：笔记的库内相对路径（如 "20-Projects/机器.md"）或不含扩展名的标题（如
+    "机器"，Obsidian 双链引用同款写法）——先按路径精确匹配，找不到再按标题匹配。
+    library：库名，为空则用默认库（同 search_knowledge 语义）；只能定位单库，
+    不支持 "all"，因为一篇笔记只会存在于一个库。标题在库内重名时任取其一，
+    与 Obsidian 自身处理同名笔记的方式一样存在歧义。"""
+    try:
+        entries = resolve_entries(library, "", defaults=CFG.get("default_libraries", []))
+    except ValueError as e:
+        return f"（{e}）"
+    if len(entries) > 1:
+        names = "、".join(e["name"] for e in entries)
+        return f"（library 需指定单个库，当前默认解析出多个：{names}；请显式传 library 参数指定其一）"
+    cfg = effective_config(entries[0])
+    result = resolve_note_relations(meta_path(cfg["name"]), path)
+    if not result["resolved"]:
+        return f"（在库「{cfg['name']}」中找不到笔记 \"{path}\"；path 支持库内相对路径或不含扩展名的标题）"
+    lines = [f"「{cfg['name']}/{result['file']}」的双链关系："]
+    lines.append("出链（本文链接到）：" + ("、".join(result["outlinks"]) if result["outlinks"] else "（无）"))
+    lines.append("入链（谁链接到本文）：" + ("、".join(result["inlinks"]) if result["inlinks"] else "（无）"))
     return "\n".join(lines)
 
 

@@ -14,8 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui"))
 from gui.store import (  # noqa: E402
     STATE_NONE, STATE_OK, STATE_STALE,
     HB_DEAD, HB_DONE, HB_IDLE, HB_RUNNING, HB_STALLED,
-    heartbeat_state, progress_ratio, meta_stats_for, library_state,
+    STALL_TIMEOUT,
+    heartbeat_state, heartbeat_note, progress_ratio, meta_stats_for,
+    library_state,
     library_snapshot, is_library_dir, meta_issues_for, ISSUE_TEXT,
+    note_relations_for,
 )
 from gui.app import format_elapsed, format_mmss, App  # noqa: E402 纯函数，不触发窗口
 from gui.theme import DARK  # noqa: E402
@@ -352,11 +355,624 @@ def test_meta_issues_for_counts_xfail_by_reason():
             assert meta_issues_for(cfg) == {}, "指纹缺失 = 无问题，不得抛异常"
 
 
+def test_note_relations_for():
+    """note_relations_for：照 meta_issues_for 的模式，打桩 meta_path 指向临时
+    meta.json，验证出链/入链解析正确；meta 缺失时静默返回 resolved=False。"""
+    import gui.store as gstore
+    meta = {
+        "_version": 9,
+        "a.md": {"hash": "x", "chunks": 3, "size": 1, "mtime": 1, "tbd": False,
+                 "links": ["b"]},
+        "b.md": {"hash": "y", "chunks": 2, "size": 1, "mtime": 1, "tbd": False,
+                 "links": []},
+    }
+    cfg = {"name": "t"}
+    with tempfile.TemporaryDirectory() as td:
+        mf = Path(td) / "m.json"
+        mf.write_text(json.dumps(meta), encoding="utf-8")
+        with patch.object(gstore, "meta_path", return_value=mf):
+            rel_a = note_relations_for(cfg, "a.md")
+            assert rel_a == {"resolved": True, "file": "a.md",
+                             "outlinks": ["b.md"], "inlinks": []}
+            # 不含扩展名的标题也能命中（按文件 stem 匹配）
+            rel_b = note_relations_for(cfg, "b")
+            assert rel_b == {"resolved": True, "file": "b.md",
+                             "outlinks": [], "inlinks": ["a.md"]}
+        with patch.object(gstore, "meta_path",
+                          return_value=Path(td) / "nope.json"):
+            missing = note_relations_for(cfg, "a.md")
+            assert missing == {"resolved": False, "file": None,
+                               "outlinks": [], "inlinks": []}, \
+                "指纹缺失 = 未找到，不得抛异常"
+
+
 def test_issue_text_covers_all_terminal_reasons():
     from gui.store import ISSUE_TEXT
     for r in ("scanned", "unreadable", "extract-failed", "empty", "tbd"):
         label, guide = ISSUE_TEXT[r]
         assert label and guide, f"reason {r} 的标签与处置指引必须齐全"
+
+
+# ---------- 云端上传二次确认 + 试验台轮询竞态（flet 控件无窗口构造，仿 smoke_gui） ----------
+
+class _RecPage:
+    """记录型假 Page：只提供确认框用到的接口（对齐 tests/smoke_gui.FakePage）。"""
+
+    def __init__(self):
+        self.dialogs = []
+        self.overlay = []
+
+    def show_dialog(self, dlg):
+        self.dialogs.append(dlg)
+
+    def close(self, dlg):
+        pass
+
+    def update(self):
+        pass
+
+
+def _click(dlg, label):
+    """触发对话框 actions 里指定文案按钮的 on_click（模拟用户点击）。"""
+    for btn in dlg.actions:
+        if getattr(btn, "content", None) == label:
+            btn.on_click(None)
+            return True
+    raise AssertionError("确认框里找不到按钮：%s（实有 %s）"
+                         % (label, [getattr(b, "content", None) for b in dlg.actions]))
+
+
+def _make_lab():
+    from gui.widgets import ExtractLabDialog
+    dlg = ExtractLabDialog()
+    dlg._build()
+    dlg._page = _RecPage()
+    dlg._file_path = "C:/tmp/x.pdf"
+    started = []
+    dlg._start_extraction = lambda: started.append(1)
+    return dlg, started
+
+
+def test_extract_lab_cloud_backend_requires_confirm():
+    """试验台选云端后端：必须先弹确认框，确认后才真正启动子进程提取。"""
+    dlg, started = _make_lab()
+    dlg._dd_backend.value = "mineru-cloud"
+    dlg._run()
+    assert not started, "云端后端不得未经确认就上传文件"
+    assert len(dlg._page.dialogs) == 1, "应弹出且只弹出一个确认框"
+    confirm = dlg._page.dialogs[0]
+    assert "MinerU" in confirm.content.value, "确认文案须点名第三方服务"
+    _click(confirm, "确认上传并提取")
+    assert started == [1], "确认后应启动提取，且只启动一次"
+
+
+def test_extract_lab_cloud_confirm_cancel_does_not_start():
+    """点取消：不启动提取，也不改动忙态/按钮（判断发生在改状态之前）。"""
+    dlg, started = _make_lab()
+    dlg._dd_backend.value = "mineru-cloud"
+    dlg._run()
+    _click(dlg._page.dialogs[0], "取消")
+    assert not started, "取消后绝不能启动提取"
+    assert dlg._busy is False and dlg._btn_run.disabled is False, \
+        "取消不得残留忙态"
+
+
+def test_extract_lab_local_backend_starts_directly():
+    """非云端后端（none）：不弹确认框，直接开跑。"""
+    dlg, started = _make_lab()
+    dlg._dd_backend.value = "none"
+    dlg._run()
+    assert started == [1], "本地直提应直接启动"
+    assert dlg._page.dialogs == [], "本地直提不该打扰用户"
+
+
+def test_extract_lab_auto_backend_confirms_when_only_text_backend_is_cloud():
+    """问题30 回归：dropdown=auto 时，若只有 pdf_text_backend（而非 pdf_scan_backend）
+    被设为 mineru-cloud，也必须先弹确认框。
+
+    文件在选中前不知道是扫描件还是有文字层，若确认判断只看 pdf_scan_backend，
+    会在"只给文字层 PDF 开云端结构识别、扫描件 OCR 仍关"这个组合下漏问——文件
+    会在用户不知情的情况下被上传到第三方（_will_call_cloud 必须同时检查两个键）。
+    """
+    import config as cfgmod
+    dlg, started = _make_lab()
+    dlg._dd_backend.value = "auto"
+    saved_scan = cfgmod.CFG.get("pdf_scan_backend")
+    saved_text = cfgmod.CFG.get("pdf_text_backend")
+    cfgmod.CFG["pdf_scan_backend"] = "none"
+    cfgmod.CFG["pdf_text_backend"] = "mineru-cloud"
+    try:
+        dlg._run()
+        assert not started, "只要文字层分支会送云端，auto 模式也必须先确认，不能漏问"
+        assert len(dlg._page.dialogs) == 1
+        confirm = dlg._page.dialogs[0]
+        assert "MinerU" in confirm.content.value
+        _click(confirm, "确认上传并提取")
+        assert started == [1], "确认后应启动提取"
+    finally:
+        for k, v in (("pdf_scan_backend", saved_scan), ("pdf_text_backend", saved_text)):
+            if v is None:
+                cfgmod.CFG.pop(k, None)
+            else:
+                cfgmod.CFG[k] = v
+
+
+def test_extract_lab_auto_backend_no_confirm_when_both_local():
+    """对照组：dropdown=auto 且两个后端都在本地默认值（none / local）时不弹确认框——
+    防止上一条回归的修复矫枉过正，把默认场景也变得需要多余确认。"""
+    import config as cfgmod
+    dlg, started = _make_lab()
+    dlg._dd_backend.value = "auto"
+    saved_scan = cfgmod.CFG.get("pdf_scan_backend")
+    saved_text = cfgmod.CFG.get("pdf_text_backend")
+    cfgmod.CFG["pdf_scan_backend"] = "none"
+    cfgmod.CFG["pdf_text_backend"] = "local"
+    try:
+        dlg._run()
+        assert started == [1], "两个后端都是本地默认值时应直接开跑，不打扰用户"
+        assert dlg._page.dialogs == []
+    finally:
+        for k, v in (("pdf_scan_backend", saved_scan), ("pdf_text_backend", saved_text)):
+            if v is None:
+                cfgmod.CFG.pop(k, None)
+            else:
+                cfgmod.CFG[k] = v
+
+
+def _make_settings(cur_backend, new_backend):
+    """构造 SettingsDialog 并 stub _apply_updates（严禁真写 data/config.json）。"""
+    from gui.widgets import SettingsDialog
+    import config as cfgmod
+    dlg = SettingsDialog(on_saved=lambda *_: None)
+    dlg._page = _RecPage()
+    applied = []
+    dlg._apply_updates = lambda updates: applied.append(updates)
+    dlg._fields["pdf_scan_backend"][0].value = new_backend
+    saved = cfgmod.CFG.get("pdf_scan_backend")
+    cfgmod.CFG["pdf_scan_backend"] = cur_backend
+    return dlg, applied, cfgmod, saved
+
+
+def test_settings_cloud_backend_switch_requires_confirm():
+    """设置页 none → mineru-cloud：必须先确认（存量扫描件会被批量外传）。"""
+    dlg, applied, cfgmod, saved = _make_settings("none", "mineru-cloud")
+    try:
+        dlg._save(None)
+        assert not applied, "切云端后端不得未经确认就落盘"
+        assert len(dlg._page.dialogs) == 1
+        confirm = dlg._page.dialogs[0]
+        assert "MinerU" in confirm.content.value
+        _click(confirm, "确认启用")
+        assert len(applied) == 1, "确认后才真正 apply_updates"
+        assert applied[0]["pdf_scan_backend"][1] == "mineru-cloud"
+    finally:
+        if saved is None:
+            cfgmod.CFG.pop("pdf_scan_backend", None)
+        else:
+            cfgmod.CFG["pdf_scan_backend"] = saved
+
+
+def test_settings_same_backend_no_confirm():
+    """本来就是 mineru-cloud：改别的字段保存不再打扰用户，直接落盘。"""
+    dlg, applied, cfgmod, saved = _make_settings("mineru-cloud", "mineru-cloud")
+    try:
+        dlg._save(None)
+        assert len(applied) == 1, "无后端切换应直接 apply"
+        assert dlg._page.dialogs == [], "无变化不该弹确认框"
+    finally:
+        if saved is None:
+            cfgmod.CFG.pop("pdf_scan_backend", None)
+        else:
+            cfgmod.CFG["pdf_scan_backend"] = saved
+
+
+def test_settings_text_backend_switch_requires_confirm():
+    """问题30：设置页仅切 pdf_text_backend（none/local → mineru-cloud）同样必须先
+    确认——这是新增的键，与既有 pdf_scan_backend 共用同一套确认机制
+    （SettingsDialog._save 的 newly_cloud 检查两个键），不能因为是新键就绕过。
+    """
+    from gui.widgets import SettingsDialog
+    import config as cfgmod
+    dlg = SettingsDialog(on_saved=lambda *_: None)
+    dlg._page = _RecPage()
+    applied = []
+    dlg._apply_updates = lambda updates: applied.append(updates)
+    dlg._fields["pdf_text_backend"][0].value = "mineru-cloud"
+    saved = cfgmod.CFG.get("pdf_text_backend")
+    cfgmod.CFG["pdf_text_backend"] = "local"
+    try:
+        dlg._save(None)
+        assert not applied, "切云端文字层后端不得未经确认就落盘"
+        assert len(dlg._page.dialogs) == 1
+        confirm = dlg._page.dialogs[0]
+        assert "MinerU" in confirm.content.value
+        assert "文字层" in confirm.content.value, "确认文案须点名这次触发的是文字层分支"
+        _click(confirm, "确认启用")
+        assert len(applied) == 1, "确认后才真正 apply_updates"
+        assert applied[0]["pdf_text_backend"][1] == "mineru-cloud"
+    finally:
+        if saved is None:
+            cfgmod.CFG.pop("pdf_text_backend", None)
+        else:
+            cfgmod.CFG["pdf_text_backend"] = saved
+
+
+class _FakeProc:
+    """duck-type 子进程：只需 is_alive/terminate/join，记录是否被强杀。"""
+
+    def __init__(self, alive=True):
+        self.alive = alive
+        self.terminated = False
+        self.joined = False
+
+    def is_alive(self):
+        return self.alive
+
+    def terminate(self):
+        self.terminated = True
+        self.alive = False
+
+    def join(self, timeout=None):
+        self.joined = True
+
+
+class _Stub:
+    """轻量控件桩：_safe_update 捕获全部异常，属性读写够用即可。"""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_extract_lab_poll_stale_run_only_cleans_up():
+    """旧轮次的轮询线程：只清理自己的子进程，绝不碰已属于新一轮的共享 UI 状态。
+
+    竞态复现（修复前）：关对话框 → _close 提前把 _busy 清空 → 用户秒开再点提取
+    （run2）→ 旧线程 T1 读 self._proc 读到 proc2，误杀刚启动的新进程，
+    真正该杀的 proc1 成孤儿，且 T1 继续复位按钮/渲染假失败覆盖新一轮 UI。
+    """
+    import queue as _q
+    import threading as _th
+    from gui.widgets import ExtractLabDialog
+    dlg = ExtractLabDialog()           # 不 _build/_open：__init__ 只有普通赋值
+    dlg._busy = True
+    dlg._run_id = 2                    # 已经有更新的一轮在跑
+    proc1 = _FakeProc(alive=True)
+    ev = _th.Event()
+    ev.set()                           # 让 _poll 立刻走 cancelled 分支跳出循环
+    dlg._poll(_q.Queue(), 30, 1, proc1, ev)
+    assert proc1.terminated, "旧轮次的子进程必须被清理，不得成孤儿"
+    assert dlg._busy is True, "run_id 失配时不得改动共享忙态（会污染新一轮）"
+
+
+def test_extract_lab_poll_current_run_finishes():
+    """当前轮次：正常走到底，复位忙态并渲染结果。"""
+    import queue as _q
+    import threading as _th
+    from gui.widgets import ExtractLabDialog
+    dlg = ExtractLabDialog()
+    dlg._busy = True
+    dlg._run_id = 1
+    for name in ("_btn_run", "_btn_pick", "_progress", "_live_row",
+                 "_md_view", "_src_view"):
+        setattr(dlg, name, _Stub(disabled=False, visible=True, value="",
+                                 content=""))
+    dlg._chips = _Stub(controls=[])
+    q = _q.Queue()
+    q.put({"ok": True, "info": {"md": "# 结果\n正文", "reason": "",
+                                "route": "local", "cached": False,
+                                "elapsed": 0.1, "chars": 6}})
+    dlg._poll(q, 30, 1, _FakeProc(alive=False), _th.Event())
+    assert dlg._busy is False, "当前轮次结束必须复位忙态"
+    assert dlg._btn_run.disabled is False and dlg._progress.visible is False
+
+
+def test_extract_lab_start_extraction_is_reentrant_safe():
+    """确认按钮被派发两次也只起一次提取：防重入下沉在 _start_extraction 内部。
+
+    _run 的入口检查管不到确认框那条路径（弹框后 _run 直接 return，_busy 仍是
+    False），双击/触屏重复事件会让同一份文件被重复上传第三方 OCR。
+    """
+    import gui.widgets as W
+    from gui.widgets import ExtractLabDialog
+    dlg = ExtractLabDialog()
+    dlg._file_path = "C:/tmp/x.pdf"
+    dlg._dd_backend = _Stub(value="none")
+    for name in ("_btn_run", "_btn_pick", "_progress", "_live_row",
+                 "_live_text"):
+        setattr(dlg, name, _Stub(disabled=False, visible=False, value="",
+                                 content=""))
+    dlg._chips = _Stub(controls=[])
+    spawned = []
+
+    class _P:
+        def __init__(self, **kw):
+            spawned.append(kw)
+
+        def start(self):
+            pass
+
+    class _T:
+        def __init__(self, **kw):
+            pass
+
+        def start(self):
+            pass
+
+    orig_mp = W.threading.Thread
+    import multiprocessing as mp
+    orig_proc = mp.Process
+    try:
+        mp.Process = lambda **kw: _P(**kw)
+        W.threading.Thread = lambda **kw: _T(**kw)
+        dlg._start_extraction()
+        dlg._start_extraction()          # 模拟确认按钮被触发两次
+    finally:
+        mp.Process = orig_proc
+        W.threading.Thread = orig_mp
+    assert len(spawned) == 1, "重复触发只能真正启动一次提取（不得重复上传）"
+    assert dlg._run_id == 1, "第二次调用不得再推进运行代号"
+    tmp_dir = spawned[0]["args"][3]
+    if tmp_dir:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_extract_lab_poll_always_cleans_tmp_dir():
+    """无论 done / timeout / cancelled，_poll 收尾都必须删掉父进程建的临时目录。
+
+    子进程被 terminate()（Windows 上是无条件 TerminateProcess）时执行不到任何
+    Python 收尾，装着云端 OCR 文字产物的目录只能由必然活着的父进程回收。
+    """
+    import os
+    import queue as _q
+    import tempfile as _tf
+    import threading as _th
+    from gui.widgets import ExtractLabDialog
+
+    def _fresh_dlg():
+        dlg = ExtractLabDialog()
+        dlg._busy = True
+        dlg._run_id = 1
+        for name in ("_btn_run", "_btn_pick", "_progress", "_live_row",
+                     "_md_view", "_src_view"):
+            setattr(dlg, name, _Stub(disabled=False, visible=True, value="",
+                                     content=""))
+        dlg._chips = _Stub(controls=[])
+        return dlg
+
+    # done：正常拿到结果
+    d1 = _tf.mkdtemp(prefix="extract_preview_")
+    open(os.path.join(d1, "leak.md"), "w", encoding="utf-8").write("ocr 敏感内容")
+    q = _q.Queue()
+    q.put({"ok": True, "info": {"md": "# x", "reason": "", "route": "local",
+                                "cached": False, "elapsed": 0.1, "chars": 3}})
+    _fresh_dlg()._poll(q, 30, 1, _FakeProc(alive=False), _th.Event(), d1)
+    assert not os.path.exists(d1), "done 收尾必须清掉临时目录"
+
+    # cancelled：用户关闭对话框，子进程被强杀
+    d2 = _tf.mkdtemp(prefix="extract_preview_")
+    ev = _th.Event()
+    ev.set()
+    _fresh_dlg()._poll(_q.Queue(), 30, 1, _FakeProc(alive=True), ev, d2)
+    assert not os.path.exists(d2), "取消（子进程被强杀）同样必须清掉临时目录"
+
+    # timeout：预算耗尽被强杀（快进时钟，不真等 45s）
+    import gui.widgets as W
+    d3 = _tf.mkdtemp(prefix="extract_preview_")
+    orig_mono = W.time.monotonic
+    clock = [orig_mono()]
+
+    def _fast():
+        clock[0] += 100_000.0
+        return clock[0]
+
+    try:
+        W.time.monotonic = _fast
+        _fresh_dlg()._poll(_q.Queue(), 30, 1, _FakeProc(alive=True),
+                           _th.Event(), d3)
+    finally:
+        W.time.monotonic = orig_mono
+    assert not os.path.exists(d3), "超时（子进程被强杀）同样必须清掉临时目录"
+
+    # 旧轮次（run_id 失配）提前 return 的路径也不能漏
+    d4 = _tf.mkdtemp(prefix="extract_preview_")
+    stale = _fresh_dlg()
+    stale._run_id = 2
+    ev2 = _th.Event()
+    ev2.set()
+    stale._poll(_q.Queue(), 30, 1, _FakeProc(alive=True), ev2, d4)
+    assert not os.path.exists(d4), "旧轮次提前 return 也必须清掉自己那份临时目录"
+
+
+# ---------- SearchCard 双链关系内联展开（不搭真实 flet Page） ----------
+
+
+def _collect_texts(controls):
+    """递归收集控件树里所有 ft.Text 的 value（用于断言关系区是否渲染出文字，
+    不依赖真实 Page，_render_results() 本身就不碰 page）。"""
+    from gui.widgets import ft
+    out = []
+    stack = list(controls or [])
+    while stack:
+        c = stack.pop()
+        if isinstance(c, ft.Text):
+            out.append(c.value or "")
+            continue
+        content = getattr(c, "content", None)
+        if content is not None:
+            stack.append(content)
+        inner = getattr(c, "controls", None)
+        if inner:
+            stack.extend(inner)
+    return out
+
+
+def _sample_result_text(rel="测试库/docs/foo.md", heading="小节标题", conf=0.87):
+    """构造一条最小的模拟检索结果文本，格式对齐 _parse_src 的 docstring：
+    [来源] <rel> (## <heading>) [置信度 <conf>]，随后是正文，"---" 结尾分隔。"""
+    return ("[来源] %s (## %s) [置信度 %s]\n"
+            "这是命中片段正文第一行。\n"
+            "---\n" % (rel, heading, conf))
+
+
+def test_search_card_relations_toggle_queries_once_and_caches():
+    """展开关联笔记区首次应查询一次；收起不重查；再展开应命中缓存不重查。"""
+    from gui.widgets import SearchCard
+    from gui.theme import DARK
+
+    calls = []
+
+    def fake_on_relations(rel):
+        calls.append(rel)
+        return {"resolved": True, "file": "docs/foo.md",
+                "outlinks": ["docs/bar.md"], "inlinks": ["docs/baz.md"]}
+
+    card = SearchCard(on_search=lambda q: None, on_relations=fake_on_relations)
+    card.show_results(_sample_result_text(), DARK)
+
+    card._toggle_relations(0, "测试库/docs/foo.md")
+    assert calls == ["测试库/docs/foo.md"], "首次展开应查询一次，参数为传入的 rel"
+    assert 0 in card._render_state["relations_shown"]
+
+    card._toggle_relations(0, "测试库/docs/foo.md")
+    assert calls == ["测试库/docs/foo.md"], "收起不应重新查询"
+    assert 0 not in card._render_state["relations_shown"]
+
+    card._toggle_relations(0, "测试库/docs/foo.md")
+    assert calls == ["测试库/docs/foo.md"], "再次展开应命中缓存，不重复查询"
+    assert 0 in card._render_state["relations_shown"]
+
+    # 关系区展开不应影响正文展开（两个开关互相独立）
+    assert card._render_state["expanded"] == set()
+
+    # 展开态下结果卡片应渲染出出链/入链文字
+    joined = "\n".join(_collect_texts(card.results.controls))
+    assert "docs/bar.md" in joined, "应渲染出链内容"
+    assert "docs/baz.md" in joined, "应渲染入链内容"
+
+
+def test_search_card_relations_unresolved_shows_fallback_text():
+    """笔记未在 meta 中命中（resolved=False）时展示友好提示，不抛异常。"""
+    from gui.widgets import SearchCard
+    from gui.theme import DARK
+
+    def fake_on_relations(rel):
+        return {"resolved": False, "file": None, "outlinks": [], "inlinks": []}
+
+    card = SearchCard(on_search=lambda q: None, on_relations=fake_on_relations)
+    card.show_results(_sample_result_text(), DARK)
+    card._toggle_relations(0, "测试库/docs/foo.md")
+
+    joined = "\n".join(_collect_texts(card.results.controls))
+    assert "未找到" in joined, "未命中应展示友好提示而不是空白/报错"
+
+
+def test_search_card_without_on_relations_toggle_is_inert_but_safe():
+    """未接 on_relations 时（默认 None）：按钮不挂 on_click，直接调用
+    _toggle_relations 也不应抛异常（缓存位置留空，展示兜底文案）。"""
+    from gui.widgets import SearchCard
+    from gui.theme import DARK
+
+    card = SearchCard(on_search=lambda q: None)
+    card.show_results(_sample_result_text(), DARK)
+    card._toggle_relations(0, "测试库/docs/foo.md")  # 不应抛异常
+    assert 0 in card._render_state["relations_shown"]
+    assert card._render_state["relations_cache"] == {}, "无回调不应产生缓存条目"
+
+
+# ---------- 问题32：停滞宽限（GUI 判定侧 / C2） ----------
+
+def test_heartbeat_grace_running_then_expired_then_dead():
+    """C2 核心：宽限内不误报 stalled / 过期恢复告警 / 心跳冻结仍 DEAD 优先。"""
+    now = time.time()
+    p = make_progress(running=True, phase="scanning", updated_at=now,
+                      last_advance_at=now - 60, stall_grace_until=now + 120)
+    assert heartbeat_state(p) == HB_RUNNING, "宽限内的合法静默不得判 stalled"
+    p2 = make_progress(running=True, phase="scanning", updated_at=now,
+                       last_advance_at=now - 60, stall_grace_until=now - 5)
+    assert heartbeat_state(p2) == HB_STALLED, "宽限过期应恢复停滞判定"
+    p3 = make_progress(running=True, phase="scanning", updated_at=now - 30,
+                       last_advance_at=now - 60, stall_grace_until=now + 300)
+    assert heartbeat_state(p3) == HB_DEAD, "DEAD 先于一切豁免，宽限绝不掩盖真死"
+
+
+def test_heartbeat_grace_invalid_types_fail_closed():
+    """非法 stall_grace_until 一律视为无宽限（fail-closed），照常判 stalled。"""
+    now = time.time()
+    for junk in ("abc", None, [], {}, True):
+        p = make_progress(running=True, phase="scanning", updated_at=now,
+                          last_advance_at=now - 60, stall_grace_until=junk)
+        assert heartbeat_state(p) == HB_STALLED, repr(junk)
+
+
+def test_heartbeat_note_grace_vs_converting():
+    """heartbeat_note 纯函数：converting 文案保留；宽限内给合法长静默提示
+    （含已安静秒数）；无宽限/非运行/心跳冻结（DEAD-first）一律 None。"""
+    now = time.time()
+    conv = make_progress(running=True, phase="converting", updated_at=now,
+                         last_advance_at=now - 99)
+    assert heartbeat_note(conv) == "文档转换中（大文件耗时属预期）"
+    grace = make_progress(running=True, phase="scanning", updated_at=now,
+                          last_advance_at=now - 40, stall_grace_until=now + 120)
+    note = heartbeat_note(grace)
+    assert note and "已安静 40s" in note and "宽限" in note, note
+    plain = make_progress(running=True, phase="scanning", updated_at=now,
+                          last_advance_at=now)
+    assert heartbeat_note(plain) is None
+    expired = make_progress(running=True, phase="scanning", updated_at=now,
+                            last_advance_at=now - 99, stall_grace_until=now - 1)
+    assert heartbeat_note(expired) is None
+    deadish = make_progress(running=True, phase="scanning", updated_at=now - 30,
+                            last_advance_at=now - 40,
+                            stall_grace_until=now + 300)
+    assert heartbeat_note(deadish) is None, "红 DEAD 胶囊绝不能配「宽限内」文案"
+    assert heartbeat_note(make_progress()) is None
+
+
+def test_dual_watchdog_consistency_on_grace_samples():
+    """双看门狗一致性：同一组宽限样本下，gui.heartbeat_state 与
+    index.progress_text 的结论必须一致（防两份镜像表达式漂移）。"""
+    import index as _index
+    now = time.time()
+    samples = [
+        # (标签, progress, 期望四态)
+        ("grace-active",
+         dict(running=True, phase="scanning", pid=9, updated_at=now,
+              last_advance_at=now - 60, stall_grace_until=now + 120),
+         HB_RUNNING),
+        ("converting-no-field",
+         dict(running=True, phase="converting", pid=9, updated_at=now,
+              last_advance_at=now - 999),
+         HB_RUNNING),
+        ("grace-expired",
+         dict(running=True, phase="scanning", pid=9, updated_at=now,
+              last_advance_at=now - 60, stall_grace_until=now - 5),
+         HB_STALLED),
+        ("plain-stalled",
+         dict(running=True, phase="scanning", pid=9, updated_at=now,
+              last_advance_at=now - 60),
+         HB_STALLED),
+        ("dead-beats-grace",
+         dict(running=True, phase="scanning", pid=9, updated_at=now - 30,
+              last_advance_at=now - 60, stall_grace_until=now + 300),
+         HB_DEAD),
+        ("fresh-running",
+         dict(running=True, phase="scanning", pid=9, updated_at=now,
+              last_advance_at=now),
+         HB_RUNNING),
+    ]
+    for label, p, expect in samples:
+        got = heartbeat_state(dict(p))
+        assert got == expect, f"{label}: gui={got} 期望 {expect}"
+        txt = _index.progress_text(dict(p))
+        if expect == HB_DEAD:
+            assert "疑似卡死" in txt, label
+        elif expect == HB_STALLED:
+            assert "进度停滞" in txt, label
+        elif now - p["last_advance_at"] > STALL_TIMEOUT:
+            # 运行中且进度久未推进：两侧都必须按「合法静默」处理而非告警
+            assert "⚠" not in txt and "进度停滞" not in txt, label
+            assert "文档转换中" in txt or "宽限剩余" in txt, label
 
 
 if __name__ == "__main__":

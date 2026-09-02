@@ -25,7 +25,30 @@
 > `mineru_api_key` + `mineru_timeout_seconds` 三键进 config 与 GUI 设置页，
 > 双端同文件后写覆盖。终态条目带 xsrc 能力签名：启用后端/补 Key 后存量 scanned
 > 自动重试转正，无需 --full。缓存键升级 `<md5>.<route>.v2`。R3b 本地部署搁置。
-> ⏳ 待办：用户提供真实 API Key 后做一次云端冒烟验证。
+>
+> ✅ **2026-08-26 已修复（问题30）：冒烟验证发现真实 bug，此前从未真正跑通过云端 API**。
+> 用户配好 `mineru_api_key` 后首次真实冒烟，发现 `_mineru_cloud_extract` 里硬编码的两个
+> 接口路径是错的：提交用的 `{_MINERU_BASE}/file-protocol/batch`、轮询用的
+> `{_MINERU_BASE}/file-protocol/batch/{batch_id}`，实测均返回 HTTP 404（服务器层面路由不存在，
+> 不是鉴权/参数错误——响应体是纯文本 `404 page not found`，不是 JSON）。查官方文档
+> （https://mineru.net/apiManage/docs）确认正确路径应为：提交 `POST {_MINERU_BASE}/file-urls/batch`、
+> 轮询 `GET {_MINERU_BASE}/extract-results/batch/{batch_id}`（请求/响应体字段名本身没错，
+> 只是 URL 路径错）。因为现有单测（test_extractors.py）全部用 mock 的 `requests` 模块，
+> mock 只会验证代码怎么调用、不会验证真实 URL 是否存在，所以这个 bug 完全没被六件套挡住。
+> 后果：`pdf_scan_backend=mineru-cloud` 这个功能自 R3a 上线以来，任何真实调用都会 404，
+> 被 `_mineru_cloud_extract` 的异常折叠机制吞掉、折成 `extract-failed`/`scanned` 终态，
+> 表现为"静默跳过"而不是报错——不会崩溃，但从未真正 OCR 成功过一次。
+> **已修复：两处 URL 字符串改正，`_mineru_cloud_extract` 新增必填 `is_ocr` 参数，并新增
+> 显式断言实际 URL 字符串的回归测试（防止 mock 再次掩盖同类问题）**，与线 A（`pdf_text_backend`
+> 新开关）合并一轮做完，详见 TASK_LOG.md 问题30。诊断脚本与实测产物见
+> `scratchpad/mineru_probe.py` / `scratchpad/mineru_probe_out/`（未提交，仅诊断用）。
+>
+> ✅ 顺带确认了本来要等这次冒烟才能验证的问题：**`is_ocr=False` 时图片确实还会被提取**。
+> 拿一份自制的「真文字层 + 1张内嵌图」PDF 用修正后的路径实测，返回的 zip 里：
+> `full.md`（正文，且已经自动带 `![](images/xxx.jpg)` 图片引用，位置就在原文中图片所在处）、
+> `images/xxx.jpg`（抠出来的图，验证内容一致）、`*_content_list_v2.json`（分块结构化数据，
+> 见下方线B条目）、`layout.json`、`*_model.json`、`*_origin.pdf`。证实版面检测/图片裁切
+> 确实不依赖 OCR 开关，之前的社区信源交叉印证是对的。
 
 ## 核心思想
 
@@ -126,7 +149,8 @@ python index.py --library "Obsidian Vault"
 ### 3a. 云端 API（先做）
 - [ ] MinerU-Open-CLI 接入：flash-extract 免注册（≤10MB/20页）；extract 免费注册 Token（200MB/200页）
 - [ ] config.py 四键（DEFAULTS+CONFIG_TEMPLATE 同步）：`pdf_scan_backend`（默认 mineru-cloud）/ `mineru_cloud_cmd` / `mineru_local_cmd` / `mineru_timeout_seconds`（进 _POSITIVE_KEYS）
-- [ ] gui/config_editor.py GROUPS 加「PDF/OCR 提取」组收编四键（缺这步 test_config_editor 必红）
+- [x] gui/config_editor.py GROUPS 加「PDF/OCR 提取」组收编四键（缺这步 test_config_editor 必红）✅ 已随问题30落地（组名定为「PDF 提取后端」，含 `pdf_text_backend`）
+- [x] 设置页可用性重构（2026-08-26，TASK_LOG 问题 31）：左导航分「常用/开发者」两小节 + 单组详情面板；枚举字段改下拉（pdf_scan_backend/pdf_text_backend）、布尔改开关、模型字段加推荐候选芯片；每字段带一句话说明与 ⟳ 需重建标记；API Key 密码框遮显；打开时从 config.json 刷新回显
 - [ ] 后端分发框架 + 子进程卫生全套：列表参数禁 shell=True；UTF-8 显式解码；超时可配；超时 taskkill /T /F 树杀+proc.wait() 收尸；CREATE_NO_WINDOW；输出目录=data/ocr_cache/tmp-<pid>-<ts>/，rglob("*.md") 取最大者，try/finally 清理
 - [ ] 终态条目引入 xsrc 字段 + kb_stale 失配自动重试；缓存键升级 `<md5>.<backend>.v<N>`
 - [ ] AI_GUIDE 补「MinerU-Open-CLI 安装」段
@@ -141,6 +165,18 @@ python index.py --library "Obsidian Vault"
 
 ---
 
+## 索引进度看板：停滞宽限机制（2026-08-26，问题32）
+
+> ✅ 已完成。模型加载/等写锁/写库等合法长静默不再被「进度停滞」看门狗误报；
+> 心跳停止（真死）判定永远优先，宽限绝不掩盖。明细见 TASK_LOG.md 问题 32。
+
+- [x] index.py：`stall_grace_until` 自过期宽限字段（绝对时间戳）+ `stall_grace_s` 写入 kwarg（永不落盘）；默认清除 + max 合并 + clamp≤600 + fail-closed；`_stall_grace` 两段式守卫助手（running+pid 双检，防死锁/防复活残留文件）
+- [x] 四埋点：get_model cuda/cpu 冷加载、_try_switch_back_cuda 入口、fallback_to_cpu 收尾、waiting-lock→write_lock→writing；G7 单点还原 converting→scanning（三出口全覆盖）
+- [x] 判定侧双实现镜像：index.progress_text 三态分支重排 + gui/store.heartbeat_state 宽限改判 running；新增 `heartbeat_note` 纯函数（DEAD-first 短路）；GUI KPI/waiting-lock 中文映射；stall_timeout 设置页 hint 补宽限说明
+- [x] 测试：audit +16（C2 复现用例 + C3 六条 CUDA 用例）、test_extractors +1（G7）、test_gui_store +4（含双看门狗一致性）；六件套全绿，verify_export_import 39/39
+
+---
+
 ## 明确不做（备案）
 
 - ~~既有 md 空正文守卫不落 meta 的隐患~~ ✅ 已随 R1 终态机制收敛（空文件落 `empty` 终态，TASK_LOG 问题 23）
@@ -150,9 +186,125 @@ python index.py --library "Obsidian Vault"
 
 ## Backlog（按需触发，当前不排期）
 
-- **图片内容打标**：现管线只索引文字/表格/公式/图注，图片本身的内容（示意图/曲线/照片）不入索引。
-  触发条件：实际使用中发现「已知某图的信息检索不到」。
-  届时方案：extractors 增加可选增强阶段——抽取 `![](images/*)` 占位对应图片 → 本地 VLM
-  （LM Studio 多模态模型，复用 hyde_llm_url 配置模式）生成中文描述 → 以「【图表内容：…】」
-  注入原位置进切块管线。架构口子已预留，无需改动既有设计。
+- ~~**PDF 本地/云端后端开关挂错分支**~~（2026-08-26 讨论发现）✅ **已完成（2026-08-25/26
+  讨论，问题30 已实现）**：现在 `pdf_scan_backend`
+  （config.py DEFAULTS）只在 `extractors._extract_pdf` 判定"扫描件"（文字层页占比<0.5）
+  的分支上生效；有文字层的正常 PDF 分支完全写死走本地 `pymupdf4llm`，没有任何开关。但
+  扫描件分支本地是**零处理能力**（读不出字），本地/云端并非两个可比选项，`pdf_scan_backend`
+  实质是"要不要为唯一能用的路径（MinerU）付费"的成本开关；真正存在"本地能用、云端更准"这种
+  质量/成本权衡的，反而是现在没有开关的文字层分支——MinerU 结构识别（标题/表格/版面）更准，
+  用户可能想为质量付费，现在没有这个选项。触发条件：与下一条「图片/图表语义内容缺失」共同
+  推进时一并解决（该功能要覆盖数字件 PDF 就必须先有这个开关）；也可独立先做，价值不依赖图片
+  功能。方案方向：文字层分支新增独立开关（暂拟名 `pdf_text_backend`，local/mineru-cloud），
+  不复用 `pdf_scan_backend`（语义不同，别混一个键里）。
+
+  **落地摘要（2026-08-26，问题30）**：按上面的方案方向原样实现——新增 `pdf_text_backend`
+  （local/mineru-cloud，默认 local）独立开关，`_extract_pdf` 两个分支各自独立 resolve
+  自己的配置键（不再共用一个提前 resolve 的 `backend` 变量）；送云端时 `is_ocr=False`，
+  缓存路由新增独立标签 `mineru-text`。实现中额外发现并修正了缓存路由候选列表的一个隐藏
+  耦合（`local`/`mineru-text` 不再满足"同文件只有一条路由能成功产出"的旧假设，需要按当前
+  配置只查其一，否则切换后端会被另一路由的历史缓存假命中）；详见 TASK_LOG.md 问题30。
+
+  **2026-08-26 用户决定：本轮（今天）只落地这一条 + 上面「R3a」条目下记录的 URL bug 修复，
+  两个一起改（反正都碰 `_mineru_cloud_extract`）。线B/线C 今天不动代码，只把资讯/决策/讨论
+  记录完整存在这份文档里，留到以后单独开轮再看。**
+
+  **为线B/线C 预留的架构留白（不提前实现，只是今天写代码时别把路堵死）**：
+  - `_mineru_cloud_extract` 现在的写法是拿到 zip 后只挑最大的 `.md` 读出来，其余成员在函数
+    内就地丢弃，只返回 `(md, reason)` 两元组。线A 不需要改这个取舍（线A 也只要 md）,但实现时
+    不要把"提前关闭/丢弃 zip 对象"这类写法做得难以扩展——线B 以后要读 `images/*.jpg`、线C
+    以后要读 `*_content_list_v2.json`，这两样今天已经实测确认会出现在同一个 zip 里（见上面
+    R3a 条目的实测记录），以后加一步"顺便多留一点 zip 里的东西"应该是纯加法，不该逼着重写
+    这个函数。
+  - 新开关 `pdf_text_backend` 的取值只表达"用谁来提取文字"，**不要**以后偷懒把"要不要顺便
+    生成图片描述"（线B）或"要不要顺便去噪"（线C）也塞进这同一个键的取值空间（比如搞出
+    `mineru-cloud-with-caption` 这种复合值）——这三件事本质独立（提取引擎 / 要不要看图说话 /
+    要不要 LLM 洗稿），以后各开各的键，避免以后配置值组合爆炸。
+  - 线A 新路由如果起独立缓存路由标签（而不是复用 `ocr:mineru-cloud`，见下面"具体技术风险"），
+    顺带也是在给线B/线C 以后叠加"这份缓存要不要包含图片描述"这类新维度留出干净的位置——
+    路由标签的含义越单一清晰，以后往上叠加维度越不容易互相打架。
+  - 这几条都是"未来别返工"级别的提醒，不是要求线A 现在就多写代码实现线B/线C 的能力。
+
+- **图片/图表语义内容缺失**（原「图片内容打标」旧条目，2026-08-26 深入讨论后重写）：现管线
+  只索引文字，图片/图表本身的语义内容（电路图/曲线图/机械图等）完全不入索引——本地直提和
+  MinerU 云端 OCR 都只认字不认图；且当前两条路连图片文件本身都没保留（MinerU 结果 zip 其实
+  带 `images/` 文件夹，现在只取最大的 `.md`、图片被整体丢弃；本地 `pymupdf4llm.to_markdown()`
+  调用也没开 `write_images`）。用户实际场景已触发（工科课件多为扫描件 PDF，图表信息不可忽略），
+  从"等触发"转为"设计中，待定几个开放问题"，不再是纯 backlog 空转项。
+
+  已定设计方向：
+  - 图片描述必须**独立成块**，不能拼进原文段落一起切（会重演问题15"关系信息污染检索排序"的
+    翻版，这次污染的是"正文块被图片说明稀释/掺混"）。做法类比双链关系图但不同：双链纯 metadata
+    不进检索，图片描述**需要能被搜到**（用户原话"图片本身的内容也有价值"）——所以是"检索库里
+    独立一条记录，插在原图位置、不与相邻正文块合并"，与表格"故意粘连上下文"相反（表格离开
+    上下文读不懂，图片描述要求模型自己写成一段自足的话，不需要依附旁边正文）。
+  - ~~依据社区交叉信源（非官方逐字确认）：`is_ocr=false` 大概率不影响图片被抠出来~~ ✅
+    2026-08-26 已用真实 API 实测坐实（见上方「R3a」条目的冒烟记录）：自制一份「真文字层+1张
+    内嵌图」PDF，`is_ocr=false` 提交后返回的 zip 里图片被完整保留、markdown 里也自动带了
+    `![](images/xxx.jpg)` 引用，位置就在原文对应处。不再是推断，是实测结论。这意味着文字层
+    PDF 送 MinerU 时可以不为已有文字重复花 OCR 的钱，只买版面/图版识别（依赖上一条开关先做）。
+  - 实测顺带拿到了结果 JSON 的真实结构（`*_content_list_v2.json`），对线B/线C 都有用：
+    数组按阅读顺序排列每一块，每块有 `type`（如 `paragraph`/`image`）+ `bbox`（页面坐标）；
+    图片块的 `content` 里有 `image_source.path`（对应 `images/` 里的文件）、`image_caption`
+    /`image_footnote`（原图注/脚注文字，本次测试图没有配图注所以是空数组，但字段确认存在）。
+    对线B 的意义：不需要额外定位逻辑，markdown 里的 `![](images/...)` 引用本身已经在原文
+    正确位置，切块时顺着现有文本扫描到这个引用就是插入独立块的位置，不必依赖这份 JSON 的
+    bbox 做定位；JSON 主要用于以后想拿"原图注文字"这个补充信号时用。对线C 的意义：`type`
+    字段证实了"按块类型只清洗低风险类型"这个设计前提是成立的，不是猜的。
+
+  开放问题（阻塞实现）：
+  - ~~MinerU 的"图片描述"功能到底是什么~~ ✅ 已查清（MinerU 论文 arXiv:2409.18839 原文）：
+    是原图注文字（"figure caption"作为版面元素被检测+提取，跟正文/表格/标题同一类处理），
+    **不是模型生成的语义描述**——论文明确写架构里没有"看图理解内容"这一环，只做版面检测
+    （定位图在哪）+ 裁切（把图抠出来），不涉及图像内容理解。即用即弃的原图小标题（如
+    "图3.2 xxx"）本身仍有用（可以跟 VLM 生成的长描述拼一起，短标题利于关键词命中、长描述
+    利于语义命中），但不能替代看图说话这一步，独立 VLM 这一环省不掉。
+  - 描述来源二选一（上一条排除了"MinerU 自带"这个选项）：本地 VLM（复用 `hyde_llm_url` 那套
+    LM Studio 本地 OpenAI 兼容服务模式，零云端花费但吃本地显存、需换一个真正支持视觉的模型）
+    ／独立云端 VLM（每张图都要花钱调用）。本地这条要打个问号：本地显卡 8GB 已经和 bge-m3
+    抢显存（MinerU VLM/hybrid 后端因此被搁置，见下方 Backlog 条目）——不只是"装不装得下"的
+    问题，工科图表（电路图/曲线图这种）对视觉理解精度要求本来就高，小尺寸本地模型在这类任务
+    上的理解力通常明显弱于大参数云端模型，本地这条路很可能是"装得下但看不准"，质量本身也是
+    赌注，不只是显存够不够的问题。2026-08-26 补充：这个弱项不止"看不懂图在讲什么"这一层，
+    连"图上贴的字读不读得准"（元件编号/坐标轴刻度这类嵌在图里的细小文字）这层更基础的活，
+    本地通用视觉模型大概率也不如 MinerU 扫描件路径用的专精 OCR 引擎（PP-OCRv6）——专精
+    识字模型和通用视觉模型是两种不同优化方向的工具，不是同一件事的强弱版本。两层都偏弱，
+    进一步指向云端更可靠，但也进一步坐实"MinerU 抠字/抠图 ≠ 解释图片含义"，独立看图说话
+    这一步无论走本地还是云端都省不掉。
+  - 描述质量是赌注：空泛描述（"一张包含方框和箭头的图"）比不做还差——检索命中但零信息量，
+    伤用户对系统的信任，需要专门设计给模型的指令。
+  - 成本量级与双链关系图完全不同（那个是纯本地正则+CPU，几乎免费）：这条路径真花钱/真吃
+    资源，覆盖面从"仅扫描件"扩大到"所有 PDF"后开销进一步放大，需要用户明确接受量级再动手。
+
+  **2026-08-26 用户决定：线B 今天不实现，所有资讯/决策/开放问题保留在这里，以后单独开轮。**
+
+- **MinerU 结果 LLM 后处理去噪**（2026-08-26 新增讨论，未定论）：MinerU 云端结果 zip 里
+  markdown 之外还有结构化 json，现在整个被丢弃只取 md（`extractors._mineru_cloud_extract`）。
+  2026-08-26 实测确认了真实文件名与结构：`*_content_list_v2.json`，数组每项含 `type`
+  （`paragraph`/`image` 等）+ `bbox` + 对应内容，块类型确实是结构化字段（不是要另外推断）。
+  工科扫描件 OCR 噪音率不低（用户实测反馈"准确率不太高"），设想让 LLM 读这份 json 定点
+  清洗——利用 `type` 字段只清"正文"类噪音（错别字/断行/格式），公式/表格/数值密集块直接
+  跳过不碰。**核心风险**：LLM"修正 OCR 噪音"与"自信编造看似合理实则错误的内容"边界模糊，
+  两者呈现效果一模一样、事后无法分辨——对工科内容（公式/单位/数值/型号）而言，被自信改错
+  比留着乱码更危险（乱码至少让人起疑，改错的不会）。若做，范围必须严格限定在低风险块类型，
+  且指令明确"拿不准就保留原样，绝不内容补全"；这一步会再叠加一层 LLM 调用开销，和图片描述
+  那条一样不是免费的，账要一起算。**2026-08-26 用户决定：今天不实现，留到以后单独开轮。**
 - MinerU VLM/hybrid 后端（需 ~7.7GB 显存，8GB 卡与 bge-m3 冲突，除非换卡否则不可行）
+- **多维过滤检索（tags/frontmatter 属性/时间范围）**：现 `search_knowledge`/`hybrid_search`
+  只支持 folder（目录前缀）+ libraries/exclude（库范围），tags 虽已提取（`extract_frontmatter`）
+  但只揉进了嵌入锚点文本帮语义匹配，不是可精确过滤的结构化字段——vault 话题域重叠时
+  （如"配置"一词横跨 CFD 笔记与 AI 笔记）语义相似度这一维不够用，需要标签这种结构性约束
+  兜底（同问题20"置信度虚高"根因的延伸：分数是"像不像"不是"对不对"）。
+  触发条件：先确认 vault 里 frontmatter tags 覆盖率与体系一致性是否足够支撑这个过滤器
+  （若标签打得随意，做出来收益有限）；确认后再排期（2026-08-25 讨论记录）。
+  **多库前提**：本系统是多库架构，非 Obsidian 类库（课业资料/代码注释/日常笔记等）天然
+  没有 frontmatter 标签体系——过滤器须做成「有标签的库能用、没有的库自然空转不受影响」，
+  不能假设所有库都具备这套元数据，不是全局强制开关。
+- ~~双链关系图（出链/入链，独立于语义检索排序）~~ ✅ **后端 + MCP 已完成（2026-08-25，
+  问题28）**：新增 `index.py` `extract_wikilink_targets`/`resolve_note_relations` +
+  meta `links` 字段（旁路于 `clean_wikilinks` 之外，不影响问题15修复的排序）、`_links_missing`
+  惰性回填机制（kb_stale/_index_core 同步）、MCP 工具 `note_relations(path, library="")`；
+  入链不持久化、按需现算，规避"两份数据对不上"风险。七件套全绿（含新增7例）。
+  **GUI 展示已完成（2026-08-25，问题29）**：语义检索卡每条结果新增"关联笔记"内联展开
+  入口（出链/入链列表），与正文展开互相独立的开关，纯展示层接线，复用本条已有的
+  `resolve_note_relations`，不改后端。详见 TASK_LOG.md 问题29。
