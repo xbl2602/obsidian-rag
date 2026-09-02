@@ -81,7 +81,9 @@ DEFAULTS = {
     "pdf_scan_backend": "none",       # none | mineru-cloud（mineru-local 属 R3b 未支持）
     "mineru_api_key": "",             # mineru.net 个人中心 API Token；GUI/config 双端可改
     "mineru_timeout_seconds": 600,    # 单个扫描件 提交+轮询+下载 的总预算（秒）
-    "pdf_text_backend": "local",      # local | mineru-cloud（有文字层 PDF 可选送 MinerU 换更准的结构识别，is_ocr=False 不重复付OCR的钱）
+    "pdf_text_backend": "local",      # local | mineru-cloud | mineru-local（本地模型入口占位，尚未实现，选中退化为 local）
+    "mineru_model_version": "vlm",    # pipeline | vlm（MinerU 云端解析模型版本；vlm 精度更高，官方推荐；
+                                       # pipeline 更快更省配额，兜底用；非法值回退 vlm）
 }
 
 CONFIG_TEMPLATE = """\
@@ -306,7 +308,17 @@ CONFIG_TEMPLATE = """\
   //   local        = 本地直提（默认，免费、快）
   //   mineru-cloud = 送 MinerU 云端换更准的版面/表格结构识别（is_ocr=False，不为已有
   //                  文字重复付 OCR 的钱），需在下方填 API Key
+  //   mineru-local = 本地部署模型入口（占位，尚未实现）——选中后自动退化为 local，
+  //                  仅打印一次提示；预留给未来接入 MinerU 本地模式或其他本地
+  //                  解析工具，届时无需再改配置结构
   "pdf_text_backend": "local",
+
+  // MinerU 云端解析所用的模型版本：
+  //   vlm      = 视觉语言模型统一解析（官方推荐，精度更高，尤其利于密集公式/复杂版面）
+  //   pipeline = 传统多模型流水线（更快、更省每日解析配额，精度稍低，兜底可用）
+  // 影响扫描件 OCR 与文字层结构识别两个分支（is_ocr 的两个调用点都会传这个参数）。
+  // 改动后旧的 MinerU 云端提取缓存天然失效（随 EXTRACT_VERSION 一并递增）。
+  "mineru_model_version": "vlm",
 
   // MinerU 云端 API Key：mineru.net → 个人中心 → API Token。
   // 可在本 config 与 GUI 设置页两处修改——同一份文件、后保存者生效。

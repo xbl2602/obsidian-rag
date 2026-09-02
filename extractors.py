@@ -31,15 +31,22 @@ TEXT_EXTS = {"md", "txt"}
 BINARY_EXTS = {"pdf", "docx"}
 SUPPORTED_EXTS = TEXT_EXTS | BINARY_EXTS
 
-EXTRACT_VERSION = 2  # 提取逻辑版本：v2 起缓存键含产出路由（local / ocr:后端 / mineru-text）
+EXTRACT_VERSION = 3  # 提取逻辑版本：v2 起缓存键含产出路由（local / ocr:后端 / mineru-text）；
+                      # v3：MinerU 云端请求体新增 model_version 参数（问题33），旧缓存产出
+                      # 用的是未指定版本时的服务端默认（较弱的 pipeline 模式），必须失效重提。
 
 DEFAULT_CACHE_DIR = Path(__file__).parent / "data" / "extract_cache"
 
 # 扫描件 OCR 后端（config.pdf_scan_backend 的合法值）
 SCAN_BACKENDS = ("none", "mineru-cloud", "mineru-local")
 
-# 有文字层 PDF 的提取后端（config.pdf_text_backend 的合法值）
-TEXT_BACKENDS = ("local", "mineru-cloud")
+# 有文字层 PDF 的提取后端（config.pdf_text_backend 的合法值）。
+# mineru-local（本地部署模型，如 MinerU 本地 vlm/pipeline 模式、或未来可能接入的
+# OpenDataLoader 等）：入口占位，尚未实现（问题33）。选中后安全退化为 local——
+# 与扫描件分支的 mineru-local 处理不同：扫描件本地零处理能力，退化只能是"跳过不产出"；
+# 文字层 PDF 本地 pymupdf4llm 本来就能产出内容，退化成"直接不处理"反而是倒退，
+# 因此这里退化目标是 local 直提，而不是放弃产出。
+TEXT_BACKENDS = ("local", "mineru-cloud", "mineru-local")
 
 _MINERU_BASE = "https://mineru.net/api/v4"
 _POLL_INTERVAL = 3.0  # 云端任务轮询间隔（秒）
@@ -56,13 +63,35 @@ def get_scan_backend():
 
 
 def get_text_backend():
-    """有文字层 PDF 的提取后端（config.pdf_text_backend）。非法值回退 local。"""
+    """有文字层 PDF 的提取后端（config.pdf_text_backend）。非法值回退 local。
+
+    mineru-local 是尚未实现的占位选项（见 TEXT_BACKENDS 注释）；本函数只负责
+    判断 config 里这个值合不合法，选中后具体怎么处理（退化到本地直提）是
+    _extract_pdf 的路由职责，不在这里判断。
+    """
     try:
         from config import CFG
         b = str(CFG.get("pdf_text_backend", "local")).lower()
         return b if b in TEXT_BACKENDS else "local"
     except Exception:
         return "local"
+
+
+def get_model_version():
+    """MinerU 云端解析用的模型版本（config.mineru_model_version）。非法值回退 vlm。
+
+    问题33：此前请求体从未传这个参数，服务端会用未指定时的默认版本（较弱的
+    pipeline 模式）——不是"选了 pipeline"，是"根本没选，官方文档写明推荐显式
+    传 vlm"。默认值定为 vlm 而非 pipeline，是因为用户的核心场景（密集公式、
+    电路图数字标注）恰恰是 vlm 更擅长的那类内容，pipeline 仅作为可选兜底
+    （更快、更省每日解析配额）留给用户自己按需切换。
+    """
+    try:
+        from config import CFG
+        v = str(CFG.get("mineru_model_version", "vlm")).lower()
+        return v if v in ("pipeline", "vlm") else "vlm"
+    except Exception:
+        return "vlm"
 
 
 def current_backend_sig():
@@ -406,7 +435,16 @@ def _extract_pdf(path, backend=None):
 
         # 有文字层：默认本地直提；可选送 MinerU 只买版面/结构识别（不为已有文字重复付 OCR 的钱）
         text_backend = backend or get_text_backend()
-        if text_backend == "mineru-cloud":
+        if text_backend == "mineru-local":
+            # 入口占位，尚未实现（问题33）：与扫描件分支不同，这里不能直接放弃
+            # 产出——pymupdf4llm 本来就能处理文字层 PDF，"选了本地模型但没实现"
+            # 不该让用户的课件从有内容退化成 unreadable，因此安全退化到 local
+            # 直提（下方 pymupdf4llm.to_markdown 分支），只警告一次，不改变
+            # route 标签（仍记 "local"，因为产出内容确实是本地直提的结果）。
+            _warn_once("mineru-local-text",
+                       "pdf_text_backend=mineru-local 尚未实现，已退化为本地直提"
+                       "（pymupdf4llm）。如需云端结构识别，请改用 mineru-cloud。")
+        elif text_backend == "mineru-cloud":
             md, reason = _mineru_cloud_extract(path, is_ocr=False)
             return md, reason, "mineru-text"
         try:
@@ -457,6 +495,12 @@ def _mineru_cloud_extract(path, is_ocr):
     scanned/extract-failed 终态，从未真正 OCR 成功过一次；详见 TASK_LOG 问题30。）
     is_ocr：调用方显式传入，不设默认值——扫描件分支传 True；文字层 PDF 分支传
     False（只买版面/表格结构识别，不为已有文字重复付 OCR 的钱）。
+    model_version（问题33，2026-09-02）：请求体新增 config.mineru_model_version
+    （get_model_version()，默认 vlm）。此前从未传这个字段，服务端会用未声明时的
+    默认版本（较弱的 pipeline 模式）——这不是"选择了 pipeline"，是压根没做选择；
+    官方文档建议显式传 vlm 以获得更高精度。此改动不影响 URL/鉴权，只影响服务端
+    实际用哪个模型解析，因此不需要新的缓存路由标签，只靠 EXTRACT_VERSION 递增
+    让旧缓存（用未指定版本时的默认模式产出的结果）整体失效重提。
     所有异常折叠为 (None, reason)；任何日志绝不包含 api_key 与响应体全文。
     """
     try:
@@ -495,6 +539,7 @@ def _mineru_cloud_extract(path, is_ocr):
             f"{_MINERU_BASE}/file-urls/batch",
             headers={**headers, "Content-Type": "application/json"},
             json={"enable_formula": True, "enable_table": True,
+                  "model_version": get_model_version(),
                   "files": [{"name": fname, "is_ocr": is_ocr, "data_id": "doc"}]},
             timeout=30)
         data = resp.json()

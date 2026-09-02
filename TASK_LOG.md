@@ -1257,3 +1257,33 @@ council 两轮评审（`.council-state/round-plan-3/4/`）确认的四个「正�
 
 ### diff 门后记（同日）
 council diff 门 6 委员评审：security/product/redteam/performance 四席 PASS；architect 与 reliability 独立报告同一 blocker——_try_switch_back_cuda 的 del old 位于 try 块内且先于 log()/_report_device()，这两句抛异常（stderr 管道断裂等）时 except 回滚分支引用已删除的名字 → UnboundLocalError 掩盖原始异常、回滚未完成，与红线 1"收尾代码自己抛异常击穿容错承诺"同构。修复采用强化变体：引用释放改 old = None 并移至 try 块末尾全部可抛调用之后（若仅原位替换 del→None，_report_device 抛异常时回滚会把 _model 恢复成 None 丢掉 CPU 模型）。按纪律先写复现用例验证 RED 再修绿：test_switchback_rollback_survives_report_device_crash（monkeypatch _report_device 抛哨兵，断言不外泄 + index._model is cpu_model 身份比对恢复 + 冷却重武装 + 原始异常折叠进诊断）。checker 复核 9/9 PASS（audit 38/38、registry 15/15、singleton 5/5、config_editor/gui_store 0 failures、extractors 45/45、verify_export_import 39/39），LSP possibly-unbound 报警消除。
+
+## 问题 33：MinerU 云端请求补 `model_version` 参数 + `pdf_text_backend` 新增 `mineru-local` 占位入口（2026-09-02）
+
+用户与 Claude 在另一条调研会话里通读 MinerU 官方 API 文档后发现：`_mineru_cloud_extract` 的提交请求体从未包含 `model_version` 字段——不是"选择了较弱的 pipeline 模式"，是压根没做选择，服务端按未声明时的默认版本处理（官方文档建议显式传 `vlm` 以获得更高精度，尤其是密集公式、复杂版面场景）。这个遗漏不会以任何错误形式暴露：请求正常返回 200，产出正常写入缓存，只是解析精度低于本可获得的水平——与问题30那次的 404 路径错误不同，问题30会让功能整体失效且容易被察觉，这次是"能用但一直没用最好的模式"，更隐蔽。
+
+顺带处理了另一件事：`pdf_text_backend` 目前只有 `local`/`mineru-cloud` 两个值，本地部署模型（无论是 MinerU 本地 vlm/pipeline 模式、还是未来可能接入的其他本地工具）在"文字层 PDF"这条路径上完全没有入口占位——`pdf_scan_backend`（扫描件分支）已经有 `mineru-local` 这个占位值（问题26起，TODO.md backlog 记录尚未实测联调），但文字层分支没有对应物。而用户的核心场景（工程课件）大多数是有文字层的 PDF，不是扫描件，这条路径反而更常用。
+
+### 实现
+- **config.py**：DEFAULTS 新增 `"mineru_model_version": "vlm"`（pipeline | vlm，非法值回退 vlm）；CONFIG_TEMPLATE 对应位置加注释块（紧跟 `pdf_text_backend` 之后、`mineru_api_key` 之前）；`pdf_text_backend` 的注释追加 `mineru-local` 说明；`template_consistency_errors()` 校验通过。
+- **extractors.py**：
+  - `EXTRACT_VERSION` 2→3：请求体新增字段属于"产出内容会变化"的改动，必须让旧缓存（用未指定版本时的服务端默认产出）整体失效重提，不能只改代码不动版本号——否则用户切换后感知不到任何变化（问题9节前调研反复强调的这一点，这次真正落地）。
+  - 新增 `get_model_version()`（照抄 `get_scan_backend`/`get_text_backend` 的防御风格：懒加载 config、非法值回退）。
+  - `_mineru_cloud_extract` 提交请求体加 `"model_version": get_model_version()`，两个调用点（扫描件 `is_ocr=True`、文字层 `is_ocr=False`）都自动生效，不需要分别处理。
+  - `TEXT_BACKENDS` 新增 `"mineru-local"`；`_extract_pdf` 文字层分支新增该值的处理：**安全退化为本地直提**（走既有 `pymupdf4llm.to_markdown` 路径），只打印一次警告，不返回 `None`。这里的语义特意与扫描件分支的 `mineru-local` 处理（直接跳过不产出）区分开写进了注释——扫描件分支本地零处理能力，跳过是唯一选项；文字层 PDF 本地 pymupdf4llm 本来就能产出内容，"选了本地模型入口但没实现"退化成"不产出"是倒退，所以退化目标是本地直提。缓存路由标签仍记 `"local"`（`_extract_full` 的路由计算逻辑天然如此，因为产出内容确实等价，未改动那段代码）。
+  - `get_text_backend()` docstring 补充 `mineru-local` 占位说明。
+- **gui/config_editor.py**：`pdf_text_backend` 的 `choices` 加入 `("mineru-local", "本地部署模型（占位，尚未实现，自动退化为本地直提）")`；新增 `mineru_model_version` 的 FIELD_META（label/choices/hint）并加入"PDF 与云端 OCR"组的 fields 列表（否则 `test_groups_cover_all_defaults`/`test_field_meta_complete` 必红——新键漏写元数据在测试期就会暴露，这是问题31留下的静态契约机制生效的一个例子）。
+- **gui/widgets.py**：`ExtractLabDialog._hint_text()` 的 `text_tail` 字典补 `"mineru-local"` 分支说明文案（此前若 `_effective_text_backend()` 返回这个值，`.get(..., "")` 会静默落空字符串，用户选中这个选项预览文字层文件时看不到任何相关说明——这正是该方法自己在注释里警告过的那类问题，之前只是没预料到会新增这个枚举值）。试验台下拉本身（`_dd_backend` 三档：跟随全局/本地直提/MinerU云端）不新增选项——它是"单次体验效果差异"用的简化下拉，不是 `SCAN_BACKENDS ∪ TEXT_BACKENDS` 的穷举展示，一个已知会退化的占位选项放进去意义不大，与既有设计定位一致，不改。
+
+### 测试（tests/test_extractors.py，新增 7 例）
+- `test_get_model_version_default_and_invalid_fallback`：默认 vlm；显式设 pipeline 生效；大小写不敏感；非法值回退 vlm。
+- `test_mineru_cloud_extract_sends_model_version_both_is_ocr_values`：请求体必须携带 `model_version` 字段且跟随配置变化——`is_ocr` 两个取值 × `model_version` 两个取值共 4 种组合都断言请求体实际字段值（不是只断言"提取成功"这种弱结论，问题30已经用同样的教训写过一次）。
+- `test_mineru_cloud_extract_default_model_version_is_vlm_when_unset`：config 里完全不设这个键时（例如旧 config.json 未升级），请求体仍必须落到 `vlm`，不能悄悄退回"没有这个字段"的旧行为——这正是本次要修的缺陷本身，必须专门锁死。
+- `test_pdf_text_backend_mineru_local_degrades_to_local_no_network`：`mineru-local` 退化为本地直提、产出内容与 `local` 路径逐字节一致、route 落在 `local`、缓存正确写入命中、且用调用计数断言零网络调用（用 monkeypatch 计数替代 `_mineru_cloud_extract`，不依赖真实网络/Key）。
+- `test_get_text_backend_accepts_mineru_local`：`get_text_backend()` 认可这个新值为合法（不被非法值防御误伤回退成 `local`——那样配置页选中它、读回时会"看起来什么都没选"，与 GUI 层 `test_choice_fields_match_defaults` 的假设脱节）。
+- 六件套完整回归本次未能在开发环境跑通（本机 `.venv` 依赖 chromadb/torch，本次改动过程中用的是另一个受限沙箱，只装了 pymupdf/pymupdf4llm 单独验证了 extractors.py 层面的 5 个新用例，全部真实通过，非仅语法检查）；`config.py`/`gui/config_editor.py` 相关的静态一致性校验（`template_consistency_errors()`、`test_groups_cover_all_defaults`/`test_field_meta_complete`/`test_choice_fields_match_defaults` 的逻辑本体）已在沙箱里手工复现验证通过。**用户本机跑一次 `.venv\Scripts\python tests\test_extractors.py` 和 `.venv\Scripts\python tests\test_config_editor.py` 走完整六件套仍是必要的收尾动作**，本次改动未做过。
+
+### 遗留
+- 与问题30相同的性质：本项目实际生产库目前没有真正开着 `pdf_text_backend=mineru-cloud` 或已生效的旧 `model_version` 缺省调用长期跑过（云端调用此前完全没做过验证性实测，属于第一次真正配置齐全后使用），因此不存在需要手动挽救的存量数据；但已用本地直提成功索引过的文字层 PDF，本次 `EXTRACT_VERSION` 递增会让它们的本地直提缓存同样失效重提——这是预期行为（版本号是全局的，不区分"这次改动其实只影响云端分支"），下一轮索引会重新提取但产出内容不变（本地直提逻辑本身未改），只是多一次无意义的重复计算，暂不优化。
+- `mineru-local` 目前仍是纯占位——扫描件分支自问题26起就有这个值但从未实测联调（TODO.md backlog 未完成），本次只是把同样的占位机制补齐到文字层分支，让两个分支的配置结构一致、为将来真正接入本地模型（MinerU 本地部署或其他工具）铺好统一入口，没有新增任何本地推理能力，也没有安装任何模型。
+- 并行/批量加速改造（滑动窗口限流、有界并发提取、错误分类重试等）本次未动——`index.py` 主循环是高度状态化的单线程扫描/切块/落盘流程，共享大量可变状态（`meta`/`current_rels`/`new_ids` 等），贸然并发化风险远高于本次两处改动，且是架构级决策，按 AGENTS.md"拿不准的设计决策：停下问用户，不要自行扩大范围"，留给用户确认具体方案后再单独开一轮实施，不在本次一并做。

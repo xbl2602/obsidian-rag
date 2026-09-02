@@ -996,6 +996,93 @@ def test_mineru_cloud_extract_uses_correct_api_urls_both_is_ocr_values():
                 sys.modules.pop("requests", None)
 
 
+def test_get_model_version_default_and_invalid_fallback():
+    """问题33：get_model_version() 默认 vlm；非法值防御回退 vlm（照抄
+    get_scan_backend/get_text_backend 的防御风格：脏配置值绝不让上层拿到
+    一个 mineru.net 服务端会拒绝或产生非预期行为的字符串）。"""
+    saved = cfgmod.CFG.get("mineru_model_version")
+    try:
+        cfgmod.CFG.pop("mineru_model_version", None)
+        assert ex.get_model_version() == "vlm", "未配置时默认应为 vlm"
+        cfgmod.CFG["mineru_model_version"] = "pipeline"
+        assert ex.get_model_version() == "pipeline"
+        cfgmod.CFG["mineru_model_version"] = "VLM"  # 大小写不敏感
+        assert ex.get_model_version() == "vlm"
+        cfgmod.CFG["mineru_model_version"] = "some-garbage-value"
+        assert ex.get_model_version() == "vlm", "非法值必须回退 vlm，不能原样透传"
+    finally:
+        if saved is None:
+            cfgmod.CFG.pop("mineru_model_version", None)
+        else:
+            cfgmod.CFG["mineru_model_version"] = saved
+
+
+def test_mineru_cloud_extract_sends_model_version_both_is_ocr_values():
+    """问题33：请求体必须携带 model_version 字段，且跟随 config.mineru_model_version
+    变化——两个调用点（扫描件 is_ocr=True、文字层 is_ocr=False）都要覆盖。
+
+    背景：此前请求体从未传这个字段，服务端会用未声明时的默认版本（较弱的
+    pipeline 模式），且这个遗漏不会以任何错误形式暴露（请求照样成功、返回
+    200，只是解析精度更低）——纯 mock 断言"提取成功"完全测不出这类缺陷，
+    必须直接断言请求体里的字段值。
+    """
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "doc.pdf"
+        p.write_bytes(b"%PDF-1.7 fake bytes, only used for PUT upload + md5 key")
+        saved_req = sys.modules.get("requests")
+        saved_mv = cfgmod.CFG.get("mineru_model_version")
+        try:
+            for is_ocr in (True, False):
+                for mv in ("vlm", "pipeline"):
+                    cfgmod.CFG["mineru_model_version"] = mv
+                    fake = _FakeRequests()
+                    sys.modules["requests"] = fake
+                    md, reason = _with_ocr_cfg(
+                        lambda: ex._mineru_cloud_extract(p, is_ocr=is_ocr))
+                    assert reason == "" and md,                         f"is_ocr={is_ocr} model_version={mv} 提取应成功：{reason}"
+                    posts = [c for c in fake.calls if c[0] == "POST"]
+                    assert posts, "必须发起过一次提交请求"
+                    assert posts[0][2].get("model_version") == mv,                         f"is_ocr={is_ocr} 时 model_version={mv} 必须原样传进请求体"                         f"（实得 {posts[0][2]!r}）"
+        finally:
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            if saved_mv is None:
+                cfgmod.CFG.pop("mineru_model_version", None)
+            else:
+                cfgmod.CFG["mineru_model_version"] = saved_mv
+
+
+def test_mineru_cloud_extract_default_model_version_is_vlm_when_unset():
+    """问题33：config 里完全不设 mineru_model_version 时（例如旧 config.json
+    未来某天被手工清空这一键），请求体仍必须落到 vlm，绝不能悄悄退回"没有
+    这个字段"的旧行为（那正是本次要修的缺陷本身）。"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "doc.pdf"
+        p.write_bytes(b"%PDF-1.7 fake bytes")
+        saved_req = sys.modules.get("requests")
+        saved_mv = cfgmod.CFG.get("mineru_model_version")
+        try:
+            cfgmod.CFG.pop("mineru_model_version", None)
+            fake = _FakeRequests()
+            sys.modules["requests"] = fake
+            md, reason = _with_ocr_cfg(
+                lambda: ex._mineru_cloud_extract(p, is_ocr=True))
+            assert reason == "" and md
+            posts = [c for c in fake.calls if c[0] == "POST"]
+            assert posts[0][2].get("model_version") == "vlm",                 f"未配置时必须落到 vlm（实得 {posts[0][2]!r}）"
+        finally:
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            if saved_mv is None:
+                cfgmod.CFG.pop("mineru_model_version", None)
+            else:
+                cfgmod.CFG["mineru_model_version"] = saved_mv
+
+
 def test_mineru_no_key_keeps_scanned_and_api_failure_folds():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "s.pdf"
@@ -1158,6 +1245,64 @@ def test_pdf_text_backend_default_local_unchanged():
                 cfgmod.CFG.pop("pdf_text_backend", None)
             else:
                 cfgmod.CFG["pdf_text_backend"] = saved
+
+
+def test_pdf_text_backend_mineru_local_degrades_to_local_no_network():
+    """问题33：pdf_text_backend=mineru-local 是尚未实现的占位入口。选中后必须
+    安全退化为本地直提（pymupdf4llm）——绝不能因为"选了本地模型但没实现"就让
+    一份本来能被本地处理的文字层 PDF 变成不产出。同时验证零网络调用（不能
+    因为退化逻辑写错而误触 _mineru_cloud_extract），且 route/缓存键与纯 local
+    路径完全一致（因为产出内容确实等价，缓存不该为一个"实际没发生的云端调用"
+    单独开一条路由标签）。
+    """
+    with tempfile.TemporaryDirectory() as td:
+        cache = Path(td) / "cache"
+        ex.set_cache_dir(cache)
+        p = Path(td) / "t.pdf"
+        _make_text_pdf(p)
+        saved_backend = cfgmod.CFG.get("pdf_text_backend")
+        orig_cloud = ex._mineru_cloud_extract
+        calls = []
+        ex._mineru_cloud_extract = lambda *a, **kw: calls.append((a, kw))
+        try:
+            cfgmod.CFG["pdf_text_backend"] = "mineru-local"
+            md, reason, route, cached = ex._extract_full(p)
+            assert reason == "" and md and "mixing model" in md and "page 2" in md,                 f"mineru-local 占位必须退化产出本地直提内容，不能变成不产出（{reason!r}）"
+            assert route == "local",                 f"退化后 route 必须仍是 local（内容确实是本地直提产出，实得 {route!r}）"
+            assert cached is False
+            assert not calls, "mineru-local 占位绝不能触发任何网络调用"
+
+            key = hashlib.md5(p.read_bytes()).hexdigest()
+            assert (cache / f"{key}.local.v{ex.EXTRACT_VERSION}.md").exists(),                 "缓存必须落在与纯 local 路径相同的 local 路由键下"
+
+            # 二次调用命中缓存，且缓存与显式 local 配置下产出的文件是同一份
+            # （验证退化逻辑与 local 分支产出内容逐字节一致，不是"看起来一样"）
+            cfgmod.CFG["pdf_text_backend"] = "local"
+            md_local, reason_local, route_local, cached_local = ex._extract_full(p)
+            assert cached_local is True and md_local == md and route_local == "local"
+            assert not calls, "缓存命中路径同样不该触发网络调用"
+        finally:
+            ex._mineru_cloud_extract = orig_cloud
+            ex.set_cache_dir(None)
+            if saved_backend is None:
+                cfgmod.CFG.pop("pdf_text_backend", None)
+            else:
+                cfgmod.CFG["pdf_text_backend"] = saved_backend
+
+
+def test_get_text_backend_accepts_mineru_local():
+    """get_text_backend() 必须认可 mineru-local 为合法值（不能被非法值防御误伤
+    回退成 local——那样配置页选中它会在读回时"看起来什么都没选"，与
+    test_choice_fields_match_defaults 对 GUI 层的假设脱节）。"""
+    saved = cfgmod.CFG.get("pdf_text_backend")
+    try:
+        cfgmod.CFG["pdf_text_backend"] = "mineru-local"
+        assert ex.get_text_backend() == "mineru-local"
+    finally:
+        if saved is None:
+            cfgmod.CFG.pop("pdf_text_backend", None)
+        else:
+            cfgmod.CFG["pdf_text_backend"] = saved
 
 
 def test_pdf_text_backend_mineru_cloud_routes_with_is_ocr_false():

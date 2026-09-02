@@ -2179,6 +2179,8 @@ class ExtractLabDialog:
             "none": "有文字层的 PDF 本地直提。",
             "mineru-cloud": "有文字层的 PDF 会送 MinerU 云端换版面/表格识别"
                             "（不重复计费 OCR），可能需要数十秒。",
+            "mineru-local": "本地部署模型入口占位、尚未实现，"
+                            "有文字层的 PDF 会自动退化为本地直提。",
         }.get(self._effective_text_backend(), "")
         return base + tail + ("　" + text_tail if text_tail else "")
 

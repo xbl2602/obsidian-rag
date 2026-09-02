@@ -37,6 +37,7 @@ GROUPS = [
     {"title": "PDF 与云端 OCR", "level": "basic", "icon": "PICTURE_AS_PDF_OUTLINED",
      "desc": "扫描件 OCR 与文字层 PDF 的提取后端；切到 mineru-cloud 会上传原始文件。",
      "fields": [("pdf_scan_backend", "str"), ("pdf_text_backend", "str"),
+                ("mineru_model_version", "str"),
                 ("mineru_api_key", "str"), ("mineru_timeout_seconds", "int")]},
     {"title": "检索输出", "level": "basic", "icon": "SEARCH_OUTLINED",
      "desc": "返回内容的形状与低置信护栏，全部实时生效。",
@@ -123,8 +124,15 @@ FIELD_META = {
                          "choices": [
                              ("local", "本地直提（默认，免费快速）"),
                              ("mineru-cloud", "MinerU 结构识别（上传原始文件）"),
+                             ("mineru-local", "本地部署模型（占位，尚未实现，自动退化为本地直提）"),
                          ],
                          "hint": "有文字层 PDF 的提取方式；云端版面/表格识别更准（is_ocr=False 不重复计费）"},
+    "mineru_model_version": {"label": "MinerU 云端模型版本",
+                             "choices": [
+                                 ("vlm", "视觉语言模型（默认，官方推荐，精度更高）"),
+                                 ("pipeline", "传统流水线（更快更省配额，精度稍低）"),
+                             ],
+                             "hint": "仅影响送 MinerU 云端时用哪个模型解析；本地直提不受影响"},
     "mineru_api_key": {"label": "MinerU API Key", "secret": True,
                        "hint": "mineru.net → 个人中心 → API Token；敏感信息，不进任何日志"},
     "mineru_timeout_seconds": {"label": "MinerU 超时（秒）",
