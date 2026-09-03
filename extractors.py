@@ -849,7 +849,8 @@ def _mineru_poll_result(batch_id, headers, deadline, requests_mod):
     返回 (md, why)：md 非 None 时 why="done"；md 为 None 时 why ∈
       timeout  — 本地预算耗尽（服务器端可能仍在跑，调用方应保留 pending 条目）
       failed   — 服务器报任务失败（调用方移除条目，下一轮正常重提）
-      gone     — 服务器不认识该 batch / 轮询响应异常（移除条目）
+      gone     — 服务器不认识该 batch（含 404/非 JSON 响应；移除条目；429/5xx
+                 属瞬时异常不算 gone，deadline 内退避续询）
       download — 结果包下载失败（保留条目，下轮重取）
       no-md    — 结果包里没有 .md（移除条目）
       empty    — 提取成功但正文为空（移除条目）
@@ -860,7 +861,18 @@ def _mineru_poll_result(batch_id, headers, deadline, requests_mod):
         poll = requests_mod.get(
             f"{_MINERU_BASE}/extract-results/batch/{batch_id}",
             headers=headers, timeout=30)
-        pdata = poll.json()
+        try:
+            pdata = poll.json()
+            if not isinstance(pdata, dict):
+                pdata = {}
+        except Exception:
+            pdata = {}  # 404 纯文本等非 JSON 响应：下面按状态码分流，绝不让解析异常外泄
+        if poll.status_code == 429 or 500 <= poll.status_code < 600:
+            # 限流/服务端瞬时异常（问题36）：deadline 内退避后继续轮询，绝不误判
+            # 任务失败——max 模式在途任务多、轮询请求密，撞到限流要体面退让；
+            # "gone" 只留给服务器明确不认识该 batch 的响应。
+            _sleep(min(_retry_after_of(poll) or _POLL_INTERVAL * 2, 60.0))
+            continue
         if poll.status_code != 200 or pdata.get("code") not in (0, 200):
             return None, "gone"
         items = (pdata.get("data") or {}).get("extract_result") or []

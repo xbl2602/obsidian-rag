@@ -81,7 +81,8 @@ DEFAULTS = {
     "pdf_scan_backend": "none",       # none | mineru-cloud（mineru-local 属 R3b 未支持）
     "mineru_api_key": "",             # mineru.net 个人中心 API Token；GUI/config 双端可改
     "mineru_timeout_seconds": 600,    # 单个扫描件 提交+轮询+下载 的总预算（秒）
-    "mineru_concurrency": 3,          # 云端提取并行线程数（问题35）；1 = 串行（并行化前的旧行为）
+    "mineru_concurrency": 3,          # 云端提取并行线程数（问题35/36）；0=最大吞吐（限速闸门
+                                       # 自动节流，完成一个补一个）；1=串行旧行为；≥2=固定并发
     "mineru_rate_per_minute": 45,     # 每分钟最多提交多少个文件（官方频控 50/分钟，留余量）；0 = 不限
     "pdf_text_backend": "local",      # local | mineru-cloud | mineru-local（本地模型入口占位，尚未实现，选中退化为 local）
     "mineru_model_version": "vlm",    # pipeline | vlm（MinerU 云端解析模型版本；vlm 精度更高，官方推荐；
@@ -331,10 +332,14 @@ CONFIG_TEMPLATE = """\
   // 记入终态待重试（文件内容变化或后端再变化时自动重试）。
   "mineru_timeout_seconds": 600,
 
-  // MinerU 云端并行提取的线程数（问题35）。云端调用是纯网络 I/O（提交/上传/
+  // MinerU 云端并行提取的线程数（问题35/36）。云端调用是纯网络 I/O（提交/上传/
   // 轮询/下载），线程池足够，无需多进程；官方未公布「同时处理中任务数」上限，
   // 默认保守取 3，实测无 429 / 无大量降优先级后再逐步调高。
-  // 1 = 串行（与并行化之前的旧行为完全一致，回退用）。
+  //   0 = 最大吞吐模式：不设固定并发，提交节奏完全交给下方的每分钟限速闸门
+  //       自动节流——窗口没满立刻送、接近频控就等、窗口滑动自动续送；任务完成
+  //       腾出的线程让排队文件立刻补位，直到全部完工（个人库规模的推荐档位）。
+  //   1 = 串行（与并行化之前的旧行为完全一致，回退用）。
+  //   ≥2 = 固定并发数。
   "mineru_concurrency": 3,
 
   // 每分钟最多提交多少个文件到 MinerU（滑动窗口限速，问题35）。官方频控：
@@ -426,7 +431,7 @@ _POSITIVE_KEYS = frozenset((
     "lock_timeout_seconds", "lock_poll_seconds", "heartbeat_interval", "heartbeat_timeout",
     "stall_timeout", "return_chunk_limit", "max_chunks_per_file", "bm25_k1",
     "dense_candidate_factor", "dense_min_candidates", "default_top_k", "keep_exports",
-    "import_upsert_batch", "mineru_timeout_seconds", "mineru_concurrency",
+    "import_upsert_batch", "mineru_timeout_seconds",
 ))
 
 

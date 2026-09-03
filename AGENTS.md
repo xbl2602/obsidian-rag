@@ -15,10 +15,11 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 - **混合型 PDF（任一页无文字层，含"PPT 文字页+扫描图"混装课件）整本按扫描件路由**（问题34）：
   云端开 → 整本 is_ocr=True 送 MinerU vlm 认字产出一份完整 MD；未开 → 整本 scanned 终态待
   xsrc 自愈——宁可诚实空缺，绝不产出"文字页直提+图片页丢失"的半份拼接内容
-- MinerU 云端并行批量（问题35）：扫描段 `classify_extraction` 分流攒批 → 线程池只并行
-  网络 I/O（`mineru_concurrency` 默认 3，1=串行回退；worker 不触碰 pymupdf）→ 结果回
-  主线程单线程收口；滑动窗口限速（`mineru_rate_per_minute` 默认 45）+ 提交错误三分类
-  重试 + 断点簿记（`data/extract_cache/mineru_pending.json`，中断任务下轮续接不重复提交）
+- MinerU 云端并行批量（问题35/36）：扫描段 `classify_extraction` 分流攒批 → 线程池只并行
+  网络 I/O（`mineru_concurrency`：默认 3；0=最大吞吐——限速闸门自动节流、完成一个补一个
+  直到完工；1=串行回退；worker 不触碰 pymupdf）→ 结果回主线程单线程收口；滑动窗口限速
+  （`mineru_rate_per_minute` 默认 45）+ 提交错误三分类重试 + 断点簿记
+  （`data/extract_cache/mineru_pending.json`，中断任务下轮续接不重复提交）
 - 有文字层 PDF 可选 `pdf_text_backend` 送 MinerU 换更准的版面/表格结构识别（`is_ocr=False`，默认 local）
 - **人机分权门禁**：Agent 触发的索引默认只处理文本类 + `agent_formats` 已批准格式，
   未授权二进制文件被冻结（保留条目与块）；批准一次长期有效、可撤销

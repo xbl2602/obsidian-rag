@@ -1448,3 +1448,44 @@ TODO backlog 既定项：`_mineru_cloud_extract` 是"提交→上传→轮询[`t
   正常路径）；簿记文件随缓存目录走，试验台预览中断的条目随临时目录销毁。
 - 并行只覆盖"网络 I/O 等待"的重叠；嵌入/写库仍与之前完全相同（锁外编码+锁内写入），
   不在本轮范围。
+
+## 问题 36：`mineru_concurrency=0` 最大吞吐模式 + 轮询瞬时异常退让（2026-09-03）
+
+### 背景
+问题35 交付后用户提出：多文件同时送改成可选的"最大限度送"——接近 Limit 就停下，
+等结果返回继续送，直到完工。关键澄清：官方的"Limit"是**每分钟提交数**（三接口共用
+50/分钟滚动窗口），不是"同时在跑任务数"（该数字官方未公布）；因此 max 模式的正确
+形态不是"猜一个更大的并发数"，而是**把固定并发上限拿掉、让既有的滑动窗口限速闸门
+成为唯一节流阀**——窗口没满立刻送（最大限度），接近频控原地等（停下），窗口滑动
+自动续送；任务完成腾出的线程让排队文件立刻补位（等结果返回继续送），直到全部完工。
+
+### 实现
+- **index.py**：`_mineru_concurrency()` 语义扩展——`0`（或负数）= 最大吞吐模式；
+  `1` = 串行（旧行为）；`≥2` = 固定并发（默认 3 不变）。max 模式下线程池开到
+  内部上限 `_MINERU_MAX_POOL=128`（防异常规模任务撑爆本机线程；个人库规模到不了，
+  到达即意味着先撞上每日页数配额，多排队无害）；分流判定条件由 `>1` 修正为 `!=1`
+  （max 模式返回 0，旧条件会把它误判成串行走内联路径——自测前人工审查发现）。
+- **extractors.py**：`_mineru_poll_result` 响应分流修正——429/5xx 属**瞬时异常**，
+  deadline 内按 Retry-After（封顶 60s）或 2×轮询间隔退避后继续轮询，绝不误判任务
+  失败（max 模式在途任务多、轮询请求密，撞限流必须体面退让）；404/非 JSON 响应
+  （服务器不认识该 batch）才判 `gone`，且 json 解析失败不再外泄（旧代码遇到非 JSON
+  响应体会异常外泄 → 外层折叠但簿记条目永久滞留，卡死在"续接一个不存在的任务"上）。
+- **config.py / gui/config_editor.py**：`mineru_concurrency` 移出 `_POSITIVE_KEYS`
+  （0 是合法取值），DEFAULTS/模板/GUI hint 同步三档语义。
+
+### 测试（+4 例，71/71）
+- `test_mineru_concurrency_max_mode_parsing`：0/负数→max、1→串行、5→5、垃圾值→3；
+- `test_index_max_mode_all_jobs_in_flight`：5 任务 barrier(5) 全员同时在飞（无固定
+  并发上限的端到端证明），meta 正常出块；
+- `test_mineru_poll_429_transient_retries_within_deadline`：429 按 Retry-After 等 2s、
+  500 按 2×轮询间隔等 6s，最终成功且簿记清空；
+- `test_mineru_poll_gone_nonjson_removes_pending_entry`：404 非 JSON → gone + 簿记
+  条目移除（堵永久滞留）。
+- 六件套全绿：extractors **71/71**、audit **38/38**、registry **15/15**、singleton **5/5**、
+  config_editor/gui_store 0 failures、verify_export_import **39/39**。
+
+### 备注
+- max 模式的实际节流 = `mineru_rate_per_minute`（默认 45/分钟）；任务耗时分钟级时
+  稳态在途数 ≈ 提交速率 × 任务时长，个人库规模下先撞到的通常是每日 1000 页优先级
+  配额（超出降优先级、任务变慢但仍完成——超时走既有"簿记保留、下轮续接"路径）。
+- 默认值仍为 3：max 模式是**可选项**，用户按需把 `mineru_concurrency` 设为 0。

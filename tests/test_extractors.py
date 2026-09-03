@@ -2328,6 +2328,179 @@ def test_index_token_abort_skips_remaining():
         assert len(calls) + len(skipped) + (4 - accounted) == 4
 
 
+# ---------- 问题36：最大吞吐模式 + 轮询瞬时异常退让 ----------
+
+class _PollScriptRequests:
+    """轮询阶段脚本化 requests 替身：poll_script 逐次决定轮询响应，之后（下载 zip）
+    走通。poll_script 元素：
+      ("http429", <秒>) — HTTP 429 + Retry-After 头（瞬时限流，应退避续询）
+      ("http500",)      — HTTP 500（服务端瞬时异常，应退避续询）
+      ("gone404",)      — HTTP 404 + 非 JSON 响应体（服务器不认识该 batch → gone）
+      ("processing",)   — 正常响应但任务未完成
+      ("done",)         — 任务完成
+    """
+    def __init__(self, poll_script, body="# 轮询脚本正文\n"):
+        self.poll_script = list(poll_script)
+        self.calls = []
+        self.sleeps = []  # 配合 monkeypatch ex._sleep 记录退避等待
+        self.body = body
+        class _RE(Exception):
+            pass
+        self.RequestException = _RE
+
+    def post(self, url, **kw):
+        self.calls.append(("POST", url))
+        return _FakeResp({"code": 0, "data": {"batch_id": "b1",
+                                              "file_urls": ["http://p/put"]}}, 200)
+
+    def put(self, url, data=None, **kw):
+        self.calls.append(("PUT", url))
+        return _FakeResp(status=200)
+
+    def get(self, url, **kw):
+        self.calls.append(("GET", url))
+        if not url.endswith("/extract-results/batch/b1"):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("m/main.md", self.body.encode("utf-8"))
+            return _FakeResp(content=buf.getvalue(), status=200)
+        step = self.poll_script.pop(0) if self.poll_script else ("done",)
+        if step[0] == "http429":
+            resp = _FakeResp({"code": 429}, 429)
+            resp.headers = {"Retry-After": str(step[1])}
+            return resp
+        if step[0] == "http500":
+            return _FakeResp({}, 500)
+        if step[0] == "gone404":
+            class _NonJson:
+                status_code = 404
+                def json(self):
+                    raise ValueError("page not found（纯文本响应体）")
+            return _NonJson()
+        if step[0] == "processing":
+            return _FakeResp({"code": 0, "data": {"extract_result": [
+                {"state": "waiting"}]}}, 200)
+        return _FakeResp({"code": 0, "data": {"extract_result": [
+            {"state": "done", "full_zip_url": "http://cdn/r.zip"}]}}, 200)
+
+
+def test_mineru_concurrency_max_mode_parsing():
+    """mineru_concurrency 取值语义（问题36）：0/负数 = 最大吞吐；1 = 串行；
+    ≥2 = 固定并发；非法值回退默认 3。"""
+    saved = cfgmod.CFG.get("mineru_concurrency")
+    try:
+        for raw, expect in ((0, 0), (-2, 0), (1, 1), (5, 5), ("garbage", 3)):
+            cfgmod.CFG["mineru_concurrency"] = raw
+            assert index._mineru_concurrency() == expect, (raw, expect)
+    finally:
+        if saved is None:
+            cfgmod.CFG.pop("mineru_concurrency", None)
+        else:
+            cfgmod.CFG["mineru_concurrency"] = saved
+
+
+def test_index_max_mode_all_jobs_in_flight():
+    """max 模式（concurrency=0）端到端：不设固定并发，攒批任务全员同时在飞
+    （barrier 全员通过），结果照常回主线程切块入库。"""
+    import threading
+    with _IsoEnv() as iso:
+        ex.set_cache_dir(iso.tmp / "cache")
+        for i in range(5):
+            _make_scanned_pdf(iso.vault / f"m{i}.pdf")
+        keys = ("pdf_scan_backend", "pdf_text_backend", "mineru_api_key",
+                "mineru_concurrency", "mineru_rate_per_minute")
+        saved = {k: cfgmod.CFG.get(k) for k in keys}
+        cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
+        cfgmod.CFG["pdf_text_backend"] = "local"
+        cfgmod.CFG["mineru_api_key"] = "k"
+        cfgmod.CFG["mineru_concurrency"] = 0   # 最大吞吐模式
+        cfgmod.CFG["mineru_rate_per_minute"] = 0
+        barrier = threading.Barrier(5, timeout=10)
+        state = {"all_in_flight": False}
+        real_extract = ex._mineru_cloud_extract
+
+        def fake_extract(path, is_ocr=True, key=None):
+            try:
+                barrier.wait()  # 5 个任务必须全部同时在飞
+                state["all_in_flight"] = True
+            except threading.BrokenBarrierError:
+                pass
+            return f"# max 模式正文\n{Path(path).name}\n", ""
+
+        ex._mineru_cloud_extract = fake_extract
+        try:
+            _run_index(iso, incremental=False, full=True)
+        finally:
+            ex._mineru_cloud_extract = real_extract
+            for k, v in saved.items():
+                if v is None:
+                    cfgmod.CFG.pop(k, None)
+                else:
+                    cfgmod.CFG[k] = v
+            ex.set_cache_dir(None)
+        assert state["all_in_flight"], "max 模式下 5 个任务必须全员同时在飞"
+        meta = _load_meta(iso)
+        for i in range(5):
+            e = meta.get(f"m{i}.pdf")
+            assert e and not e.get("xfail") and e.get("chunks", 0) > 0, (i, e)
+
+
+def test_mineru_poll_429_transient_retries_within_deadline():
+    """轮询遇 429/5xx（瞬时异常）：deadline 内按 Retry-After/退避续询，绝不误判
+    任务失败——max 模式在途多、轮询密，撞限流必须体面退让。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        fake = _PollScriptRequests([("http429", 2), ("http500",), ("done",)])
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        saved_sleep = ex._sleep
+        ex._sleep = fake.sleeps.append
+        ex._submit_stamps.clear()
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)
+        try:
+            md, reason = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert reason == "" and md and "轮询脚本正文" in md, (reason, md)
+            assert fake.sleeps == [2.0, 6.0], \
+                f"429 按 Retry-After 等 2s，500 按 2×轮询间隔等 6s：{fake.sleeps}"
+            assert ex._pending_load() == {}
+        finally:
+            ex._sleep = saved_sleep
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+            ex._submit_stamps.clear()
+
+
+def test_mineru_poll_gone_nonjson_removes_pending_entry():
+    """服务器不认识该 batch（404 纯文本、json 解析失败）→ gone：按提取失败折叠，
+    且断点簿记条目必须移除——不能永远卡在"续接一个已经不存在的任务"上。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        fake = _PollScriptRequests([("gone404",)])
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        saved_sleep = ex._sleep
+        ex._sleep = fake.sleeps.append
+        ex._submit_stamps.clear()
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)
+        try:
+            md, reason = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert md is None and reason == "extract-failed", (md, reason)
+            assert ex._pending_load() == {}, "gone 后簿记条目必须移除，不得永久滞留"
+        finally:
+            ex._sleep = saved_sleep
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+            ex._submit_stamps.clear()
+
+
 # ---------- 运行器（对齐 audit_regression_test.py） ----------
 
 def _run_all():

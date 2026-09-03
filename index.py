@@ -1404,18 +1404,29 @@ def write_lock(timeout=LOCK_TIMEOUT_SECONDS):
     return _lock()
 
 
-def _mineru_concurrency():
-    """配置的 MinerU 云端并行度（config.mineru_concurrency，默认 3）。
+# max 模式（mineru_concurrency=0）的线程池内部上限：防异常规模任务把本机线程
+# 撑爆；个人库规模（几十~几百份）到不了这个数，到达即意味着先撞上了每日页数
+# 配额，多排队无害（完成一个、补一个，管道照常顶满）。
+_MINERU_MAX_POOL = 128
 
-    <=1 = 串行（与并行化之前的旧行为完全一致，回退用）；云端调用是纯网络 I/O，
-    线程池足够（无需多进程）；官方未公布"同时处理中任务数"上限，默认保守取 3，
-    实测摸高（问题35）。
+
+def _mineru_concurrency():
+    """MinerU 云端并行度（config.mineru_concurrency）。
+
+    0（或负数）= **最大吞吐模式**（问题36）：不设固定并发，线程池吃到内部上限
+      _MINERU_MAX_POOL；提交节奏完全交给滑动窗口限速闸门自动节流——窗口没满
+      立刻送（最大限度），接近每分钟频控就原地等，窗口滑动自动续送；任务完成
+      腾出的线程让排队文件立刻补位（完成一个、补一个，直到完工）。
+    1 = 串行（并行化之前的旧行为，回退用）。
+    ≥2 = 固定并发数（官方未公布"同时处理中任务数"上限，默认保守 3，实测摸高）。
     """
     try:
-        w = int(CFG.get("mineru_concurrency", 3) or 1)
+        raw = int(CFG.get("mineru_concurrency", 3))
     except Exception:
-        w = 3
-    return max(1, w)
+        return 3
+    if raw <= 0:
+        return 0
+    return max(1, raw)
 
 
 def index_vault(vault, incremental=True, full=False):
@@ -1685,7 +1696,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 # 扫描段绝不原地阻塞等云端），不会则按原路径当场提取（缓存秒回 /
                 # 本地直提 / 云端未启用的快速失败，均为秒级，无需并行）。
                 kind, _pages, is_ocr, route = classify_extraction(fpath, md5=bhash)
-                if kind == "cloud" and _mineru_concurrency() > 1:
+                if kind == "cloud" and _mineru_concurrency() != 1:
                     cloud_jobs.append((rel, fpath, st, bhash, is_ocr, route, _pages))
                     update_progress(files_done=unchanged + changed,
                                     message=f"待送云端（已收集 {len(cloud_jobs)} 个）：{rel}")
@@ -1718,7 +1729,13 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
         # 进度用批量语义："N 个文件云端处理中，已完成 M 个"；converting 相位
         # 豁免停滞告警同样覆盖云端长等待。
         if cloud_jobs:
-            workers = min(_mineru_concurrency(), len(cloud_jobs))
+            c = _mineru_concurrency()
+            if c == 0:
+                # 最大吞吐模式（问题36）：不设固定并发，线程池顶到内部上限；
+                # 提交节奏交给限速闸门，完成一个、排队文件立刻补位。
+                workers = min(len(cloud_jobs), _MINERU_MAX_POOL)
+            else:
+                workers = min(c, len(cloud_jobs))
             mineru_token_reset()
             # 断点簿记清理：文件不在本轮集合 / 字节已变化的条目（续接结果无归宿）
             mineru_pending_prune({str(fp): bh
