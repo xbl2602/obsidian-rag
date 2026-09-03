@@ -2,7 +2,7 @@
 
 把每个 PDF 的每一页渲染成图，交给本机 WEMM 看图服务（wemm_server.py，全局
 Python 跑）编码成「每页一个向量」，写入**独立于文字索引**的 Chroma collection
-`wemm_<库collection>`，配套独立 meta `data/wemm_meta_<库>.json`。检索时告诉 AI
+`<库collection>.wemm`，配套独立 meta `data/wemm_meta_<库>.json`。检索时告诉 AI
 内容在「哪份 PDF 的哪一页」。
 
 与文字索引（index.py/bge-m3）彻底分离（架构红线）：
@@ -32,19 +32,17 @@ from pathlib import Path
 
 import chromadb
 import index as _index_mod
-from library import effective_config, load_registry, resolve_entries, meta_path as lib_meta_path
-from index import (_UNREADABLE, _terminal_entry, collect_md_files)
+from library import effective_config, load_registry, resolve_entries
+from index import (_terminal_entry, collect_md_files)
 
 # 判空基准、终态与门禁要跟 index.py 保持一致语义（不能用私有名就本地重写同名谓词）
-REASON_UNREADABLE = "unreadable"
 REASON_EXTRACT_FAILED = "extract-failed"
 REASON_EMPTY = "empty"
-REASON_NOT_PDF = "not-pdf"
 
 WEMM_VERSION = 1          # 页级导航自己的版本号；升级后强制全量重建 WEMM 库
 WEMM_META_BASENAME = "wemm_meta_{name}.json"
-WEMM_RENDER_DPI = 60      # 页图渲染 DPI 默认档（config wemm_render_dpi 可调；改后需 --full 重建）
-WEMM_PAGE_SUFFIX = "wemm"  # 页级 collection 相对文字 collection 的后缀字段
+WEMM_RENDER_DPI = 60      # 页图渲染 DPI 默认档（config wemm_render_dpi 可调）
+WEMM_UPSERT_BATCH = 1000  # 每批写库页数（Chroma 对单批有上限，分批避免大库直接炸批）
 
 # 远程编码可通过 HTTP 向 wemm_server 请求；测试注入假编码器覆盖这两个模块级函数。
 def call_embed_image(b64_image: str, dim: int, url: str) -> list:
@@ -74,6 +72,12 @@ def call_embed_text(text: str, dim: int, url: str) -> list:
 def _skipped(info):
     """单点谓词：该 WEMM 条目是否为「不产向量的持久化终态」。"""
     return isinstance(info, dict) and bool(info.get("tbd") or info.get("xfail"))
+
+
+def _wemm_sig(model, dim, dpi):
+    """WEMM 能力签名：模型/维度/渲染档位任一变化 = 旧页向量与当前配置不再同源，
+    增量轮据此自动重渲染（成功条目携带 xsrc=签名，失败终态同样携带以便追溯）。"""
+    return f"wemm:{model}:{dim}:{dpi}"
 
 
 def wemm_collection(coll: str) -> str:
@@ -111,16 +115,26 @@ def save_wemm_meta(meta, path):
     tmp.replace(p)
 
 
-def render_page_b64(pdf_path, page_idx, dpi=WEMM_RENDER_DPI):
-    """渲染 PDF 第 page_idx 页为 base64 PNG（内存中完成，不写盘）。失败抛异常。"""
+def render_page_b64(pdf_path, page_idx, dpi=WEMM_RENDER_DPI, doc=None):
+    """渲染 PDF 第 page_idx 页为 base64 PNG（内存中完成，不写盘）。失败抛异常。
+
+    doc：调用方批量渲染时可传入已打开的 pymupdf 文档复用句柄（每页重开一次
+    文件是纯浪费）；此时本函数不负责关闭它。
+    """
     import pymupdf  # 项目 .venv 有
-    doc = pymupdf.open(pdf_path)
-    try:
+    if doc is not None:
         page = doc.load_page(page_idx)
-        pix = page.get_pixmap(dpi=dpi)
-        b = pix.tobytes("png")
-    finally:
-        doc.close()
+        b = page.get_pixmap(dpi=dpi).tobytes("png")
+    else:
+        d = pymupdf.open(pdf_path)
+        try:
+            page = d.load_page(page_idx)
+            b = page.get_pixmap(dpi=dpi).tobytes("png")
+        finally:
+            try:
+                d.close()
+            except Exception:
+                pass
     return base64.b64encode(b).decode("ascii")
 
 
@@ -160,6 +174,8 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
         return {}
     url = str(url).rstrip("/")
     dpi = int(CFG.get("wemm_render_dpi", WEMM_RENDER_DPI))
+    model_id = str(CFG.get("wemm_model", ""))
+    wsig = _wemm_sig(model_id, dim, dpi)
     tag = f"[{cfg['name']}] "
     data_dir = _data_dir()
     data_dir.mkdir(exist_ok=True)
@@ -202,6 +218,7 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
 
     current_wemm_rels = set()
     page_batches = []  # (rel, page_idx, vec)
+    pending_ok = {}    # rel -> 成功条目（写库成功后才并入 meta，防「meta 记了页数、库没写上」的假账）
 
     def _progress(msg):
         if progress:
@@ -221,30 +238,46 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
             continue
         old = meta.get(rel)
         current_wemm_rels.add(rel)
-        # 快速路径：size+mtime 未变则免渲染免编码（与文字索引同指纹策略）
-        if (not full and old and old.get("size") == st.st_size
+        # 快速路径：size+mtime 未变且能力签名一致则免渲染免编码（与文字索引同指纹策略）。
+        # 终态条目绝不走快速路径——失败文件（看图服务中途挂掉等）每轮都给重试机会，
+        # 让「记入终态待重试」是真承诺而非死寂。
+        if (not full and old and not _skipped(old) and old.get("xsrc") == wsig
+                and old.get("size") == st.st_size
                 and old.get("mtime") == st.st_mtime_ns):
             continue
         # 字节指纹（原始字节 MD5），与文字索引同源，避免重复读取
         bhash = _file_md5(fpath)
-        if not full and old and not _skipped(old) and old.get("hash") == bhash:
+        if (not full and old and not _skipped(old) and old.get("hash") == bhash
+                and old.get("xsrc") == wsig):
             continue
 
         # ---- 页面渲染 + 编码（视觉导航：扫描件/文字层 PDF 均可）----
+        import pymupdf
         try:
-            n_pages = page_count(fpath)
+            doc = pymupdf.open(str(fpath))
+        except Exception as e:
+            log(f"{tag}WEMM 页提取失败，记入终态待重试：{rel}（{type(e).__name__}）")
+            meta[rel] = _terminal_entry(st, bhash, REASON_EXTRACT_FAILED, xsrc=wsig)
+            continue
+        try:
+            n_pages = doc.page_count
             if n_pages <= 0:
                 meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
                 continue
             for i in range(n_pages):
-                b64 = render_page_b64(str(fpath), i, dpi=dpi)
+                b64 = render_page_b64(str(fpath), i, dpi=dpi, doc=doc)
                 vec = call_embed_image(b64, dim, url)
                 page_batches.append((rel, i, vec))
-            meta[rel] = {"hash": bhash, "pages": n_pages, "size": st.st_size,
-                         "mtime": st.st_mtime_ns, "tbd": False}
+            pending_ok[rel] = {"hash": bhash, "pages": n_pages, "size": st.st_size,
+                               "mtime": st.st_mtime_ns, "tbd": False, "xsrc": wsig}
         except Exception as e:
             log(f"{tag}WEMM 页提取失败，记入终态待重试：{rel}（{type(e).__name__}）")
-            meta[rel] = _terminal_entry(st, bhash, REASON_EXTRACT_FAILED)
+            meta[rel] = _terminal_entry(st, bhash, REASON_EXTRACT_FAILED, xsrc=wsig)
+        finally:
+            try:
+                doc.close()
+            except Exception:
+                pass
         _progress(f"WEMM 页索引 {len(page_batches)} 页（{rel}）")
 
     # ---- 写库（含精确清理与终态对齐，镜像 index.py 管理模式）----
@@ -256,16 +289,29 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
         except Exception as e:
             log(f"{tag}WEMM 清库失败：{e}")
 
-    # 组装向量与元数据写库
+    # 组装向量与元数据写库：分批 upsert（Chroma 单批有上限，整库一把梭大库必炸）；
+    # 全部批次成功才把成功条目并入 meta——写库失败时 meta 不记成功页数，下轮自动
+    # 重渲染重写（宁可重编码一轮，不留「meta 记了页数、库没写上」的假账触发死循环）。
     if page_batches:
         ids = [f"{rel}::{i}" for rel, i, _ in page_batches]
         emb = [v for _, _, v in page_batches]
         metas = [{"file": r, "page": i, "abs_path": str(fpath_abs(r, vault)),
                   "library": cfg["name"]} for r, i, _ in page_batches]
-        try:
-            collection.upsert(ids=ids, embeddings=emb, metadatas=metas)
-        except Exception as e:
-            log(f"{tag}WEMM 写库失败：{e}")
+        upsert_ok = True
+        for s in range(0, len(ids), WEMM_UPSERT_BATCH):
+            e = s + WEMM_UPSERT_BATCH
+            try:
+                collection.upsert(ids=ids[s:e], embeddings=emb[s:e],
+                                  metadatas=metas[s:e])
+            except Exception as ex:
+                upsert_ok = False
+                log(f"{tag}WEMM 写库失败（第 {s // WEMM_UPSERT_BATCH + 1} 批，"
+                    f"本批 {min(WEMM_UPSERT_BATCH, len(ids) - s)} 页）：{ex}")
+                break
+        if upsert_ok:
+            meta.update(pending_ok)
+        else:
+            log(f"{tag}WEMM 本轮写库未完成，成功条目不入 meta，下轮将重渲染重写")
 
     # 精确清理：有效页 id = 本轮真实存在的文件（current_wemm_rels）按记录页数生成；
     # 磁盘上已删除的文件的页向量与幽灵页在此清除（裁剪必须在清理前完成，否则

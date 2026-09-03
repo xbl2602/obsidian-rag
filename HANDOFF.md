@@ -1,6 +1,6 @@
-# HANDOFF — obsidian-rag 当前状态（2026-09-03）
+# HANDOFF — obsidian-rag 当前状态（2026-09-04）
 
-> 本文件给**未来接手的 AI agent**：一页看懂项目现状、最近三笔改动在做什么、用户侧待完成事项。
+> 本文件给**未来接手的 AI agent**：一页看懂项目现状、最近改动在做什么、用户侧待完成事项。
 
 ---
 
@@ -16,45 +16,58 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 - **META_VERSION**: 9（多格式 + 统一终态 + 原始字节指纹）
 - **EXTRACT_VERSION**: 4（PDF 分拣规则 + MinerU model_version 参数）
 - **WEMM_VERSION**: 1（页级视觉导航独立版本号，独立自愈，互不影响文字索引）
-- **六件套回归**: 全绿（extractors 71/71, audit 38/38, registry 15/15, singleton 5/5, config_editor 0, gui_store 0, verify_export_import 39/39）
-- **新增三套**: 全绿（test_wemm_indexer 26/26, test_wemm_retriever 13/13, test_dedup 19/19）
+- **回归九件套**: 全绿（extractors 72/72, audit 38/38, registry 15/15, singleton 5/5,
+  config_editor 0, gui_store 0, wemm_indexer 36/36, wemm_retriever 13/13, dedup 23/23,
+  verify_export_import 39/39）
 
 ---
 
-## 最近三笔提交（2026-09-03）
+## 最近提交脉络
 
 | 提交 | 内容 |
 |---|---|
-| `cb1be8e` | **问题35**：MinerU 云端批量并行加速——限流闸门、错误三分类重试、断点簿记与续接、Token 失效自动停整批。 |
-| `bd24227` | **问题36**：max 模式（`mineru_concurrency=0`）——不设固定并发，提交节奏交给滑动窗口限速闸门自动节流；轮询遇 429/5xx 在 deadline 内退避续询不误判失败。 |
-| **本次提交** | **问题37**：WEMM 页级视觉导航 + read_document + 近似去重（见下"最近这笔改动"） |
+| `06f397a` | **问题34**：混合型 PDF（任一页无文字层）整本按扫描件路由，不再静默丢图片页 |
+| `cb1be8e` | **问题35**：MinerU 云端批量并行——限流闸门、错误三分类重试、断点簿记续接 |
+| `bd24227` | **问题36**：max 模式（`mineru_concurrency=0`）+ 轮询瞬时异常退让 |
+| `a45826b` | **问题37**：WEMM 页级视觉导航 + read_document + 近似去重（另一 agent 实现） |
+| `9e7fac3` | **问题38**：index_failures + wemm_status + 渲染 DPI 档位（另一 agent 实现） |
+| **本次提交** | **问题39**：全面质量审查修复轮（见下） |
 
 ---
 
-## 最近这笔改动（问题37，本次提交）
+## 本次改动（问题39：审查修复轮）
 
-**WEMM 页级视觉导航**：把 PDF 每页渲染成图 → WeMM-Embedding-2B（腾讯微信视觉团队，512 维，
-全局 Python 装 torch/transformers，项目 .venv 零依赖）→ 每页一个向量 → 独立 `wemm_<collection>`
-Chroma 页库 + 独立 `data/wemm_meta_<库>.json`。检索时 `navigate_knowledge` 告诉 AI"内容在
-哪个 PDF 的第几页"（扫描件也能定位）。**默认关闭**（`wemm_backend=off`，隐私/显存优先）。
+另一 agent 完成问题37/38 后，审查发现一个 P0 + 若干 P1/P2，本轮全部修复：
 
-- 新增文件：`wemm_server.py`（本地看图 HTTP 服务，端口 9101，可 `--unload-after` 空闲释放显存）、
-  `wemm_indexer.py`（逐页渲染→页向量，带门禁/终态/一致性自愈/精确清理）、`wemm_retriever.py`（页级导航检索）
-- MCP 新增：`navigate_knowledge`、`read_document`（取完整正文+绝对路径，零触发只读缓存）、`find_duplicates`
-- `dedup.py`：文本级 MinHash+LSH 近似去重（只读建议，绝不删改文件，不触发 OCR/云端）
-- config 三处同步：`wemm_backend`/`wemm_url`/`wemm_model`/`wemm_dim`（off / 127.0.0.1:9101 / tencent/WeMM-Embedding-2B / 512）
-- 冒烟：ManometerEquation.pdf（9 页）入库 9 向量，导航查询命中第 2/1/5/8 页（cos 0.51–0.58）；
-  各 MCP 工具在 Obsidian Vault 实测可用；冒烟临时库/服务已清理（释放 ~5GB 显存）
+1. **WEMM 失败终态死寂（P0）**：快速路径对终态条目照跳，"记入终态待重试"是假承诺——
+   服务抖动一次该 PDF 永久退出页级导航。现终态/成功条目带 `xsrc=wemm:<模型>:<维度>:<DPI>`
+   签名，失败每轮真重试，改 DPI/换模型自动重渲染（不再依赖人工 --full）。
+2. **写库假账防护**：upsert 分批（1000/批），全部批次成功才把成功条目并入 meta。
+3. **显存管理（wemm_server）**：懒加载（启动不进显存，首个请求才加载）+ `--unload-after`
+   改后台守护线程驱动（原实现空闲时永不触发）+ /health 不持模型锁 + dtype 新旧兼容。
+4. **配置热读**：新增 `config.reload_config()`；ensure_fresh / reindex_knowledge / WEMM
+   工具入口统一现读。**新代码里长驻进程读配置一律走它，不要再读 import 快照。**
+5. **navigate_knowledge**：库范围语义对齐 search_knowledge（空=默认库、all−exclude）；
+   提示改指 CLI 建页库（reindex_knowledge 不建 WEMM 页库）。
+6. **read_document**：抬头补字数/产出方式（`read_cached_markdown` 命中现返回产出路由），
+   正文不截断（补齐 TODO 存档设计）。
+7. 其余：index_failures 重试判定复用 `_backend_changed`、dedup bottom-k 估计按并集第 k 小值
+   截断、页级检索 `get_collection` 零写副作用 + 错误汇总、HTTP keep-alive 请求体消费修复、
+   死代码清理。
+
+**接手注意**：既有 WEMM 页库 meta 无 `xsrc` 字段，本轮后首轮增量会整体重渲染一次（一次性）。
 
 ---
 
-## 问题脉络（从调研纪要到我接手时已完成的范围）
+## 问题脉络
 
-1. **问题33**：`model_version` 从未显式传，一直用较弱的默认 pipeline（已修）
-2. **问题34**：PDF 分拣规则整本二分 → 存在图片页即整本按扫描件（06f397a）
-3. **问题35**：串行送云端 → 并行批量（cb1be8e）
-4. **问题36**：固定并发上限 → max 模式（bd24227）
-5. **问题37（本次）**：WEMM 页级视觉导航 + read_document + 近似去重——三条一起落地
+1. **问题33**：`model_version` 从未显式传（已修）
+2. **问题34**：PDF 分拣整本二分 → 存在图片页即整本按扫描件
+3. **问题35**：串行送云端 → 并行批量
+4. **问题36**：固定并发上限 → max 模式
+5. **问题37**：WEMM 页级视觉导航 + read_document + 近似去重（默认关闭）
+6. **问题38**：失败溯源 index_failures + wemm_status + DPI 档位
+7. **问题39**：37/38 质量审查修复轮（P0 死寂/显存懒加载/配置热读/语义对齐等）
 
 ---
 
@@ -62,9 +75,11 @@ Chroma 页库 + 独立 `data/wemm_meta_<库>.json`。检索时 `navigate_knowled
 
 - 开启 mineru-cloud：GUI 设置页「常用 → PDF 与云端 OCR」→ 扫描件 OCR 后端选 `MinerU 云端 OCR`（Key 已配）
 - 导入课件：PDF 放进 vault，下一轮自动同步整本云端认字入库
-- 真实课件验证（可选）：用户手上两份实测课件（ManometerEquation、Note9），若能给路径可做完整性验证
-- 视觉导航（可选，默认关闭）：需要时按《操作手册》「视觉导航（WEMM）」三步开启——设置页开
-  `wemm_backend` → `python wemm_server.py --port 9101` → `wemm_indexer.py --library <库名> --backend on`
+- 真实课件验证（可选）：ManometerEquation / Note9 路径，若能给路径可做完整性验证
+- 视觉导航（可选，默认关闭）：设置页开 `wemm_backend` → `python wemm_server.py --port 9101`
+  （现默认懒加载，首个请求才进显存）→ `wemm_indexer.py --library <库名> --backend on`
+- **Vault 文档组（20-Projects/Obsidian RAG/，D:\_STOREROOM 另一仓库）问题39 相关更新被用户
+  约束跳过（跨工作区），待用户决策后补**——问题37/38 的 Vault 文档已在该仓库有未提交版本
 
 ---
 
@@ -82,16 +97,20 @@ Chroma 页库 + 独立 `data/wemm_meta_<库>.json`。检索时 `navigate_knowled
 | `wemm_backend` | `off` | 页级视觉导航开关（off / on-local）；默认关，隐私/显存优先 |
 | `wemm_url` | `http://127.0.0.1:9101` | 本地 WEMM 看图服务地址 |
 | `wemm_dim` | `512` | 页向量维度（WeMM-Embedding-2B matryoshka） |
+| `wemm_render_dpi` | `60` | 页图渲染档位（40/60/90/120；改后自动重渲染，无需 --full） |
 
 ---
 
 ## 架构红线（改代码前必读，违反 = 生产事故）
 
 1. extractors 契约：绝不抛异常、绝不写源目录，失败一律折叠 `(None, reason)`
-2. 统一终态：一切不产块的文件落持久化终态，扫描件类终态带 xsrc 能力签名
+2. 统一终态：一切不产块的文件落持久化终态，失败终态带 xsrc 能力签名；
+   **WEMM 同理——终态条目必须可重试，"待重试"不能是死寂**
 3. API Key 不进日志
 4. GUI 是零侵入观察者：不直写 Chroma，只读进度/meta 文件
-5. 测试先于修改：六件套全绿才能提交
+5. 测试先于修改：九件套全绿才能提交
+6. **查询路径零写副作用**（retriever 用 get_collection，不建空库）
+7. **长驻进程配置现读**：任务边界调 `config.reload_config()`，不读 import 快照
 
 ---
 
@@ -104,11 +123,11 @@ $env:PYTHONIOENCODING = "utf-8"
 .venv\Scripts\python tests\server_singleton_test.py      # 5
 .venv\Scripts\python tests\test_config_editor.py         # 0
 .venv\Scripts\python tests\test_gui_store.py             # 0
-.venv\Scripts\python tests\test_extractors.py            # 71
-.venv\Scripts\python tests\test_wemm_indexer.py          # 26
+.venv\Scripts\python tests\test_extractors.py            # 72
+.venv\Scripts\python tests\test_wemm_indexer.py          # 36
 .venv\Scripts\python tests\test_wemm_retriever.py        # 13
-.venv\Scripts\python tests\test_dedup.py                 # 19
-.venv\Scripts\python tests\verify_export_import.py       # 39
+.venv\Scripts\python tests\test_dedup.py                 # 23
+.venv\Scripts\python tests\verify_export_import.py       # 39（最后跑，会动真库）
 ```
 
 ---
@@ -117,10 +136,10 @@ $env:PYTHONIOENCODING = "utf-8"
 
 - **AGENTS.md**（本项目 AI 指令）：当前状态速览 + 架构红线
 - **AI_GUIDE.md**：部署/使用手册
-- **TASK_LOG.md**：问题 1–37 完整开发史
+- **TASK_LOG.md**：问题 1–39 完整开发史
 - **TODO.md**：路线图与 Backlog
-- **Vault 内** `20-Projects/Obsidian RAG/`：用户视角文档组
+- **Vault 内** `20-Projects/Obsidian RAG/`：用户视角文档组（另一仓库，未提交部分见上）
 
 ---
 
-> 下次接手时：先读本 HANDOFF + AGENTS.md，核对六件套是否仍全绿，再决定从 Backlog 哪个条目继续。
+> 下次接手时：先读本 HANDOFF + AGENTS.md，核对九件套是否仍全绿，再决定从 Backlog 哪个条目继续。

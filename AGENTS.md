@@ -8,7 +8,7 @@
 个人 Obsidian 知识库的本地语义检索系统：多格式文档（md/txt/pdf/docx）→ 切块 →
 BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Flet 桌面 GUI。
 
-## 当前状态速览（2026-09-03）
+## 当前状态速览（2026-09-04）
 
 - META_VERSION **9**：多格式提取 + 统一终态 + 原始字节指纹；EXTRACT_VERSION **4**
 - 多格式默认开启（`extensions=md,pdf,docx`）；扫描件 OCR 经 MinerU 云端 API（`pdf_scan_backend`，默认 none）
@@ -25,8 +25,16 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   未授权二进制文件被冻结（保留条目与块）；批准一次长期有效、可撤销
 - 笔记双链关系查询（出链/入链）：GUI 语义检索卡结果可内联展开"关联笔记"，
   另有 MCP 工具 `note_relations`
+- **WEMM 页级视觉导航（问题37/38，默认关闭 `wemm_backend=off`）**：`wemm_server.py`（全局
+  Python 跑，懒加载 + 可选空闲卸载显存）+ `wemm_indexer.py`（页向量独立 collection
+  `<collection>.wemm` / 独立 meta / 独立 WEMM_VERSION；终态与成功条目带
+  `xsrc=wemm:<模型>:<维度>:<DPI>` 签名，失败每轮真重试、改档自动重渲染；upsert 分批、
+  写库成功才落成功 meta）+ `wemm_retriever.py`（查询零写副作用）。MCP：`navigate_knowledge`、
+  `read_document`（零触发只读缓存，交付全文）、`find_duplicates`（dedup.py MinHash+LSH 只读）、
+  `index_failures`、`wemm_status`。长驻 MCP 进程配置一律经 `config.reload_config()` 现读
+  （问题39），不要再读 import 快照
 - 详细机制：`AI_GUIDE.md`（部署/使用）、Vault 内 `20-Projects/Obsidian RAG/` 文档组、
-  开发史 `TASK_LOG.md`（问题 1–34）、路线 `TODO.md`
+  开发史 `TASK_LOG.md`（问题 1–39）、路线 `TODO.md`
 
 ## 环境与命令（Windows / PowerShell）
 
@@ -34,14 +42,17 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 # Python 3.14 + .venv；跑任何 python 前建议：
 $env:PYTHONIOENCODING = "utf-8"
 
-# 回归测试六件套（改动后必须全绿才算完成）
+# 回归测试九件套（改动后必须全绿才算完成）
 .venv\Scripts\python tests\audit_regression_test.py      # 38 用例
 .venv\Scripts\python tests\library_registry_test.py      # 15 用例
 .venv\Scripts\python tests\server_singleton_test.py      # 5 用例
 .venv\Scripts\python tests\test_config_editor.py         # 静态契约套件
 .venv\Scripts\python tests\test_gui_store.py             # 50 用例
-.venv\Scripts\python tests\test_extractors.py            # 56 用例（含 mock HTTP）
+.venv\Scripts\python tests\test_extractors.py            # 72 用例（含 mock HTTP）
 .venv\Scripts\python tests\verify_export_import.py       # 39 检查项（会动真库，最后跑）
+.venv\Scripts\python tests\test_wemm_indexer.py          # 36 用例（WEMM 页级索引）
+.venv\Scripts\python tests\test_wemm_retriever.py        # 13 用例（页级检索）
+.venv\Scripts\python tests\test_dedup.py                 # 23 用例（近似去重）
 ```
 
 - 管道环境跑测试必须带 `$env:PYTHONIOENCODING='utf-8'`（交互控制台可省）

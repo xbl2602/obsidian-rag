@@ -94,7 +94,7 @@ DEFAULTS = {
     "wemm_model": "tencent/WeMM-Embedding-2B",  # WEMM 页级多模态嵌入模型（本地，图不出本机）
     "wemm_dim": 512,              # WEMM 输出向量维度（matryoshka 截断；512 质量近满、显存/存储适中）
     "wemm_render_dpi": 60,        # 页图渲染 DPI（编码耗时几乎随 DPI 平方暴涨：120≈25s/页、90≈13s、60≈2.5s、
-                                  # 40≈0.5s；默认 60 在页级导航质量与建库耗时之间取平衡；改后需 --full 重建）
+                                  # 40≈0.5s；默认 60 在页级导航质量与建库耗时之间取平衡；改后下轮自动重渲染，无需 --full）
 }
 
 CONFIG_TEMPLATE = """\
@@ -399,7 +399,7 @@ CONFIG_TEMPLATE = """\
   //   60 ≈ 2.5s/页（默认，页级导航下小字公式仍可辨）
   //   90 ≈ 13s/页（更清楚，慢一个量级）
   //   120 ≈ 25s/页（最清楚，数百页会建数小时）
-  // 改后对已建向量无影响，须用 --full 全量重建才按新档位生效。
+  // 改后 WEMM 能力签名变化，下一轮页索引自动重渲染全部页向量，无需 --full。
   "wemm_render_dpi": 60
 }
 """
@@ -601,3 +601,19 @@ def template_consistency_errors():
 
 
 CFG = load_config()
+
+
+def reload_config():
+    """重读 config.json 并**原地**更新 CFG，返回 CFG。
+
+    长驻进程（MCP server）里的 CFG 是 import 时快照；用户中途在 GUI/手改
+    config.json 后，进程内后续读取仍停在旧值。任务边界（ensure_fresh /
+    reindex_knowledge / WEMM 工具入口）调本函数让改动立即生效。原地更新
+    （clear+update 的安全版）而非重新赋值，保证 `from config import CFG`
+    拿到的同一 dict 对象在各模块间保持一致视图。
+    """
+    fresh = load_config()
+    for k in [k for k in CFG if k not in fresh]:
+        del CFG[k]
+    CFG.update(fresh)
+    return CFG

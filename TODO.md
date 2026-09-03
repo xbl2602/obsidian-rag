@@ -88,6 +88,25 @@
 > 实证：LECTURE NOTE 382 页向量 / 18 PDF，`navigate_knowledge` 返回真实命中页。另修复 test_extractors
 > 配置隔离（真实 config.json 开了 mineru-cloud → 一次挂 33 例，改成跑测前把 OCR 键重置为
 > DEFAULTS、测完还原，71/71 稳定）。详见 TASK_LOG.md 问题38。
+>
+> ✅ **2026-09-04 已完成（问题39）：全面质量审查修复轮**（用户委托另一 agent 完成问题37/38
+> 后，由审查 agent 复查 + 本轮修复）。修复清单：①**WEMM 失败终态死寂（P0）**——此前"记入
+> 终态待重试"是假承诺，size+mtime 快速路径对终态条目照跳，服务抖动一次该 PDF 永久退出页级
+> 导航；现在终态带 `xsrc=wemm:<模型>:<维度>:<DPI>` 签名、快速路径跳过终态条目，失败每轮真重试，
+> 且改 DPI/换模型自动重渲染（不再依赖人工 --full）；②**写库假账防护**——upsert 分批（1000/批）
+> 且全部批次成功才把成功条目并入 meta，杜绝"meta 记了页数、库没写上"触发整库重编码死循环；
+> ③**显存管理**——wemm_server 改懒加载（启动不进显存，首个请求才加载）+ `--unload-after`
+> 空闲卸载改后台守护线程驱动（原实现只在有新请求时检查，而空闲恰无请求，等于永不卸载）+
+> health 不再持模型锁（索引进行中不再误报"服务不可用"）+ dtype 兼容新旧 transformers；④
+> **配置热读补全**——新增 `config.reload_config()`，ensure_fresh/reindex_knowledge/导航入口
+> 统一现读，修掉"外层现读放行、内层旧快照拒绝"的自相矛盾，reindex 也能看到中途补的 OCR Key；
+> ⑤**navigate_knowledge 库范围语义对齐 search_knowledge**（空=默认库、all−exclude，此前静默
+> 搜全部库）+ 修提示死循环（此前指路 reindex_knowledge 建 WEMM 页库，而它根本不建）；⑥
+> **read_document 补齐存档设计**——抬头加字数/产出方式（缓存命中现返回产出路由），正文不再
+> 截断；⑦ index_failures 重试判定与 index._backend_changed 对齐、空串原因不再从报告消失；
+> ⑧ dedup bottom-k 估计量按并集第 k 小值截断分子（修边界假阳性）；⑨ 页级检索零写副作用
+> （get_collection）+ 逐库错误汇总不再静默；⑩ wemm_server HTTP keep-alive 请求体消费修复。
+> 新增 5 用例（wemm 36、dedup 23、extractors 72），九件套全绿。详见 TASK_LOG.md 问题39。
 
 ## 核心思想
 
@@ -239,6 +258,11 @@ python index.py --library "Obsidian Vault"
   （用户已授权索引的）文件，AI 无法借它绕过授权触发云端提取；md/txt 直读源、pdf/docx 走
   **提取缓存（零触发）**；拒绝跳出库目录的路径写法；返回带文件名/字数/产出方式抬头、
   不截断全文。详见 TASK_LOG.md 问题37。
+  > ✅ **2026-09-04 补记（问题39）**：问题37 实现时抬头缺字数/产出方式且正文超 2 万字符
+  > 截断，与存档设计不符，问题39 已补齐。另：原"暂缓"决定由用户在 2026-09-04 质量检查轮
+  > 委托审查方自行处置待办（"针对代办方案，自行决定如何操作"），本工具予以保留；若要
+  > 下线，删 server.py 的 `read_document`/`_read_source_text`/`_ROUTE_LABELS` 即可，
+  > `extractors.read_cached_markdown` 仍被 dedup 复用需保留。
 
 - ~~**PDF 本地/云端后端开关挂错分支**~~（2026-08-26 讨论发现）✅ **已完成（2026-08-25/26
   讨论，问题30 已实现）**：现在 `pdf_scan_backend`

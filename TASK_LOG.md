@@ -1636,3 +1636,81 @@ MD 正文 + 绝对路径）与**近似文档去重**（找出库内内容几乎�
   LECTURE NOTE 5 份 FLUID MECHANICS_* `extract-failed`（xsrc=当前签名，不会自动重试，需人工处理）。
 - 60 DPI 是速度/精度折中；要更高版面清晰度可改 `wemm_render_dpi` 后 `--full` 重建（耗时见背景）。
 
+
+---
+
+## 问题39：全面质量审查修复轮（2026-09-04）
+
+### 背景
+用户请另一 agent 完成了问题37（WEMM 页级视觉导航 + read_document + 去重）与问题38（失败溯源
++ wemm_status + DPI 档位）后，要求复查其质量。审查（两个独立通读 + 关键结论逐条源码复核）
+确认了红线合规面扎实（门禁镜像、零触发提取、无 Key 泄露、去重只读、页图不出本机、测试隔离），
+但发现一个 P0、若干 P1/P2，本轮全部修复。用户约束：只改本项目文件、零联网零下载、不动本地
+配置环境；跨工作区（Vault 文档组在 D:\_STOREROOM 另一仓库）本轮跳过待用户决策。
+
+### 修复清单（按严重度）
+1. **WEMM 失败终态死寂（P0）**：`wemm_indexer` 的 size+mtime 快速路径对终态条目照跳，日志写
+   "记入终态待重试"却无任何重试机制——看图服务在索引中途抖一次，该 PDF 永久退出页级导航，
+   直到人工 `--full`。这是统一终态红线想防的"死循环"的对偶缺陷"死寂"。修法：终态与成功条目
+   一律携带 `xsrc = wemm:<模型>:<维度>:<DPI>` 能力签名；快速路径要求 `xsrc` 匹配且非终态；
+   失败条目每轮真重试（失败原因多为服务不可用，重试成本仅一次 page_count/首页渲染即失败，
+   可忽略）；改 DPI/换模型自动全量重渲染（原实现只能靠人工 --full，页库会静默滞留旧档）。
+2. **写库假账（P1）**：原实现整库一把 `collection.upsert`（Chroma 单批有上限，大库直接炸），
+   且 meta 在渲染循环里就记了成功页数——upsert 失败 → 下轮 count 失配 → 整库重编码 → 再失败
+   的烧 GPU 循环。修法：分批 upsert（1000/批）+ 全部批次成功才把成功条目并入 meta（`pending_ok`
+   延迟落账），写库失败宁可下轮重渲染，不留假账。
+3. **显存管理（P1，用户重点）**：`wemm_server.py` 三处——①启动即加载 5.1GB 模型 → 改懒加载
+   （启动只绑端口，首个 /embed 才进显存，"需要才拿去"）；②`--unload-after` 只在"有新请求进来"
+   时检查空闲，而空闲的定义恰恰是没有请求，永不触发 → 改后台守护线程每 30s 检查 + 卸载时
+   clear 引用 + gc + empty_cache 真正释放；③/health 抢模型锁 → 模型加载/编码期间 health 被
+   挡 5s 超时，检索方误报"服务不可用" → 改快照读不持锁。另：dtype 参数兼容新旧 transformers
+   （`dtype=`+`torch_dtype=` 双传，加载后校验并告警，防旧版静默 fp32 显存翻倍）；编码结束后
+   再刷 `_last_use` 防刚编完就被判空闲。
+4. **配置热读自相矛盾（P1）**：问题38 声称修了"现读 config"，但只修了外层——`navigate_knowledge`
+   外层现读判 on 放行，内层 `wemm_search` 仍读 import 快照判 off 拒绝。修法：新增
+   `config.reload_config()`（原地更新共享 CFG dict），`_wemm_cfg`/`ensure_fresh`/`reindex_knowledge`
+   /`find_duplicates` 统一在任务边界调用——顺带修掉更重的同类问题：长驻 MCP 进程里 agent 触发的
+   reindex 此前完全感知不到用户中途在 GUI 补的 OCR Key/切的后端。
+5. **navigate_knowledge 库范围违约（P1）**：docstring 承诺"空=默认库"，实际传 None 给
+   `wemm_search` = 搜全部注册库（test/agents 等非笔记库混入）；"all"+exclude 被丢弃。修法：
+   统一走 `resolve_entries(libraries, exclude, defaults=...)`。**提示死循环**：工具让 AI"先调
+   reindex_knowledge 跑 WEMM 页索引"，而 reindex 根本不建页库——改为指路 CLI
+   `python wemm_indexer.py --backend on`。
+6. **read_document 补齐存档设计（P2）**：问题37 实现与 TODO 存档设计不符——抬头缺字数/产出
+   方式、正文超 2 万字符截断。修法：`read_cached_markdown` 命中改返回产出路由（原样丢弃），
+   抬头补 `字数：N　产出方式：本地提取/MinerU 云端 OCR/…`，正文不截断（工具定位就是交付全文）。
+   read_document 的保留系用户委托处置待办（2026-09-04"针对代办方案自行决定"），已在 TODO 记录
+   下线路径。
+7. **index_failures 判定与实际行为相反（P3）**：`will_retry` 要求 xsrc truthy，而 index 的
+   `_backend_changed` 对缺 xsrc 的旧条目（None != sig）会真重试——溯源结论说"不重试"实际会重试。
+   修法：直接复用 `_backend_changed` 同一谓词；空串 reason 折叠为 `unknown` 并在报告尾部兜底
+   渲染（原来从报告无声消失）。
+8. **dedup bottom-k 估计量偏置（P2）**：满 k 时直接 |A∩B|/k，把"在两边 bottom-k 里但大于并集
+   第 k 小值 z"的交集元素多算——阈值附近边界对系统性偏高（假阳性）。修法：z = 并集第 k 小值，
+   分子只数 ≤z 的交集元素。附反例 k=2：A={1,3},B={2,3} 真值 1/3，旧实现估 0.5。
+9. **页级检索写副作用（P2）**：`wemm_search` 查询路径用 `get_or_create_collection`——查询会给
+   生产 Chroma 创建空 collection。改 `get_collection`；单库异常不再静默吞掉，逐库汇总进 err。
+10. **wemm_server HTTP keep-alive（P2）**：HTTP/1.1 下 404/超限分支不读净请求体，同连接下一
+    请求把残留字节当请求行解析。修法：先读体再路由 + 错误响应置 close_connection。
+11. **死代码/风格（P3）**：wemm_indexer 未用常量与导入清理；server 未用 REASON_* 导入、
+    `import os as _os`、函数内重复导入；dedup 硬编码扩展名（含不存在的 "markdown"）改
+    `TEXT_EXTS | BINARY_EXTS` 单一事实来源；`dedup._report` 提升为 `format_report` 供 server
+    复用（删两处逐行重复）。
+
+### 测试（新增 5 用例；wemm_indexer 36、dedup 23、extractors 72）
+- `test_failed_pdf_retried_next_round`（P0 复现先行：服务抖动 → 终态带签名 → 恢复后次轮转正）
+- `test_sig_change_reencodes`（DPI 改档自动重渲染 + meta 签名更新）
+- `test_sketch_jaccard_bottomk_z_truncation`（z 截断反例 + 满签自比 1.0 + 单侧空 0）
+- `test_read_cached_markdown_zero_trigger_and_route`（未命中不触发不写缓存 + 命中返回路由 +
+  unsupported 拒绝）
+- 其余全量回归：audit 38/38、registry 15/15、singleton 5/5、config_editor/gui_store 0 failures、
+  wemm_retriever 13、verify_export_import 39/39。
+
+### 备注
+- 既有 WEMM 页库（问题38 建的 382 页向量）的 meta 条目无 `xsrc` 字段，问题39 后首轮增量会
+  整体重渲染一次（一次性成本，正好把旧 DPI 向量统一到当前档位），此后稳定。
+- `wemm_server.py` 跑在全局 Python（项目外依赖），本轮只改项目内文件未动全局环境；懒加载
+  改动对用户透明：启动后 /health 返回 loaded=false，首个导航/索引请求自动加载（首次多等
+  数十秒）。
+- Vault 文档组（20-Projects/Obsidian RAG/）的同步更新本轮按用户约束跳过（跨工作区），待用户
+  决策后补。

@@ -22,9 +22,11 @@ from pathlib import Path
 from mcp.server import MCPServer
 
 from config import CFG
-from dedup import DEFAULT_THRESHOLD as DEDUP_THRESHOLD, find_duplicates as dedup_find
+from config import reload_config
+from dedup import (DEFAULT_THRESHOLD as DEDUP_THRESHOLD, find_duplicates as dedup_find,
+                   format_report as dedup_format_report)
 from extractors import BINARY_EXTS, TEXT_EXTS, current_backend_sig
-from index import REASON_EXTRACT_FAILED, REASON_TBD, REASON_UNREADABLE
+from index import _backend_changed
 
 from index import (HEARTBEAT_TIMEOUT, LockBusyError, collect_md_files,
                    index_library, kb_stale, load_meta, log, progress_text,
@@ -144,6 +146,7 @@ def ensure_fresh():
     任何一步失败都降级为"用旧索引检索 + 提示"，绝不让检索整体失败。
     """
     try:
+        reload_config()  # 长驻进程的 CFG 是 import 快照；任务边界现读，让中途改的配置生效
         stale_libs = []
         parts = []
         pending_total = {}
@@ -302,6 +305,7 @@ def reindex_knowledge(library: str = "", allow_new_formats: bool = False) -> str
     须先向用户确认，用户同意后携带 allow_new_formats=true 再次调用即完成
     一次性长期授权（持久化到注册表，之后无需再确认；用户可随时在 GUI 取消）。"""
     try:
+        reload_config()  # 现读配置：用户中途补的 OCR Key / 切的后端必须被本轮索引看到
         libs = []
         approved = {}
         waiting = {}
@@ -370,26 +374,31 @@ def navigate_knowledge(query: str, top_k: int = 5, libraries: str = "",
     "A,B" 多库并查，exclude="B" 反选。先调 list_libraries 查看库名。
     需要已开启 wemm_backend（Config 视觉导航）并已跑过 WEMM 页索引。"""
     try:
-        cfg_backend, _, _ = _wemm_cfg()
+        cfg_backend, wemm_url, _ = _wemm_cfg()
         if cfg_backend == "off":
             return ("（WEMM 视觉导航未开启：Config→视觉导航（WEMM）将 wemm_backend"
-                    " 设为 on/local，并启动 wemm_server.py 看图服务后，先调"
-                    " reindex_knowledge 跑一次 WEMM 页索引。）")
-        from library import resolve_entries
-        names = None
-        if libraries and libraries != "all":
-            names = [e["name"] for e in resolve_entries(libraries, exclude,
-                                                        defaults=CFG.get("default_libraries", []))]
+                    " 设为 on/local，启动 wemm_server.py 看图服务后，在命令行运行"
+                    " python wemm_indexer.py --backend on 建页库。注意："
+                    "reindex_knowledge 只重建文字索引，不建 WEMM 页库。）")
+        entries = resolve_entries(libraries, exclude,
+                                  defaults=CFG.get("default_libraries", []))
+        names = [e["name"] for e in entries]
         results, err = wemm_search(query, libraries=names, top_k=top_k)
-        if err:
-            return f"（{err}）"
         if not results:
-            return ("（WEMM 页索引为空或未命中。先调 reindex_knowledge 跑 WEMM 页索引，"
-                    "或换用 search_knowledge 文本检索。）")
+            head = f"（{err}）" if err else "（WEMM 页索引为空或未命中。"
+            if not err:
+                head += ("先在命令行运行 python wemm_indexer.py --backend on 建 WEMM"
+                         " 页索引（reindex_knowledge 不建页库），或换用"
+                         " search_knowledge 文本检索。）")
+            return head
         lines = [f"页级导航（{query!r}）—— 最相关的 PDF 与页码："]
         for lib, rel, abs_path, page, score in results:
             lines.append(f"  [{lib}] {rel}（{abs_path}）第{page + 1}页  相似度 {score:.3f}")
+        if err:
+            lines.append(f"（部分库查询异常：{err}）")
         return "\n".join(lines)
+    except ValueError as e:
+        return f"（{e}）"
     except Exception as e:
         import traceback
         log(f"navigate_knowledge 失败：{e}\n{traceback.format_exc()}")
@@ -398,28 +407,39 @@ def navigate_knowledge(query: str, top_k: int = 5, libraries: str = "",
 
 def _read_source_text(cfg, rel, abs_path):
     """read_document 读正文：文本类直接读源文件；pdf/docx 只读既有提取缓存。
-    返回 (正文|None, reason|"")。reason ∈ 非本库 / 未提取 / 读取失败。
+    返回 (正文|None, route_or_reason)。命中时第二项是产出路由（local /
+    mineru-text / ocr:mineru-cloud / ocr:mineru-local / 源文件），失败时是原因。
     """
     ext = rel.rsplit(".", 1)[-1].lower() if "." in rel else ""
     if ext in ("md", "txt", "markdown"):
         try:
-            return Path(abs_path).read_text(encoding="utf-8", errors="replace"), ""
+            return Path(abs_path).read_text(encoding="utf-8", errors="replace"), "源文件"
         except OSError:
             return None, "读取失败"
     if ext in ("pdf", "docx"):
         from extractors import read_cached_markdown
-        md, reason = read_cached_markdown(abs_path)
+        md, route = read_cached_markdown(abs_path)
         if md is None:
-            return None, "未提取" if reason == "not-cached" else reason
-        return md, ""
+            return None, "未提取" if route == "not-cached" else route
+        return md, route
     return None, "不支持该格式"
+
+
+_ROUTE_LABELS = {
+    "源文件": "源文件直读",
+    "local": "本地提取",
+    "mineru-text": "MinerU 云端（文字层版面识别）",
+    "ocr:mineru-cloud": "MinerU 云端 OCR（扫描件）",
+    "ocr:mineru-local": "MinerU 本地 OCR（扫描件）",
+}
 
 
 @server.tool()
 def read_document(library: str, path: str) -> str:
     """读取某文档的完整正文 + 给出源文件绝对路径。用于检索命中后精读全部内容：
     纯文本模型用这里拿正文（pdf/docx 返回其已提取的 Markdown 全文），有看图能力的
-    模型可直接拿绝对路径去读原 PDF 对应页。
+    模型可直接拿绝对路径去读原 PDF 对应页。返回抬头带 字数 与 产出方式，正文
+    不截断（本工具的定位就是交付全文，长讲义也不会缺尾巴）。
 
     library：单个库名（同 search_knowledge 语义，不支持 "all"）。path：库内相对路径
     或不含扩展名的标题（如 "ManometerEquation"）。pdf/docx 只交付"已索引/已缓存的
@@ -446,15 +466,16 @@ def read_document(library: str, path: str) -> str:
     if rel is None:
         return (f"（在库「{cfg['name']}」中找不到 \"{path}\"。先用 search_knowledge 或"
                 f" navigate_knowledge 找到源文件，再看库内的相对路径。）")
-    import os as _os
-    abs_path = _os.path.normpath(_os.path.join(cfg["path"], rel))
-    text, reason = _read_source_text(cfg, rel, abs_path)
-    head = f"「{cfg['name']}/{rel}」\n源文件绝对路径：{abs_path}\n"
+    abs_path = os.path.normpath(os.path.join(cfg["path"], rel))
+    text, route = _read_source_text(cfg, rel, abs_path)
     if text is None:
-        return head + (f"（该文档正文不可用：{reason}。若是 pdf/docx，请先索引该文件"
+        head = f"「{cfg['name']}/{rel}」\n源文件绝对路径：{abs_path}\n"
+        return head + (f"（该文档正文不可用：{route}。若是 pdf/docx，请先索引该文件"
                        f"生成 Markdown，再重试。）")
-    preview = text if len(text) <= 20000 else text[:20000] + "\n…（正文过长，已截断前 20000 字符）"
-    return f"{head}\n{preview}"
+    how = _ROUTE_LABELS.get(route, route)
+    head = (f"「{cfg['name']}/{rel}」\n源文件绝对路径：{abs_path}\n"
+            f"字数：{len(text)}　产出方式：{how}\n")
+    return f"{head}\n{text}"
 
 
 @server.tool()
@@ -469,6 +490,9 @@ def find_duplicates(library: str = "", threshold: float = None) -> str:
     阈值（0~1，默认 0.8），越高越严格。"""
     try:
         thr = threshold if threshold is not None else DEDUP_THRESHOLD
+        if not (0.0 < thr <= 1.0):
+            return f"（threshold 必须在 (0, 1] 区间，收到 {thr}。）"
+        reload_config()
         if library in ("", "all"):
             entries = load_registry()
         else:
@@ -479,7 +503,7 @@ def find_duplicates(library: str = "", threshold: float = None) -> str:
         for e in entries:
             cfg = effective_config(e)
             clusters, stats = dedup_find(cfg, threshold=thr)
-            blocks.append(_dedup_report(cfg["name"], clusters, stats, thr))
+            blocks.append(dedup_format_report(cfg, clusters, stats, thr))
         return "\n\n".join(blocks)
     except Exception as exc:
         import traceback
@@ -488,17 +512,8 @@ def find_duplicates(library: str = "", threshold: float = None) -> str:
 
 
 def _dedup_report(name, clusters, stats, threshold):
-    lines = [f"库「{name}」近似重复扫描（阈值 ≥{threshold}）：",
-             f"  扫描 {stats['scanned']} 份，跳过 {stats['skipped']} 份"
-             f"（未提取/太短/读取失败），近似重复对 {stats['pairs']}，"
-             f"重复组 {stats['groups']}"]
-    if not clusters:
-        lines.append("  （未发现近似重复）")
-    for i, c in enumerate(clusters, 1):
-        lines.append(f"  组{i}（{len(c['files'])} 份）:")
-        for (a, b, j) in c["links"]:
-            lines.append(f"    · {a}  ≈  {b}  （相似度 {j}）")
-    return "\n".join(lines)
+    """（已由 dedup.format_report 取代，保留薄壳防外部引用；勿新增调用。）"""
+    return dedup_format_report({"name": name}, clusters, stats, threshold)
 
 
 # 终态 reason → 人类可读解释（索引失败溯源用；与 index.py REASON_* 常量同串）
@@ -541,12 +556,12 @@ def index_failures(library: str = "", include_ok: bool = False) -> str:
                     continue
                 r = info.get("reason")
                 if r:
-                    xsrc = info.get("xsrc")
-                    will_retry = (r in ("scanned", "extract-failed")
-                                  and xsrc and xsrc != sig)
+                    # 与 index._backend_changed 同一谓词：签名不符（含旧条目缺
+                    # xsrc）= 下轮真的会重试，别给 AI 一个与实际行为相反的结论
+                    will_retry = _backend_changed(info, sig)
                     reasons.setdefault(r, []).append((rel, bool(will_retry)))
                 elif info.get("xfail") or info.get("tbd"):
-                    r2 = REASON_UNREADABLE if info.get("reason") is None else info["reason"]
+                    r2 = info.get("reason") or "unknown"
                     reasons.setdefault(r2, []).append((rel, False))
                 else:
                     ok += 1
@@ -566,7 +581,7 @@ def _failures_report(name, reasons, ok, sig, include_ok):
             lines.append(f"  正常索引文件：{ok} 份。")
         return "\n".join(lines)
     for r in ("unreadable", "extract-failed", "empty", "tbd", "scanned", "not-pdf"):
-        items = reasons.get(r)
+        items = reasons.pop(r, None)
         if not items:
             continue
         label = _TERMINAL_LABELS.get(r, r)
@@ -574,6 +589,11 @@ def _failures_report(name, reasons, ok, sig, include_ok):
         for rel, will_retry in items:
             mark = "（〆 下轮将自动重试转正）" if will_retry else ""
             lines.append(f"      · {rel}{mark}")
+    # 非常规 reason（如空串折叠出的 unknown）也要露面，绝不让文件从报告中无声消失
+    for r, items in reasons.items():
+        lines.append(f"  〔{r}〕{len(items)} 份 —— 未知终态（请带此输出反馈排查）")
+        for rel, will_retry in items:
+            lines.append(f"      · {rel}")
     if include_ok:
         lines.append(f"  正常索引文件：{ok} 份（不在上述失败清单里）")
     lines.append("  提示：unreadable/extract-failed 可删掉该文件重试或修复源文件；"
@@ -582,16 +602,17 @@ def _failures_report(name, reasons, ok, sig, include_ok):
 
 
 def _wemm_cfg():
-    """读 WEMM 相关配置的当前值（每次从 config.json 现读，不用进程启动时的快照）。
+    """读 WEMM 相关配置的当前值（reload_config 现读，不用进程启动时的快照）。
 
     长驻 MCP server 的 CFG 是 import 时加载的副本；用户中途在 Config 里开关了
     wemm_backend / 改 DPI 后，这里必须拿到最新值，否则导航/状态会一直停在旧开关上。
+    reload_config 原地更新共享 CFG——随后 wemm_search 等内部 `from config import CFG`
+    的读取也拿到同一份新值，外层放行、内层拒绝的自相矛盾不再可能。
     """
-    from config import load_config
-    c = load_config()
-    return (c.get("wemm_backend", "off"),
-            c.get("wemm_url"),
-            c.get("wemm_render_dpi"))
+    reload_config()
+    return (CFG.get("wemm_backend", "off"),
+            CFG.get("wemm_url"),
+            CFG.get("wemm_render_dpi"))
 
 
 @server.tool()

@@ -296,6 +296,72 @@ def test_bad_pdf_terminal_state():
         iso.cleanup()
 
 
+def test_failed_pdf_retried_next_round():
+    """看图服务抖动 → 失败终态带 wemm 签名；服务恢复后下一轮自动重试转正。
+
+    「记入终态待重试」必须是真承诺：终态条目绝不走快速路径，否则失败文件
+    在 size+mtime 快速路径下永久死寂（2026-09-04 检查轮 P0）。
+    """
+    with _IsoEnv() as iso:
+        p = iso.vault / "doc.pdf"
+        _make_text_pdf(p, pages=2)
+        cfg = _default_cfg(iso.vault)
+
+        class _DownEnc:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, b64, dim, url):
+                self.calls += 1
+                raise RuntimeError("wemm server down")
+
+        bad = _DownEnc()
+        _run(iso, cfg, bad)
+        m = _meta(iso)
+        info = m.get("doc.pdf", {})
+        ok("retry: 首轮落失败终态", bool(info.get("xfail")), str(info))
+        ok("retry: 终态带 wemm 签名", str(info.get("xsrc", "")).startswith("wemm:"),
+           str(info))
+        ok("retry: 失败首轮无向量", _wemm_count(iso) == 0, str(_wemm_count(iso)))
+        enc2 = _FakeImageEncoder()
+        _run(iso, cfg, enc2)
+        ok("retry: 次轮重试编码", enc2.calls == 2, str(enc2.calls))
+        ok("retry: 次轮向量入库", _wemm_count(iso) == 2, str(_wemm_count(iso)))
+        info2 = _meta(iso).get("doc.pdf", {})
+        ok("retry: 次轮转正 pages=2", info2.get("pages") == 2, str(info2))
+        ok("retry: 次轮条目带签名", str(info2.get("xsrc", "")).startswith("wemm:"),
+           str(info2))
+        iso.cleanup()
+
+
+def test_sig_change_reencodes():
+    """能力签名（模型/维度/DPI 档位）变化 → 增量轮自动重渲染，页库不滞留旧档。"""
+    import config as cfgmod
+    with _IsoEnv() as iso:
+        p = iso.vault / "doc.pdf"
+        _make_text_pdf(p, pages=2)
+        cfg = _default_cfg(iso.vault)
+        enc = _FakeImageEncoder()
+        _run(iso, cfg, enc)
+        first = enc.calls
+        ok("sig: 首轮编码 2", first == 2, str(first))
+        saved = cfgmod.CFG.get("wemm_render_dpi")
+        new_dpi = int(saved or 60) + 5
+        cfgmod.CFG["wemm_render_dpi"] = new_dpi
+        try:
+            _run(iso, cfg, enc)
+        finally:
+            if saved is None:
+                cfgmod.CFG.pop("wemm_render_dpi", None)
+            else:
+                cfgmod.CFG["wemm_render_dpi"] = saved
+        ok("sig: DPI 改档后重编码", enc.calls == first + 2, str(enc.calls))
+        info = _meta(iso).get("doc.pdf", {})
+        ok("sig: meta 签名随档位更新", str(info.get("xsrc", "")).endswith(str(new_dpi)),
+           str(info))
+        iso.cleanup()
+
+
 def test_version_upgrade_forces_rebuild():
     """meta._version ≠ 当前 → 自动全量重建。"""
     with _IsoEnv() as iso:

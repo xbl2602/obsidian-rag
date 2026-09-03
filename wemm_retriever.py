@@ -1,7 +1,7 @@
 """wemm_retriever.py — WEMM 页级视觉导航检索（跑在项目 .venv）。
 
 wemm_search(query, libraries, top_k) → 把查询文字编码成向量，在每库的
-`wemm_<库collection>` 页级别量库（wemm_indexer.py 建）里余弦检索，返回
+`<库collection>.wemm` 页级别量库（wemm_indexer.py 建）里余弦检索，返回
 「内容在哪个 PDF 的哪一页」，供 navigate_knowledge MCP 工具消费。
 
 与文字索引（retriever.py/hybrid_search）**彻底分离**：
@@ -63,6 +63,7 @@ def wemm_search(query, libraries=None, top_k=5, url=None, dim=None, backend=None
         return [], f"查询编码失败：{type(e).__name__}"
 
     results = []
+    errs = []
     try:
         client = chromadb.PersistentClient(path=str(_chroma_dir()))
     except Exception as e:
@@ -70,14 +71,17 @@ def wemm_search(query, libraries=None, top_k=5, url=None, dim=None, backend=None
     for cfg in targets:
         collection_name = wemm_collection(cfg["collection"])
         try:
-            collection = client.get_or_create_collection(
-                name=collection_name, metadata={"hnsw:space": "cosine"})
-            if collection.count() == 0:
+            # 查询路径用 get_collection：绝不因查询创建空 collection（写副作用）；
+            # 页库不存在/损坏只记入 errs，不阻断其他库。
+            collection = client.get_collection(name=collection_name)
+            n = collection.count()
+            if n == 0:
                 continue
-            hits = collection.query(query_embeddings=[qvec], n_results=min(top_k, collection.count()),
+            hits = collection.query(query_embeddings=[qvec], n_results=min(top_k, n),
                                     include=["metadatas", "distances"])
         except Exception as e:
-            continue  # 某库页库损坏/缺失，跳过不阻断整体
+            errs.append(f"{cfg['name']}：{type(e).__name__}")
+            continue
         metas = hits.get("metadatas")
         dists = hits.get("distances")
         if not metas or not metas[0]:
@@ -87,7 +91,8 @@ def wemm_search(query, libraries=None, top_k=5, url=None, dim=None, backend=None
             results.append((cfg["name"], m.get("file"), m.get("abs_path"),
                             m.get("page"), round(score, 4)))
     results.sort(key=lambda x: x[4], reverse=True)
-    return results[:top_k], None
+    err = "；".join(errs) if errs else None
+    return results[:top_k], err
 
 
 def health(url):

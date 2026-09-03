@@ -150,6 +150,25 @@ def test_uncached_pdf_skipped():
         v.cleanup()
 
 
+def test_sketch_jaccard_bottomk_z_truncation():
+    """满 k 签名的估计分子必须按并集第 k 小值 z 截断。
+
+    反例（k=2）：A={1,3}、B={2,3}，交集 {3} > z=2 → 估计 0。旧实现直接
+    |A∩B|/k = 1/2，把「在两边 bottom-k 里但大于 z」的交集元素多算了——
+    对阈值附近的边界对系统性偏高，产生假阳性重复对。
+    """
+    ok("z 截断: k=2 边界对不虚高",
+       dedup.sketch_jaccard([1, 3], [2, 3], k=2) == 0.0,
+       str(dedup.sketch_jaccard([1, 3], [2, 3], k=2)))
+    ok("z 截断: k=4 估计 0.75",
+       dedup.sketch_jaccard([1, 2, 3, 4], [1, 2, 3, 5], k=4) == 0.75,
+       str(dedup.sketch_jaccard([1, 2, 3, 4], [1, 2, 3, 5], k=4)))
+    ok("z 截断: 满签自比仍 1.0",
+       dedup.sketch_jaccard([1, 2, 3, 4], [1, 2, 3, 4], k=4) == 1.0)
+    ok("z 截断: 单侧空 → 0（不误报）",
+       dedup.sketch_jaccard([], [1, 2, 3, 4], k=4) == 0.0)
+
+
 def test_connected_component_grouping():
     v = _Vault()
     try:

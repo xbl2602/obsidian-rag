@@ -287,7 +287,9 @@ def read_cached_markdown(path, backend=None):
 
     红线7：read_document 只应交付"已经索引过/已在缓存里"的内容，绝不能在
     后台默默触发扫描件 OCR 或云端 MinerU。本函数只查既有缓存，未命中返回
-    (None, "not-cached")，调用方据此提示"先索引该文件"。返回 (md|None, reason|"")。
+    (None, "not-cached")，调用方据此提示"先索引该文件"。
+    命中返回 (md, route)，route ∈ local / mineru-text / ocr:mineru-cloud /
+    ocr:mineru-local（调用方作"产出方式"抬头展示）。
     """
     from pathlib import Path
     path = Path(path)
@@ -304,10 +306,10 @@ def read_cached_markdown(path, backend=None):
         key = _file_md5(path)
     except OSError:
         return None, "unreadable"
-    hit, _route = _cache_get(key, routes)
+    hit, route = _cache_get(key, routes)
     if hit is None:
         return None, "not-cached"
-    return hit, ""
+    return hit, route
 
 
 def extract_preview(path, backend=None):

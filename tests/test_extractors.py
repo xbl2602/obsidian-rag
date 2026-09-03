@@ -341,6 +341,42 @@ def test_uppercase_extension_routing():
         assert text is not None and "正文" in text, ".MD 必须按文本解码"
 
 
+def test_read_cached_markdown_zero_trigger_and_route():
+    """零侵入缓存读（红线7 落点）：未命中绝不触发提取；命中返回产出路由。"""
+    with tempfile.TemporaryDirectory() as td:
+        cache = Path(td) / "cache"
+        ex.set_cache_dir(cache)
+        try:
+            p = Path(td) / "t.pdf"
+            _make_text_pdf(p)
+            md, reason = ex.read_cached_markdown(p)
+            assert md is None and reason == "not-cached", \
+                f"未命中应返回 (None,'not-cached')，got ({type(md).__name__},{reason!r})"
+            assert not list(cache.glob("*.md")), "未命中绝不写缓存/触发提取"
+            # 强制本地提取路径，填充缓存（不碰云端，隔离于真实配置）
+            saved_tb = cfgmod.CFG.get("pdf_text_backend")
+            cfgmod.CFG["pdf_text_backend"] = "local"
+            try:
+                md2, r2 = ex.extract_to_markdown(p)
+            finally:
+                if saved_tb is None:
+                    cfgmod.CFG.pop("pdf_text_backend", None)
+                else:
+                    cfgmod.CFG["pdf_text_backend"] = saved_tb
+            assert md2 is not None and r2 == "", "前置：本地提取成功填缓存"
+            md3, route = ex.read_cached_markdown(p)
+            assert md3 == md2, "缓存读内容与提取一致"
+            assert route in ("local", "mineru-text"), \
+                f"命中应返回产出路由，got {route!r}"
+            # unsupported 格式明确拒绝，绝不猜测
+            txt = Path(td) / "x.exe"
+            txt.write_bytes(b"MZ")
+            md4, r4 = ex.read_cached_markdown(txt)
+            assert md4 is None and r4 == "unsupported", f"got ({md4},{r4!r})"
+        finally:
+            ex.set_cache_dir(None)
+
+
 def test_cache_hit_skips_reextraction_and_none_not_cached():
     with tempfile.TemporaryDirectory() as td:
         cache = Path(td) / "cache"

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from index import collect_md_files
 from library import effective_config, load_registry, resolve_entries
-from extractors import read_cached_markdown
+from extractors import BINARY_EXTS, TEXT_EXTS, read_cached_markdown
 
 DEFAULT_K = 64      # MinHash 签名长度（bottom-k）
 DEFAULT_BANDS = 16  # LSH 分多少段
@@ -70,18 +70,24 @@ def minhash_sketch(tokens, k=DEFAULT_K, n=4):
 def sketch_jaccard(a, b, k=DEFAULT_K):
     """两个 bottom-k 签名估 Jaccard。
 
-    - 两侧签名都满 k（文档足够长，sketch=真正的最小的 k 个值）→ 用标准 bottom-k
-      估计器 |A∩B|/k（此时 self=1.0，长文档 duplicate 逼近 1.0）。
-    - 任一签名未满 k（文档短/碎片少，sketch=整集）→ 直接用精确 |A∩B|/|A∪B|，
-      避免 /k 低估短文档。
+    - 两侧签名都满 k（文档足够长，sketch=各自全集的最小 k 个值）→ 标准 bottom-k
+      估计器：以并集第 k 小值 z 为阈值，只数 ≤z 的交集元素除以 k。分子必须按 z
+      截断——直接 |A∩B|/k 会把「两边 bottom-k 里但大于 z」的交集元素多算进去，
+      对阈值附近的边界对系统性偏高（假阳性重复）。
+    - 任一签名未满 k（文档短/碎片少）→ 未满侧 sketch 即其全集，但另一侧只是样本，
+      此时 |A∩B|/|A∪B| 是有偏样本估计（对「短文档是长文档子集」类重复偏保守、
+      会漏报方向），可接受：宁漏报勿假阳性。
     """
     sa, sb = set(a), set(b)
+    if not sa and not sb:
+        return 1.0
+    if len(sa) == k and len(sb) == k:
+        z = sorted(sa | sb)[k - 1]  # 并集的第 k 小值（两 sketch 的并足够覆盖它）
+        return sum(1 for x in sa & sb if x <= z) / k
     inter = len(sa & sb)
     union = len(sa | sb)
     if not union:
         return 1.0
-    if len(sa) == k and len(sb) == k:
-        return inter / k
     return inter / union
 
 
@@ -123,7 +129,7 @@ def find_duplicates(cfg, threshold=DEFAULT_THRESHOLD, k=DEFAULT_K,
     stats = {"scanned": 0, "skipped": 0, "pairs": 0, "groups": 0}
     files = collect_md_files(vault, cfg["exclude_dirs"], cfg["exclude_files"],
                              cfg["exclude_patterns"],
-                             ["md", "txt", "pdf", "docx", "markdown"])
+                             sorted(TEXT_EXTS | BINARY_EXTS))
 
     sketches = {}  # rel -> sketch
     skip_reasons = {}
@@ -208,7 +214,8 @@ def _clusterize(edges):
     return clusters
 
 
-def _report(cfg, clusters, stats, threshold):
+def format_report(cfg, clusters, stats, threshold):
+    """渲染单库去重报告（server.find_duplicates 与本 CLI 共用的单一实现）。"""
     lines = [f"库「{cfg['name']}」近似重复扫描（阈值 ≥{threshold}）："]
     lines.append(f"  扫描 {stats['scanned']} 份，跳过 {stats['skipped']} 份"
                  f"（未提取/太短/读取失败），近似重复对 {stats['pairs']}，"
@@ -238,7 +245,7 @@ def main():
     for e in entries:
         cfg = effective_config(e)
         clusters, stats = find_duplicates(cfg, threshold=args.threshold)
-        print(_report(cfg, clusters, stats, args.threshold))
+        print(format_report(cfg, clusters, stats, args.threshold))
         print()
 
 

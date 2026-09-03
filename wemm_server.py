@@ -11,11 +11,17 @@ WeMM-Embedding 是「看图」的多模态嵌入模型：把 PDF 的一整页图
 用法：
   全局 Python 启动（非项目 .venv）：
       python wemm_server.py [--port 9101] [--model tencent/WeMM-Embedding-2B]
-                            [--dim 512] [--unload-after 0]
+                            [--dim 512] [--unload-after 0] [--threads 4]
   --port          监听端口（默认从 config 的 wemm_url 读，缺省 9101）
   --model         WeMM 模型标识（默认读 config wemm_model）
   --dim           输出向量维度（默认读 config wemm_dim）
   --unload-after  空闲 N 秒后释放 GPU 显存（0=不自动卸载；用于给 bge-m3 让路）
+  --threads       CPU 线程数（torch.set_num_threads，默认 4）
+
+显存策略（2026-09-04 检查轮）：**懒加载 + 空闲卸载**。启动只绑端口不进显存；
+第一个 /embed 请求才把模型怼进 GPU；--unload-after > 0 时由后台守护线程每
+30s 检查空闲（不依赖新请求进来——空闲的定义恰恰是没有请求），超时即卸载。
+磁盘重新加载的代价相对显存溢出（WDDM 挤占系统 RAM、整机卡死）不值一提。
 
 接口（项目进程序内 wemm_indexer / wemm_retriever 调用）：
   GET  /health              → {"ok":true,"model":...,"dim":...,"gpu_mem_gb":...,"loaded":bool}
@@ -109,11 +115,18 @@ def _load_engine(model_id: str, dim: int):
         path = _resolve_model_path(model_id)
         t0 = time.time()
         processor = AutoProcessor.from_pretrained(path, trust_remote_code=True)
+        # dtype= 新版 transformers；torch_dtype= 旧版。两个都传：未知 kwarg 会被
+        # 静默吞进 config，只有对应版本认识的那个生效——只传一个在旧版上会退化成
+        # fp32 加载，显存翻倍，恰在 8GB 卡的边界场景翻车。
         model = AutoModel.from_pretrained(path, trust_remote_code=True,
-                                          dtype=torch.bfloat16)
+                                          dtype=torch.bfloat16,
+                                          torch_dtype=torch.bfloat16)
         dev = "cuda" if torch.cuda.is_available() else "cpu"
         model = model.to(dev)
         model.eval()
+        if model.dtype != torch.bfloat16:
+            print(f"[wemm] WARNING: model dtype={model.dtype}（未按 bfloat16 加载，"
+                  f"显存占用可能翻倍）", file=sys.stderr)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         supported = list(getattr(model.config, "matryoshka_dimensions", None) or [])
@@ -122,7 +135,7 @@ def _load_engine(model_id: str, dim: int):
                    "supported": supported, "loaded_at": time.time()}
         _last_use = time.time()
         print(f"[wemm] model loaded in {time.time()-t0:.1f}s -> {dev}; "
-              f"gpu_mem={_gpu_mem():.2f}GB; supported_dims={supported}",
+              f"dtype={model.dtype}; gpu_mem={_gpu_mem():.2f}GB; supported_dims={supported}",
               file=sys.stderr)
         return _engine
 
@@ -131,9 +144,29 @@ def _unload_engine_locked():
     """释放 GPU 显存（给 bge-m3 等让路）。调用方须已持有 _ENGINE_LOCK。"""
     global _engine
     if _engine is not None:
-        if _engine["device"] == "cuda" and torch.cuda.is_available():
+        _engine.clear()  # 先丢模型/处理器引用，再让 GC 真正回收张量
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
             torch.cuda.empty_cache()
         _engine = None
+        print("[wemm] engine unloaded; gpu_mem released", file=sys.stderr)
+
+
+def _idle_unload_daemon():
+    """空闲卸载守护线程：每 30s 检查一次。
+
+    之前的实现只在「有新请求进来」时才检查空闲——而空闲的定义恰恰是没有请求，
+    导致 --unload-after 形同虚设（索引跑完后 5.1GB 显存永远占着）。守护线程
+    补上无请求场景；_check_idle_unload 自身持锁且二次校验空闲，竞态安全。
+    """
+    interval = min(30, max(1, _IDLE_UNLOAD_SECONDS))
+    while True:
+        time.sleep(interval)
+        try:
+            _check_idle_unload()
+        except Exception as e:
+            print(f"[wemm] idle check error: {type(e).__name__}", file=sys.stderr)
 
 
 def _gpu_mem() -> float:
@@ -214,25 +247,40 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path.split("?")[0].rstrip("/") == "/health":
-            _check_idle_unload()
-            with _ENGINE_LOCK:
-                loaded = _engine is not None
-                ent = _engine or {}
-                self._send(200, {"ok": True, "loaded": loaded,
-                                 "model": ent.get("model_id") or _CFG["wemm_model"],
-                                 "dim": ent.get("dim") or _CFG["wemm_dim"],
-                                 "supported_dims": ent.get("supported") or [],
-                                 "gpu_mem_gb": round(_gpu_mem(), 2)})
+            # 不取 _ENGINE_LOCK：health 的职责是「服务活没活」，若在模型加载/编码
+            # 期间被锁挡住 5s 超时，检索方会误判「服务不可用」。快照读引用即可。
+            ent = _engine
+            loaded = ent is not None
+            ent = ent or {}
+            self._send(200, {"ok": True, "loaded": loaded,
+                             "model": ent.get("model_id") or _CFG["wemm_model"],
+                             "dim": ent.get("dim") or _CFG["wemm_dim"],
+                             "device": ent.get("device") or ("cuda" if torch.cuda.is_available() else "cpu"),
+                             "supported_dims": ent.get("supported") or [],
+                             "gpu_mem_gb": round(_gpu_mem(), 2)})
         else:
+            self.close_connection = True
             self._send(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):  # noqa: N802
+        # 先读净请求体再路由：HTTP/1.1 keep-alive 下，404/400 分支若不消费 body，
+        # 同一连接的下一个请求会把残留字节当请求行解析，协议错位。
+        try:
+            body = self._read_body()
+        except ValueError:
+            self.close_connection = True
+            self._send(400, {"ok": False, "error": "bad request"})
+            return
+        except json.JSONDecodeError:
+            self.close_connection = True
+            self._send(400, {"ok": False, "error": "invalid json"})
+            return
         path = self.path.split("?")[0].rstrip("/")
         if path != "/embed":
+            self.close_connection = True
             self._send(404, {"ok": False, "error": "not found"})
             return
         try:
-            body = self._read_body()
             kind = body.get("type")
             content = body.get("content")
             dim = int(body.get("dim") or 0) or _CFG["wemm_dim"]
@@ -243,8 +291,6 @@ class _Handler(BaseHTTPRequestHandler):
                 self._do_embed_image(content, dim)
             else:
                 self._do_embed_text(content, dim)
-        except json.JSONDecodeError:
-            self._send(400, {"ok": False, "error": "invalid json"})
         except ValueError as e:
             self._send(400, {"ok": False, "error": "bad request: %s" % str(e)[:200]})
         except Exception as e:
@@ -291,6 +337,7 @@ class _Handler(BaseHTTPRequestHandler):
         msgs = build_messages(kind, content)
         with _ENGINE_LOCK:
             vec = encode(msgs, dim, eng)
+        _last_use = time.time()  # 长编码后刷新，防刚编完就被判空闲
         return vec.tolist()[0]
 
 
@@ -318,12 +365,20 @@ def main():
     _CFG["wemm_dim"] = args.dim
     _IDLE_UNLOAD_SECONDS = args.unload_after
 
-    _load_engine(args.model, args.dim)
+    # 懒加载：启动只绑端口不进显存，第一个 /embed 才加载模型（需要才拿去）
+    try:
+        torch.set_num_threads(max(1, args.threads))
+    except Exception:
+        pass
+    if _IDLE_UNLOAD_SECONDS > 0:
+        threading.Thread(target=_idle_unload_daemon, daemon=True,
+                         name="idle-unload").start()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), _Handler)
     srv.daemon_threads = True
     print(f"[wemm] server listening on http://127.0.0.1:{args.port} "
-          f"(model={args.model}, dim={args.dim}, unload_after={_IDLE_UNLOAD_SECONDS}s, "
-          f"threads={args.threads})", file=sys.stderr)
+          f"(model={args.model}, dim={args.dim}, lazy_load=True, "
+          f"unload_after={_IDLE_UNLOAD_SECONDS}s, threads={args.threads})",
+          file=sys.stderr)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
