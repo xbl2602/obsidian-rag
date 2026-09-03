@@ -14,6 +14,9 @@
   - 问题30：MinerU 云端 API URL 回归（断言实际 URL 字符串，不只断言调用成功）；
     pdf_text_backend（文字层 PDF 可选送 MinerU 换结构识别，is_ocr=False）默认值
     零行为变化 / 开启后正确路由 / 缓存路由隔离；试验台 backend 覆盖对文字层文件生效
+  - 问题34：混合型 PDF（任一页无文字层）整本按扫描件路由——未开云端整本落
+    scanned / 开云端整本 is_ocr=True 送云端 / 纯文字层回归不变 / 扫描分支收拢
+    （只有 mineru-cloud 送云端，未知取值不再 fall-through）/ 10 字符阈值边缘
 
 运行：cd obsidian-rag && .venv\\Scripts\\python tests\\test_extractors.py
 隔离：索引集成用例把 index 的全部落盘路径重定向到临时目录，并用假编码器
@@ -145,6 +148,20 @@ def _make_scanned_pdf(path):
     import pymupdf
     d = pymupdf.open()
     d.new_page()  # 空白页：无文字层
+    d.save(str(path))
+    d.close()
+
+
+def _make_mixed_pdf(path, text_pages=2, blank_pages=2):
+    """混合型课件样张：text_pages 页带真实文字层（≥10 字符），blank_pages 页
+    无文字层（空白页）——对应「PPT 原生文字 + 教材扫描图」的真实翻车形态。"""
+    import pymupdf
+    d = pymupdf.open()
+    for i in range(text_pages):
+        pg = d.new_page()
+        pg.insert_text((72, 72), f"Mixed text page {i + 1}.")
+    for _ in range(blank_pages):
+        d.new_page()
     d.save(str(path))
     d.close()
 
@@ -1739,6 +1756,151 @@ def test_library_extensions_whitelist_validation():
             assert e["extensions"] is None
         finally:
             library.LIBRARIES_FILE = saved
+
+
+# ---------- 问题34：混合型 PDF 整本按扫描件路由 ----------
+
+def test_mixed_pdf_whole_file_scanned_without_backend():
+    """混合型（文字层+图片页混装）在未开云端时整本落 scanned，不再走
+    「页占比 ≥0.5 → 文字层直提产出半份」的旧路径——半份内容比诚实空缺更危险。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "cache")
+        saved = cfgmod.CFG.get("pdf_scan_backend")
+        cfgmod.CFG["pdf_scan_backend"] = "none"
+        try:
+            p = Path(td) / "mixed.pdf"
+            _make_mixed_pdf(p, text_pages=2, blank_pages=2)
+            info = ex.extract_preview(p)
+            assert info["md"] is None and info["reason"] == "scanned", info
+        finally:
+            if saved is None:
+                cfgmod.CFG.pop("pdf_scan_backend", None)
+            else:
+                cfgmod.CFG["pdf_scan_backend"] = saved
+            ex.set_cache_dir(None)
+
+
+def test_mixed_pdf_text_majority_also_routes_to_scan_branch():
+    """问题34 关键差异（Note9 形态）：文字页占多数的混合型——旧规则 ratio≥0.5
+    会判「文字层 PDF」本地直提、静默丢失全部图片页——现在同样整本走扫描件分支。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "cache")
+        saved = cfgmod.CFG.get("pdf_scan_backend")
+        cfgmod.CFG["pdf_scan_backend"] = "none"
+        try:
+            p = Path(td) / "note9.pdf"
+            _make_mixed_pdf(p, text_pages=4, blank_pages=1)  # 旧规则：4/5=0.8 → 文字层直提
+            info = ex.extract_preview(p)
+            assert info["md"] is None and info["reason"] == "scanned", info
+        finally:
+            if saved is None:
+                cfgmod.CFG.pop("pdf_scan_backend", None)
+            else:
+                cfgmod.CFG["pdf_scan_backend"] = saved
+            ex.set_cache_dir(None)
+
+
+def test_mixed_pdf_whole_file_cloud_ocr_when_enabled():
+    """问题34 核心修复：混合型在 mineru-cloud 下整本送云端 OCR——is_ocr 必须
+    为 True（图片页要认字），route 落 ocr:mineru-cloud，产出一份完整 MD。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "cache")
+        fake = _FakeRequests()
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        try:
+            p = Path(td) / "mixed.pdf"
+            _make_mixed_pdf(p, text_pages=2, blank_pages=2)
+            info = _with_ocr_cfg(lambda: ex.extract_preview(p))
+            assert info["reason"] == "" and info["md"], info
+            assert info["route"] == "ocr:mineru-cloud", info
+            posts = [c for c in fake.calls if c[0] == "POST"]
+            assert posts and posts[0][2]["files"][0]["is_ocr"] is True, \
+                f"混合型整本送云端必须 is_ocr=True（请求体：{posts[0][2]!r}）"
+            # 整本一次提交：files 数组里只有这一个文件（不是逐页拆分）
+            assert len(posts[0][2]["files"]) == 1, "应整本一次提交，不逐页拆分"
+        finally:
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+
+
+def test_all_text_pages_still_local_route():
+    """回归：整本每一页都有文字层的 PDF 不受问题34 影响，仍走本地直提。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "cache")
+        try:
+            p = Path(td) / "text.pdf"
+            _make_text_pdf(p, pages=2)
+            info = ex.extract_preview(p)
+            assert info["reason"] == "" and info["md"], info
+            assert info["route"] == "local", info
+        finally:
+            ex.set_cache_dir(None)
+
+
+def test_scan_branch_only_mineru_cloud_sends_to_cloud():
+    """扫描分支收拢：只有 mineru-cloud 送云端。none / mineru-local / 文字层语义的
+    local / 未知值一律跳过——封死旧代码「未匹配取值 fall-through 到云端调用」
+    的口子（旧代码对这些值会真的发起云端请求）。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "cache")
+
+        class _NoNet:
+            def __getattr__(self, name):
+                raise AssertionError(f"扫描分支收拢失败：{backend} 竟然发起了网络调用 .{name}")
+
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = _NoNet()
+        try:
+            p = Path(td) / "scan.pdf"
+            _make_scanned_pdf(p)
+            for backend in ("none", "mineru-local", "local", "garbage-value"):
+                info = ex.extract_preview(p, backend=backend)
+                assert info["md"] is None and info["reason"] == "scanned", (backend, info)
+        finally:
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+
+
+def test_page_text_threshold_9_vs_10_chars():
+    """单页 10 字符阈值边缘：9 字符页 = 图片页（整本走扫描分支），10 字符页 =
+    文字页（全文字页时走本地直提）。阈值只决定「这一页算什么」，整本走向由
+    「是否存在图片页」决定——不再出现一个字符之差让整本判定随机翻转的情况。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "cache")
+        saved = cfgmod.CFG.get("pdf_scan_backend")
+        cfgmod.CFG["pdf_scan_backend"] = "none"
+        try:
+            import pymupdf
+
+            def _make(path, s):
+                d = pymupdf.open()
+                pg = d.new_page()
+                pg.insert_text((72, 72), s)
+                d.save(str(path))
+                d.close()
+
+            p9 = Path(td) / "nine.pdf"
+            _make(p9, "123456789")  # 9 字符 < 阈值 → 图片页 → 整本扫描分支
+            info9 = ex.extract_preview(p9)
+            assert info9["reason"] == "scanned" and info9["md"] is None, info9
+
+            p10 = Path(td) / "ten.pdf"
+            _make(p10, "1234567890")  # 10 字符 = 文字页 → 本地直提
+            info10 = ex.extract_preview(p10)
+            assert info10["reason"] == "" and info10["route"] == "local", info10
+        finally:
+            if saved is None:
+                cfgmod.CFG.pop("pdf_scan_backend", None)
+            else:
+                cfgmod.CFG["pdf_scan_backend"] = saved
+            ex.set_cache_dir(None)
 
 
 # ---------- 运行器（对齐 audit_regression_test.py） ----------

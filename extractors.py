@@ -7,9 +7,14 @@
   - 绝不写源目录：所有落盘只发生在 data/extract_cache 缓存目录；
   - 懒加载：import extractors 不引入 pymupdf/python-docx/requests，
     只索引 md/txt 的进程永远不会触碰这些库；
-  - 扫描件 PDF（文字层覆盖率 < 0.5 页占比）按 pdf_scan_backend 路由：
-      none         → (None, "scanned") 跳过并记终态（默认）
-      mineru-cloud → MinerU 云端 API OCR，成功则照常入索引
+  - 含图片页的 PDF 整本按 pdf_scan_backend 路由（问题34：纯扫描件与「文字层 +
+    扫描图」混合型一体对待——只要存在任何一页无文字层，整本走同一条流程，
+    废除旧「文字层页占比 < 0.5 才算扫描件」的整本二分，它会把混合型课件的
+    图片页内容静默丢掉）：
+      非 mineru-cloud → (None, "scanned") 整本跳过并记终态（默认 none；宁可诚实
+                         空缺也不产出半份拼接内容，开启云端后经 xsrc 自愈自动重试）
+      mineru-cloud   → MinerU 云端 API OCR（is_ocr=True，vlm 统一视觉认字，
+                       产出一份连贯完整的 Markdown），成功则照常入索引
   - 有文字层 PDF 按 pdf_text_backend 路由：
       local        → 本地 pymupdf4llm 直提（默认）
       mineru-cloud → 送 MinerU 云端换更准的版面/表格识别（is_ocr=False，不为已有文字重复
@@ -31,9 +36,14 @@ TEXT_EXTS = {"md", "txt"}
 BINARY_EXTS = {"pdf", "docx"}
 SUPPORTED_EXTS = TEXT_EXTS | BINARY_EXTS
 
-EXTRACT_VERSION = 3  # 提取逻辑版本：v2 起缓存键含产出路由（local / ocr:后端 / mineru-text）；
+EXTRACT_VERSION = 4  # 提取逻辑版本：v2 起缓存键含产出路由（local / ocr:后端 / mineru-text）；
                       # v3：MinerU 云端请求体新增 model_version 参数（问题33），旧缓存产出
                       # 用的是未指定版本时的服务端默认（较弱的 pipeline 模式），必须失效重提。
+                      # v4：分拣规则改为「存在图片页即整本按扫描件路由」（问题34）——v3 及
+                      # 更早版本对混合型 PDF 会走文字层直提产出半份内容（图片页静默丢失），
+                      # 这类文件在 v4 下要么整本送云端、要么落 scanned 终态，产出语义不同；
+                      # 旧缓存（含 local 路由的半份结果）必须整体失效，防止 v4 的 text_route
+                      # 候选误命中 v3 时代的半份 local 缓存。
 
 DEFAULT_CACHE_DIR = Path(__file__).parent / "data" / "extract_cache"
 
@@ -377,22 +387,29 @@ def _extract_docx(path):
 # ---------- PDF ----------
 
 # 单页至少含这么多字符才算「有文字层的页」：页码/水印级别的零星字符不算，
-# 但一两行的真实短内容要算（10 字符以下仍判无文字层）
+# 但一两行的真实短内容要算（10 字符以下仍判无文字层）。
+# 问题34 起判定只到「页」粒度：图片页是否存在决定整本走哪条流程，不再有
+# 「页占比阈值」这种整本一票表决的中间层。
 _TEXT_PAGE_MIN_CHARS = 10
-# 有文字层的页占比达到此值的 PDF 按「文字层 PDF」处理，否则判扫描件
-_TEXT_PAGE_RATIO = 0.5
 
 
 def _extract_pdf(path, backend=None):
-    """PDF 提取路由：文字层 → 本地直提或按 pdf_text_backend 送 MinerU（is_ocr=False）；
-    扫描件 → 按 pdf_scan_backend 分发（is_ocr=True）。
+    """PDF 提取路由（问题34 起：按页检测、整本分派）。
+
+    逐页探测文字层（_TEXT_PAGE_MIN_CHARS），然后整本二分：
+      - 存在任何图片页（含纯扫描件与「文字层+扫描图」混合型）→ 整本按
+        pdf_scan_backend 分派：仅 mineru-cloud 送云端（is_ocr=True，vlm 统一
+        视觉认字，产出一份连贯完整的 Markdown）；其余取值整本跳过落
+        "scanned" 终态——本地对图片页零认字能力，宁可诚实空缺待自愈，
+        也不产出「文字页直提 + 图片页缺失」的半份内容。
+      - 整本每一页都有文字层 → 按 pdf_text_backend：local 本地直提 /
+        mineru-cloud 送 MinerU 换结构识别（is_ocr=False）/ mineru-local 占位退化。
 
     返回 (markdown|None, reason, route)：route 标记产出路径，进缓存键
-    （local=本地直提 / ocr:mineru-cloud=扫描件云端OCR / mineru-text=文字层送MinerU换结构识别），
+    （local=本地直提 / ocr:mineru-cloud=整本云端OCR / mineru-text=文字层送MinerU换结构识别），
     换后端旧缓存天然失效。
-    backend：单次覆盖（试验台用）。扫描件分支按 pdf_scan_backend 语义解释
-    （none/mineru-cloud/mineru-local），文字层分支按 pdf_text_backend 语义解释
-    （local/mineru-cloud）；None 时各自跟随对应全局配置，两个分支互不干扰。
+    backend：单次覆盖（试验台用）。None 时扫描件分支跟随 pdf_scan_backend、
+    文字层分支跟随 pdf_text_backend，两个分支互不干扰。
     """
     try:
         import pymupdf
@@ -418,22 +435,22 @@ def _extract_pdf(path, backend=None):
 
         text_pages = sum(1 for pg in doc
                          if len(_page_text(pg).strip()) >= _TEXT_PAGE_MIN_CHARS)
-        if text_pages / doc.page_count < _TEXT_PAGE_RATIO:
-            # 扫描件：按配置（或单次覆盖）路由 OCR 后端
+        if text_pages < doc.page_count:
+            # 存在图片页：整本按扫描件流程（问题34）。仅 mineru-cloud 有产出能力，
+            # 其余任何取值（none 默认 / mineru-local 占位 / 未知值 / 试验台覆盖）
+            # 一律收拢到「跳过」——收拢同时封死旧代码「未匹配取值 fall-through
+            # 到云端调用」的口子（如试验台把文字层语义的 local 覆盖进扫描分支）。
             scan_backend = backend or get_scan_backend()
-            if scan_backend == "none":
+            if scan_backend != "mineru-cloud":
                 _warn_once("scanned",
-                           "发现扫描件 PDF（无文字层），当前未启用 OCR 后端，已跳过"
+                           "PDF 含图片页（无文字层），当前未启用云端 OCR 后端，已整本跳过"
                            "（可在设置中把 pdf_scan_backend 设为 mineru-cloud）")
                 return None, "scanned", f"ocr:{scan_backend}"
-            if scan_backend == "mineru-local":
-                _warn_once("mineru-local",
-                           "mineru-local（本地部署）属 R3b 尚未支持，扫描件继续跳过")
-                return None, "scanned", f"ocr:{scan_backend}"
             md, reason = _mineru_cloud_extract(path, is_ocr=True)
-            return md, reason, f"ocr:{scan_backend}"
+            return md, reason, "ocr:mineru-cloud"
 
-        # 有文字层：默认本地直提；可选送 MinerU 只买版面/结构识别（不为已有文字重复付 OCR 的钱）
+        # 整本每一页都有文字层：默认本地直提；可选送 MinerU 只买版面/结构识别
+        # （不为已有文字重复付 OCR 的钱）
         text_backend = backend or get_text_backend()
         if text_backend == "mineru-local":
             # 入口占位，尚未实现（问题33）：与扫描件分支不同，这里不能直接放弃

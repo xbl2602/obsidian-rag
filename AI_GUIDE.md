@@ -45,8 +45,10 @@ torch 用 `pip install torch==2.11.0+cu128 --index-url https://download.pytorch.
 
 > **多格式索引（v9 起）**：库的 extensions 可含 `pdf,docx`（`python library.py config <名>
 > --set extensions=md,pdf,docx`），依赖本文件同目录 requirements.txt 中的
-> pymupdf / pymupdf4llm / python-docx。文字层 PDF 直接解析；**扫描件 PDF（无文字层）
-> 需开启 OCR 后端**，见下。
+> pymupdf / pymupdf4llm / python-docx。整本均为文字层的 PDF 直接解析；
+> **含图片页的 PDF（纯扫描件，或"PPT 文字页+教材扫描图"混装的混合型）整本需要
+> 开启 OCR 后端**（问题34 起不再按页占比二分——混合型整本按扫描件路由，宁可诚实
+> 跳过也不产出缺图片页的半份内容），见下。
 
 ### 扫描件 OCR（MinerU 云端，可选）
 
@@ -54,7 +56,8 @@ torch 用 `pip install torch==2.11.0+cu128 --index-url https://download.pytorch.
 2. 任选一处配置（两者是同一份 config.json，后保存者生效）：
    - GUI：设置页「扫描件 OCR」组 → `pdf_scan_backend=mineru-cloud` + 粘贴 `mineru_api_key`
    - 手改：编辑 data/config.json 中同名键
-3. 无需重建：之前被跳过的扫描件会在下一轮索引自动重试转正（xsrc 失配机制）
+3. 无需重建：之前被整本跳过的含图 PDF（扫描件/混合型）会在下一轮索引自动重试
+   转正（xsrc 失配机制）
 4. 免费额度：extract 接口注册 Token 后 200MB/200 页；超时默认 600s/文件可调
 
 ### 2.3 导入数据包（核心步骤）

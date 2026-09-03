@@ -8,17 +8,20 @@
 个人 Obsidian 知识库的本地语义检索系统：多格式文档（md/txt/pdf/docx）→ 切块 →
 BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Flet 桌面 GUI。
 
-## 当前状态速览（2026-08-24）
+## 当前状态速览（2026-09-03）
 
-- META_VERSION **9**：多格式提取 + 统一终态 + 原始字节指纹
+- META_VERSION **9**：多格式提取 + 统一终态 + 原始字节指纹；EXTRACT_VERSION **4**
 - 多格式默认开启（`extensions=md,pdf,docx`）；扫描件 OCR 经 MinerU 云端 API（`pdf_scan_backend`，默认 none）
+- **混合型 PDF（任一页无文字层，含"PPT 文字页+扫描图"混装课件）整本按扫描件路由**（问题34）：
+  云端开 → 整本 is_ocr=True 送 MinerU vlm 认字产出一份完整 MD；未开 → 整本 scanned 终态待
+  xsrc 自愈——宁可诚实空缺，绝不产出"文字页直提+图片页丢失"的半份拼接内容
 - 有文字层 PDF 可选 `pdf_text_backend` 送 MinerU 换更准的版面/表格结构识别（`is_ocr=False`，默认 local）
 - **人机分权门禁**：Agent 触发的索引默认只处理文本类 + `agent_formats` 已批准格式，
   未授权二进制文件被冻结（保留条目与块）；批准一次长期有效、可撤销
 - 笔记双链关系查询（出链/入链）：GUI 语义检索卡结果可内联展开"关联笔记"，
   另有 MCP 工具 `note_relations`
 - 详细机制：`AI_GUIDE.md`（部署/使用）、Vault 内 `20-Projects/Obsidian RAG/` 文档组、
-  开发史 `TASK_LOG.md`（问题 1–27）、路线 `TODO.md`
+  开发史 `TASK_LOG.md`（问题 1–34）、路线 `TODO.md`
 
 ## 环境与命令（Windows / PowerShell）
 
@@ -27,12 +30,12 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 $env:PYTHONIOENCODING = "utf-8"
 
 # 回归测试六件套（改动后必须全绿才算完成）
-.venv\Scripts\python tests\audit_regression_test.py      # 19 用例
+.venv\Scripts\python tests\audit_regression_test.py      # 38 用例
 .venv\Scripts\python tests\library_registry_test.py      # 15 用例
 .venv\Scripts\python tests\server_singleton_test.py      # 5 用例
-.venv\Scripts\python tests\test_config_editor.py         # 6 用例
-.venv\Scripts\python tests\test_gui_store.py             # 30 用例
-.venv\Scripts\python tests\test_extractors.py            # 25 用例（含 mock HTTP）
+.venv\Scripts\python tests\test_config_editor.py         # 静态契约套件
+.venv\Scripts\python tests\test_gui_store.py             # 50 用例
+.venv\Scripts\python tests\test_extractors.py            # 56 用例（含 mock HTTP）
 .venv\Scripts\python tests\verify_export_import.py       # 39 检查项（会动真库，最后跑）
 ```
 
