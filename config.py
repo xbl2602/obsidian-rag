@@ -87,6 +87,12 @@ DEFAULTS = {
     "pdf_text_backend": "local",      # local | mineru-cloud | mineru-local（本地模型入口占位，尚未实现，选中退化为 local）
     "mineru_model_version": "vlm",    # pipeline | vlm（MinerU 云端解析模型版本；vlm 精度更高，官方推荐；
                                        # pipeline 更快更省配额，兜底用；非法值回退 vlm）
+
+    # ---- 视觉导航（WEMM：PDF 每页一个向量，本地 transformers 看图服务，默认关）----
+    "wemm_backend": "off",        # off | local（WEMM 页级视觉导航后端；off=不建库/不检索，零开销）
+    "wemm_url": "http://127.0.0.1:9101",   # 本机 WEMM 看图服务地址（wemm_server.py 用全局 Python 起）
+    "wemm_model": "tencent/WeMM-Embedding-2B",  # WEMM 页级多模态嵌入模型（本地，图不出本机）
+    "wemm_dim": 512,              # WEMM 输出向量维度（matryoshka 截断；512 质量近满、显存/存储适中）
 }
 
 CONFIG_TEMPLATE = """\
@@ -355,7 +361,36 @@ CONFIG_TEMPLATE = """\
   "keep_exports": 3,
 
   // 导入时每批 upsert 的块数（拥塞小值时减慢导入，较大值占用更多内存）。
-  "import_upsert_batch": 500
+  "import_upsert_batch": 500,
+
+  // ----------------------------------------------------------
+  // 十、视觉导航（WEMM）
+  // ----------------------------------------------------------
+  //
+  // 可选功能：把每个 PDF 的每一页渲染成图，用本地 GPU 上的 WeMM-Embedding
+  // 模型编码成「每页一个向量」，做一个独立于文字索引（bge-m3）的页级导航库。
+  // 检索时告诉 AI 想要的内容在「哪份 PDF 的哪一页」，配合 read_document 读取
+  // MD 全文，或让有视觉能力的模型直读原 PDF。
+  //
+  // 默认 off：不开就不建库、不渲染任何页图、不占显存，对现有索引零影响。
+  // 开启需先用「全局 Python」启动看图服务（python wemm_server.py），再改这里
+  // 为 local，然后跑建库命令（python wemm_indexer.py）。
+
+  // 视觉导航后端。off=关闭；local=通过本机 WEMM 看图服务（wemm_server.py）编码。
+  // 走本地 GPU = 页面图像不出你的电脑（隐私上比云端 MinerU 只发文字更可控）。
+  "wemm_backend": "off",
+
+  // WEMM 看图服务地址。wemm_server.py 用全局 Python 启动（复用已装的
+  // torch+transformers+WeMM-2B），加载模型占本机 GPU 显存（实测 ~5.1GB），
+  // 与本项目进程互不干扰；空闲时可手动停止服务释放显存。
+  "wemm_url": "http://127.0.0.1:9101",
+
+  // WEMM 页级嵌入模型标识（传给 wemm_server 的模型名，默认官方 WeMM-2B）。
+  "wemm_model": "tencent/WeMM-Embedding-2B",
+
+  // 输出向量维度（matryoshka 截断，须为模型支持的档位之一）。
+  // 2B 模型支持 64/128/256/512/1024/2048；512 在质量近满与显存/存储之间取平衡。
+  "wemm_dim": 512
 }
 """
 

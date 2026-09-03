@@ -282,6 +282,34 @@ def extract_to_markdown(path):
     return md, reason
 
 
+def read_cached_markdown(path, backend=None):
+    """零侵入读缓存：二进制文档 → 已产出的 Markdown（绝不触发新的提取/云端调用）。
+
+    红线7：read_document 只应交付"已经索引过/已在缓存里"的内容，绝不能在
+    后台默默触发扫描件 OCR 或云端 MinerU。本函数只查既有缓存，未命中返回
+    (None, "not-cached")，调用方据此提示"先索引该文件"。返回 (md|None, reason|"")。
+    """
+    from pathlib import Path
+    path = Path(path)
+    ext = path.suffix.lower().lstrip(".")
+    if ext == "pdf":
+        text_route = ("mineru-text" if (backend or get_text_backend()) == "mineru-cloud"
+                      else "local")
+        routes = ["ocr:mineru-cloud", "ocr:mineru-local", text_route]
+    elif ext == "docx":
+        routes = ["local"]
+    else:
+        return None, "unsupported"
+    try:
+        key = _file_md5(path)
+    except OSError:
+        return None, "unreadable"
+    hit, _route = _cache_get(key, routes)
+    if hit is None:
+        return None, "not-cached"
+    return hit, ""
+
+
 def extract_preview(path, backend=None):
     """提取试验台用：单文件提取并返回过程信息（不落索引终态）。
 

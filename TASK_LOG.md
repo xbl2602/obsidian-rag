@@ -1489,3 +1489,77 @@ TODO backlog 既定项：`_mineru_cloud_extract` 是"提交→上传→轮询[`t
   稳态在途数 ≈ 提交速率 × 任务时长，个人库规模下先撞到的通常是每日 1000 页优先级
   配额（超出降优先级、任务变慢但仍完成——超时走既有"簿记保留、下轮续接"路径）。
 - 默认值仍为 3：max 模式是**可选项**，用户按需把 `mineru_concurrency` 设为 0。
+
+
+## 问题 37：WEMM 页级视觉导航 + read_document + 近似文档去重（2026-09-03）
+
+### 背景
+纯 bge-m3 文字索引只能定位"哪份文档命中"，检索结果也没有页码概念；扫描件 PDF 更是
+整本无字（问题34 的遗憾缩影）。用户提出：加一个**页级视觉导航**——把每份 PDF 的每一页
+渲染成图、交给多模态嵌入模型编码成"每页一个向量"，检索时告诉 AI"内容在哪个 PDF 的哪一页"，
+从而让有视觉能力的模型直读原 PDF 对应页。配套两条支撑功能：`read_document`（按文件取完整
+MD 正文 + 绝对路径）与**近似文档去重**（找出库内内容几乎相同的重复文档）。
+
+### 决策
+- **模型 WeMM-Embedding-2B**（腾讯微信视觉团队，多模态 2B，512 维 matryoshka），
+  **本地 transformers 服务** `wemm_server.py` 跑在**全局 Python**（torch 2.11+cu128、
+  transformers 5.14.1，RTX 5060 Laptop 8GB VRAM 实装 5.08GB 可容纳）；**项目 .venv
+  零依赖**——`.venv` 只通过 HTTP 调本地服务，加载模型/编码全部发生在服务进程。
+  弃用 Ollama（`/api/embed` 不接受图片、`/api/chat` 不输出 embedding，issue #7677 未解）。
+- **两套向量库彻底分离**（红线：绝不混向量空间）：文字索引 `obsidian_kb`（bge-m3 1024 维）
+  与页级 `obsidian_kb.wemm`（WeMM 512 维 + 独立 meta `data/wemm_meta_<库>.json` +
+  独立版本号 `WEMM_VERSION=1` 独立自愈）；`navigate_knowledge` 绝不与 bge-m3 文本分数混合。
+- **默认关闭（隐私/资源优先）**：`wemm_backend=off`；`wemm_server.py --unload-after` 空闲
+  释放显存与 bge-m3 共存。
+- **门禁/红线**：页级索引在 stat 前冻结未授权文件（红线6/7，零渲染零编码零 I/O，条目与页
+  原样保留不裁剪）；`read_document`/去重只读既有提取缓存（`read_cached_markdown` 零触发，
+  绝不后台启动扫描件 OCR / 云端 MinerU，红线7）。
+
+### 实现
+- **wemm_server.py**（全局 Python 本地看图服务，`python wemm_server.py --port 9101`）：
+  `GET /health`（模型/维度/显存）；`POST /embed`（image 页图 base64 或 text → 512 维
+  归一化向量）；不支持的 dim 返回 400；日志只含方法/路径不含图文内容（API Key/内容不泄漏）。
+  已实测：文本"manometer pressure gauge fluid mechanics"与 Manometer 页图 cos 0.558，
+  无关"quantum entanglement" cos 0.357，确定性可复现。
+- **wemm_indexer.py**（项目 .venv）：pymupdf 逐页渲染（DPI 120，内存完成不写盘）→ base64 →
+  HTTP 编码 → 写独立 `wemm_<collection>`；增量靠 size+mtime 快速路径 + MD5 字节指纹；
+  一致性自愈（meta 期望页数 ≠ Chroma 实际 → 全量重建）；版本升级强制重建；删除文件精确清理
+  页向量并裁剪 meta；统一终态（empty/extract-failed 不产向量也落 `_terminal_entry` 防 stale
+  死循环）；CLI `--library name|all --full --backend on|off`。
+- **wemm_retriever.py**：`wemm_search(query, libraries, top_k)` → 文字查询编码 → 对每库
+  `wemm_<collection>` 余弦检索 → `(库, 相对路径, 绝对路径, 页码, score)` 降序；backend off /
+  服务不可用时返回空 + 明确提示；某库页库损坏跳过不阻断整体。
+- **server.py 两个新 MCP 工具**：
+  - `navigate_knowledge(query, top_k, libraries, exclude)`：页级视觉导航，返回
+    "库/[相对]（绝对路径）第 N 页 + 相似度"，需 wemm_backend 开启。
+  - `read_document(library, path)`：按库内相对路径或不含扩展名标题定位（复用文字索引 meta），
+    返回源文件绝对路径 + 完整正文；md/txt 直读源文件，pdf/docx 走只读缓存（未提取提示先索引）。
+- **extractors.read_cached_markdown(path)**：零侵入缓存读（红线7实现的落点）——只查既有提取
+  缓存，绝不触发新提取。
+- **dedup.py**（文本级 MinHash+LSH，纯标准库 hashlib）：正文 → 4-gram 碎片 → bottom-k
+  MinHash 签名（保留 k 个最小互异哈希；满 k 用 |A∩B|/k、未满用精确交并比）→ LSH 分桶
+  （16 段×4 行）→ 桶内 Jaccard ≤ 阈值 → 连通分量分组；**只读建议绝不删改文件**；md/txt 直读源、
+  pdf/docx 只读缓存（未提取跳过计数）。MCP 工具 `find_duplicates(library, threshold)`。
+
+### 测试（新增 3 个测试文件：test_wemm_indexer 26 例、test_wemm_retriever 13 例、test_dedup 19 例）
+- indexer：页数=向量数、门禁零渲染零编码、增量子自愈、内容变化重编码、删除精确清理、
+  损坏 PDF 落 extract-failed 终态、版本升级全量重建、源目录零写入、collection 命名隔离。
+- retriever：backend off 空+提示、服务 down 空+提示、命中排序/过滤/绝对路径透出、
+  libraries 过滤、空页库不报错。
+- dedup：sketch 自比 1.0 / 异文近 0 / 短文精确比、相同文档检出组、阈值过滤、完全不相关
+  无组、未提取 pdf 计 skipped、连通分量归并、源目录零写入。
+- 实测冒烟：临时库 ManometerEquation.pdf（9 页）→ WEMM 入库 9 向量 → navigate 查询
+  "manometer pressure gauge fluid" 命中第 2/1/5/8 页（cos 0.51–0.58）；
+  `read_document` 对 Obsidian Vault 一篇 md 返回绝对路径+全文；`find_duplicates` 对
+  Obsidian Vault 扫 164 份无重复；冒烟后临时库/页库/服务已清理。
+- 全量回归：六件套（audit 38/38、registry 15/15、singleton 5/5、config_editor/gui_store
+  0 failures、extractors 71/71）+ 新三套全绿。
+
+### 备注
+- WEMM 页导航默认关闭，开启步骤：Config→视觉导航（WEMM）设 wemm_backend=on/local →
+  `python wemm_server.py --port 9101`（全局 Python）→ `wemm_indexer.py --library <名> --backend on`
+  → navigate_knowledge 即可用。
+- 639 个 PDF 的全库页索引是**重活**（~2.4s/页冷启动、热态更快），建议按需对单个库开；
+  `--unload-after N` 空闲释放显存与 bge-m3 共存。
+- 去重是纯文本级、建议性质，不产向量不改索引，可放心对任意库跑。
+

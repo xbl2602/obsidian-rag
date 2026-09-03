@@ -48,6 +48,13 @@ GROUPS = [
                 ("confidence_warn_threshold", "float"),
                 ("confidence_drop_threshold", "float")]},
 
+    {"title": "视觉导航（WEMM）", "level": "basic", "icon": "IMAGE_OUTLINED",
+     "desc": "可选：把 PDF 每页渲染成图，用本机 GPU 的 WeMM 模型做成「每页一向量」"
+             "导航库，告诉 AI 内容在哪个 PDF 哪页。默认关；开需要先手动启动"
+             "看图服务（全局 python wemm_server.py）。",
+     "fields": [("wemm_backend", "str"), ("wemm_url", "str"),
+                ("wemm_model", "str"), ("wemm_dim", "int")]},
+
     {"title": "融合与排序调优", "level": "advanced", "icon": "TUNE_OUTLINED",
      "desc": "BM25 / RRF 权重 / 候选池 / 重排预算。拿不准就保持默认。",
      "fields": [("bm25_k1", "float"), ("bm25_b", "float"),
@@ -144,6 +151,22 @@ FIELD_META = {
     "mineru_rate_per_minute": {"label": "每分钟提交上限",
                                "hint": "滑动窗口限速；官方三个提交接口共用 50 个文件/"
                                        "分钟，默认 45 留余量，0=不限"},
+    # ---- 视觉导航（WEMM）----
+    "wemm_backend": {"label": "视觉导航开关",
+                     "choices": [
+                         ("off", "关闭（默认，不建视觉库不占显存）"),
+                         ("local", "本机 GPU 看图服务（页图不出电脑）"),
+                     ],
+                     "hint": "WEMM 页级视觉导航后端；开=把 PDF 每页编码成向量，"
+                             "改后需跑建库命令（python wemm_indexer.py）"},
+    "wemm_url": {"label": "看图服务地址",
+                 "hint": "wemm_server.py 本机 HTTP 服务地址（全局 Python 启动，"
+                         "默认 127.0.0.1:9101）；空闲可手动停释放显存"},
+    "wemm_model": {"label": "WEMM 模型",
+                   "hint": "传给看图服务的模型标识，默认 tencent/WeMM-Embedding-2B"},
+    "wemm_dim": {"label": "向量维度",
+                 "hint": "matryoshka 截断维度；2B 支持 64/128/256/512/1024/2048，"
+                         "512 质量近满、显存/存储适中"},
     # ---- 检索输出 ----
     "return_chunk_limit": {"label": "单块返回字符上限",
                            "hint": "超出截断并附标记；直接影响回答注入的 token 量"},

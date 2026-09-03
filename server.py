@@ -17,18 +17,21 @@ import os
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 from mcp.server import MCPServer
 
 from config import CFG
+from dedup import DEFAULT_THRESHOLD as DEDUP_THRESHOLD, find_duplicates as dedup_find
 from extractors import BINARY_EXTS, TEXT_EXTS
 from index import (HEARTBEAT_TIMEOUT, LockBusyError, collect_md_files,
-                   index_library, kb_stale, log, progress_text, read_progress,
-                   resolve_note_relations)
+                   index_library, kb_stale, load_meta, log, progress_text,
+                   read_progress, resolve_note_relations)
 from library import (effective_config, list_summary, load_registry, meta_path,
                      resolve_entries, set_config)
 from retriever import hybrid_search_hyde, reset_bm25_index
 from singleton import acquire_singleton
+from wemm_retriever import wemm_search
 
 server = MCPServer("obsidian-rag", title="Obsidian RAG", version="0.2.1")
 
@@ -351,6 +354,148 @@ def index_status() -> str:
     适用于：reindex_knowledge 或自动同步启动后轮询；索引长时间无响应时判断卡死。"""
     p = read_progress()
     return progress_text(p)
+
+
+@server.tool()
+def navigate_knowledge(query: str, top_k: int = 5, libraries: str = "",
+                       exclude: str = "") -> str:
+    """页级视觉导航（WEMM 看图嵌入）：给定一句话，找出"哪个 PDF 的哪一页"最符合。
+    这是独立于 search_knowledge 的第二套检索——用图片层嵌入（不需要 PDF 有文字层，
+    扫描件也能导航），返回 库/[相对路径]（绝对路径）第N页 + 相似度分，按分降序。
+    适合给有看图能力的模型：拿到绝对路径与页码后直读原 PDF 对应页。
+
+    libraries/exclude 语义同 search_knowledge：为空=默认库，"all"=全部库，
+    "A,B" 多库并查，exclude="B" 反选。先调 list_libraries 查看库名。
+    需要已开启 wemm_backend（Config 视觉导航）并已跑过 WEMM 页索引。"""
+    try:
+        if CFG.get("wemm_backend", "off") == "off":
+            return ("（WEMM 视觉导航未开启：Config→视觉导航（WEMM）将 wemm_backend"
+                    " 设为 on/local，并启动 wemm_server.py 看图服务后，先调"
+                    " reindex_knowledge 跑一次 WEMM 页索引。）")
+        from library import resolve_entries
+        names = None
+        if libraries and libraries != "all":
+            names = [e["name"] for e in resolve_entries(libraries, exclude,
+                                                        defaults=CFG.get("default_libraries", []))]
+        results, err = wemm_search(query, libraries=names, top_k=top_k)
+        if err:
+            return f"（{err}）"
+        if not results:
+            return ("（WEMM 页索引为空或未命中。先调 reindex_knowledge 跑 WEMM 页索引，"
+                    "或换用 search_knowledge 文本检索。）")
+        lines = [f"页级导航（{query!r}）—— 最相关的 PDF 与页码："]
+        for lib, rel, abs_path, page, score in results:
+            lines.append(f"  [{lib}] {rel}（{abs_path}）第{page + 1}页  相似度 {score:.3f}")
+        return "\n".join(lines)
+    except Exception as e:
+        import traceback
+        log(f"navigate_knowledge 失败：{e}\n{traceback.format_exc()}")
+        return f"（页级导航失败：{e}）"
+
+
+def _read_source_text(cfg, rel, abs_path):
+    """read_document 读正文：文本类直接读源文件；pdf/docx 只读既有提取缓存。
+    返回 (正文|None, reason|"")。reason ∈ 非本库 / 未提取 / 读取失败。
+    """
+    ext = rel.rsplit(".", 1)[-1].lower() if "." in rel else ""
+    if ext in ("md", "txt", "markdown"):
+        try:
+            return Path(abs_path).read_text(encoding="utf-8", errors="replace"), ""
+        except OSError:
+            return None, "读取失败"
+    if ext in ("pdf", "docx"):
+        from extractors import read_cached_markdown
+        md, reason = read_cached_markdown(abs_path)
+        if md is None:
+            return None, "未提取" if reason == "not-cached" else reason
+        return md, ""
+    return None, "不支持该格式"
+
+
+@server.tool()
+def read_document(library: str, path: str) -> str:
+    """读取某文档的完整正文 + 给出源文件绝对路径。用于检索命中后精读全部内容：
+    纯文本模型用这里拿正文（pdf/docx 返回其已提取的 Markdown 全文），有看图能力的
+    模型可直接拿绝对路径去读原 PDF 对应页。
+
+    library：单个库名（同 search_knowledge 语义，不支持 "all"）。path：库内相对路径
+    或不含扩展名的标题（如 "ManometerEquation"）。pdf/docx 只交付"已索引/已缓存的
+    Markdown"——若该文件尚未被提取过，会提示先索引，绝不后台触发扫描件 OCR 或云端
+    调用。"""
+    try:
+        entries = resolve_entries(library, "", defaults=CFG.get("default_libraries", []))
+    except ValueError as e:
+        return f"（{e}）"
+    if len(entries) > 1:
+        names = "、".join(e["name"] for e in entries)
+        return f"（library 需指定单个库，当前默认解析出多个：{names}；请显式传 library 参数指定其一）"
+    cfg = effective_config(entries[0])
+    # 在文字索引 meta 里定位文件（库内相对路径 或 不含扩展名标题）
+    meta = load_meta(meta_path(cfg["name"]))
+    rel = None
+    if path in meta:
+        rel = path
+    else:
+        for k in meta:
+            if k.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower() == path.lower().lstrip("./\\"):
+                rel = k
+                break
+    if rel is None:
+        return (f"（在库「{cfg['name']}」中找不到 \"{path}\"。先用 search_knowledge 或"
+                f" navigate_knowledge 找到源文件，再看库内的相对路径。）")
+    import os as _os
+    abs_path = _os.path.normpath(_os.path.join(cfg["path"], rel))
+    text, reason = _read_source_text(cfg, rel, abs_path)
+    head = f"「{cfg['name']}/{rel}」\n源文件绝对路径：{abs_path}\n"
+    if text is None:
+        return head + (f"（该文档正文不可用：{reason}。若是 pdf/docx，请先索引该文件"
+                       f"生成 Markdown，再重试。）")
+    preview = text if len(text) <= 20000 else text[:20000] + "\n…（正文过长，已截断前 20000 字符）"
+    return f"{head}\n{preview}"
+
+
+@server.tool()
+def find_duplicates(library: str = "", threshold: float = None) -> str:
+    """近似文档去重（只读建议，绝不删除/移动文件）：找出库内"内容几乎相同"的重复
+    文档（同一课件多份拷贝、docx 及其转出的 PDF、重复讲义），返回重复组与相似度，
+    供你决定是否清理/合并，避免检索反复命中同一段内容。比较的是提取出的文字内容
+    （文本级 MinHash+LSH），不产生向量、不改索引、不后台触发 OCR/云端（pdf/docx
+    只读已有提取缓存，未提取的文件会跳过并计数）。
+
+    library：库名列表（逗号分隔）或 "all"（默认=全部注册库）。threshold：相似度
+    阈值（0~1，默认 0.8），越高越严格。"""
+    try:
+        thr = threshold if threshold is not None else DEDUP_THRESHOLD
+        if library in ("", "all"):
+            entries = load_registry()
+        else:
+            entries = resolve_entries(library, "")
+        if not entries:
+            return "（没有已注册的库。）"
+        blocks = []
+        for e in entries:
+            cfg = effective_config(e)
+            clusters, stats = dedup_find(cfg, threshold=thr)
+            blocks.append(_dedup_report(cfg["name"], clusters, stats, thr))
+        return "\n\n".join(blocks)
+    except Exception as exc:
+        import traceback
+        log(f"find_duplicates 失败：{exc}\n{traceback.format_exc()}")
+        return f"（近似去重失败：{exc}）"
+
+
+def _dedup_report(name, clusters, stats, threshold):
+    lines = [f"库「{name}」近似重复扫描（阈值 ≥{threshold}）：",
+             f"  扫描 {stats['scanned']} 份，跳过 {stats['skipped']} 份"
+             f"（未提取/太短/读取失败），近似重复对 {stats['pairs']}，"
+             f"重复组 {stats['groups']}"]
+    if not clusters:
+        lines.append("  （未发现近似重复）")
+    for i, c in enumerate(clusters, 1):
+        lines.append(f"  组{i}（{len(c['files'])} 份）:")
+        for (a, b, j) in c["links"]:
+            lines.append(f"    · {a}  ≈  {b}  （相似度 {j}）")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

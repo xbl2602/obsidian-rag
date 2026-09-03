@@ -15,7 +15,9 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 
 - **META_VERSION**: 9（多格式 + 统一终态 + 原始字节指纹）
 - **EXTRACT_VERSION**: 4（PDF 分拣规则 + MinerU model_version 参数）
+- **WEMM_VERSION**: 1（页级视觉导航独立版本号，独立自愈，互不影响文字索引）
 - **六件套回归**: 全绿（extractors 71/71, audit 38/38, registry 15/15, singleton 5/5, config_editor 0, gui_store 0, verify_export_import 39/39）
+- **新增三套**: 全绿（test_wemm_indexer 26/26, test_wemm_retriever 13/13, test_dedup 19/19）
 
 ---
 
@@ -23,20 +25,36 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 
 | 提交 | 内容 |
 |---|---|
-| `06f397a` | **问题34**：PDF 分拣规则改为「存在图片页即整本按扫描件路由」——混合型课件（PPT 文字页 + 教材扫描图）不再静默丢失图片页内容。未开云端时整本跳过并标 scanned 终态；开启后整本送 MinerU vlm 认字产出一份连贯完整的 MD。 |
-| `cb1be8e` | **问题35**：MinerU 云端批量并行加速——限流闸门、错误三分类重试、断点簿记与续接、Token 失效自动停整批。测试 +11 例，六件套全绿。 |
-| **即将提交** | **问题36**：max 模式（`mineru_concurrency=0`）——不设固定并发，提交节奏交给滑动窗口限速闸门自动节流（窗口没满立刻送、接近频控停下、窗口滑动续送），任务完成腾出线程立刻补位直到全部完工；轮询遇 429/5xx 在 deadline 内退避续询不误判失败。测试 +4 例，六件套全绿。 |
+| `cb1be8e` | **问题35**：MinerU 云端批量并行加速——限流闸门、错误三分类重试、断点簿记与续接、Token 失效自动停整批。 |
+| `bd24227` | **问题36**：max 模式（`mineru_concurrency=0`）——不设固定并发，提交节奏交给滑动窗口限速闸门自动节流；轮询遇 429/5xx 在 deadline 内退避续询不误判失败。 |
+| **本次提交** | **问题37**：WEMM 页级视觉导航 + read_document + 近似去重（见下"最近这笔改动"） |
+
+---
+
+## 最近这笔改动（问题37，本次提交）
+
+**WEMM 页级视觉导航**：把 PDF 每页渲染成图 → WeMM-Embedding-2B（腾讯微信视觉团队，512 维，
+全局 Python 装 torch/transformers，项目 .venv 零依赖）→ 每页一个向量 → 独立 `wemm_<collection>`
+Chroma 页库 + 独立 `data/wemm_meta_<库>.json`。检索时 `navigate_knowledge` 告诉 AI"内容在
+哪个 PDF 的第几页"（扫描件也能定位）。**默认关闭**（`wemm_backend=off`，隐私/显存优先）。
+
+- 新增文件：`wemm_server.py`（本地看图 HTTP 服务，端口 9101，可 `--unload-after` 空闲释放显存）、
+  `wemm_indexer.py`（逐页渲染→页向量，带门禁/终态/一致性自愈/精确清理）、`wemm_retriever.py`（页级导航检索）
+- MCP 新增：`navigate_knowledge`、`read_document`（取完整正文+绝对路径，零触发只读缓存）、`find_duplicates`
+- `dedup.py`：文本级 MinHash+LSH 近似去重（只读建议，绝不删改文件，不触发 OCR/云端）
+- config 三处同步：`wemm_backend`/`wemm_url`/`wemm_model`/`wemm_dim`（off / 127.0.0.1:9101 / tencent/WeMM-Embedding-2B / 512）
+- 冒烟：ManometerEquation.pdf（9 页）入库 9 向量，导航查询命中第 2/1/5/8 页（cos 0.51–0.58）；
+  各 MCP 工具在 Obsidian Vault 实测可用；冒烟临时库/服务已清理（释放 ~5GB 显存）
 
 ---
 
 ## 问题脉络（从调研纪要到我接手时已完成的范围）
 
-1. **问题33**（已在，问题33 修复）：`model_version` 从未显式传，一直用较弱的默认 pipeline
-2. **问题34**（已完成并提交 06f397a）：PDF 分拣规则整本二分 → 存在图片页即整本按扫描件
-3. **问题35**（已完成并提交 cb1be8e）：串行送云端 → 并行批量（ThreadPoolExecutor + 限速 + 错误分类 + 断点续接）
-4. **问题36**（即将提交）：固定并发上限 → max 模式（concurrency=0），限速闸门唯一节流
-5. **read_document MCP 工具**：用户拍板暂缓（主力模型已有视觉能力，纯语言模型路径无真实使用者）
-6. **WeMM 页级视觉导航**：纪要自己排在问题 1-4 之后评估，1-4 完成后若用户真需要再议
+1. **问题33**：`model_version` 从未显式传，一直用较弱的默认 pipeline（已修）
+2. **问题34**：PDF 分拣规则整本二分 → 存在图片页即整本按扫描件（06f397a）
+3. **问题35**：串行送云端 → 并行批量（cb1be8e）
+4. **问题36**：固定并发上限 → max 模式（bd24227）
+5. **问题37（本次）**：WEMM 页级视觉导航 + read_document + 近似去重——三条一起落地
 
 ---
 
@@ -45,6 +63,8 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 - 开启 mineru-cloud：GUI 设置页「常用 → PDF 与云端 OCR」→ 扫描件 OCR 后端选 `MinerU 云端 OCR`（Key 已配）
 - 导入课件：PDF 放进 vault，下一轮自动同步整本云端认字入库
 - 真实课件验证（可选）：用户手上两份实测课件（ManometerEquation、Note9），若能给路径可做完整性验证
+- 视觉导航（可选，默认关闭）：需要时按《操作手册》「视觉导航（WEMM）」三步开启——设置页开
+  `wemm_backend` → `python wemm_server.py --port 9101` → `wemm_indexer.py --library <库名> --backend on`
 
 ---
 
@@ -59,6 +79,9 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 | `mineru_timeout_seconds` | `600` | 单文件提交+轮询+下载总超时 |
 | `mineru_model_version` | `vlm` | 云端解析模型（pipeline 更省配额，vlm 精度更高） |
 | `extensions` | `md,pdf,docx` | 多格式默认开启 |
+| `wemm_backend` | `off` | 页级视觉导航开关（off / on-local）；默认关，隐私/显存优先 |
+| `wemm_url` | `http://127.0.0.1:9101` | 本地 WEMM 看图服务地址 |
+| `wemm_dim` | `512` | 页向量维度（WeMM-Embedding-2B matryoshka） |
 
 ---
 
@@ -82,6 +105,9 @@ $env:PYTHONIOENCODING = "utf-8"
 .venv\Scripts\python tests\test_config_editor.py         # 0
 .venv\Scripts\python tests\test_gui_store.py             # 0
 .venv\Scripts\python tests\test_extractors.py            # 71
+.venv\Scripts\python tests\test_wemm_indexer.py          # 26
+.venv\Scripts\python tests\test_wemm_retriever.py        # 13
+.venv\Scripts\python tests\test_dedup.py                 # 19
 .venv\Scripts\python tests\verify_export_import.py       # 39
 ```
 
@@ -91,7 +117,7 @@ $env:PYTHONIOENCODING = "utf-8"
 
 - **AGENTS.md**（本项目 AI 指令）：当前状态速览 + 架构红线
 - **AI_GUIDE.md**：部署/使用手册
-- **TASK_LOG.md**：问题 1–36 完整开发史
+- **TASK_LOG.md**：问题 1–37 完整开发史
 - **TODO.md**：路线图与 Backlog
 - **Vault 内** `20-Projects/Obsidian RAG/`：用户视角文档组
 
