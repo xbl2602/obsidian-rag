@@ -1563,3 +1563,76 @@ MD 正文 + 绝对路径）与**近似文档去重**（找出库内内容几乎�
   `--unload-after N` 空闲释放显存与 bge-m3 共存。
 - 去重是纯文本级、建议性质，不产向量不改索引，可放心对任意库跑。
 
+## 问题 38：失败溯源（index_failures）+ WEMM 可确认手段（wemm_status）+ 渲染 DPI 档位 + 真实全量建库验证（2026-09-04）
+
+### 背景
+问题37 交付两件事：`index_failures` 的姊妹思路已在问题35/36 中提出（「失败清单」诊断工具），
+以及用户要求**确认真实库上 WEMM 是否真的生效、由自己亲眼确认**（不能在测试冒烟里自证）。
+两个诉求：
+(A) 把"提取静默失败"变成可溯源清单；
+(B) 让"WEMM 到底建没建、生效没生效"有用户可确认的手段。
+另：复杂度发现——**单页嵌入耗时随渲染 DPI 强相关**（非问题37 里估的固定 ~2.5s/页）：
+40 DPI≈0.5s/页、60≈2.5s、90≈13.2s、120≈25s；渲染本身仅 0.1s。LECTURE NOTE 共 **382 页**
+（18 份 PDF，流体力学课件），60 DPI 全量约 16 分钟、120 则 2.6 小时。
+
+### 决策
+- (A) 加诊断工具 `index_failures(library, include_ok)`：读 `index_meta_*.json` 按终态原因
+  （unreadable/extract-failed/empty/tbd/scanned）分组列出失败文件，并对「下轮将自动重试」的
+  条目标注 `〆`（判定与 `_backend_changed` 同源：reason∈scanned/extract-failed 且
+  `xsrc != current_backend_sig()`）。事件日志里的 API Key 仍不进内容（红线8）。
+- (B) 两者都做：**加确认工具 `wemm_status()`**（每库 PDF 数/页向量/后端开关/服务存活/渲染失败
+  清单，一眼确认真能用）+ **真建全库 WEMM 页索引实证**。渲染 DPI 做成**用户可选项**（默认 60），
+  档位 40/60/90/120，改后需 `--full` 重建才能生效——把"快但糊 vs 慢但清"的选择交给用户。
+- 长驻 MCP server 的 `CFG` 是 import 时快照：用户中途开关 wemm_backend/改 DPI 后旧进程读不到。
+  `navigate_knowledge`/`wemm_status` 改为调用时用 `config.load_config()` 现读 WEMM 相关键。
+
+### 实现
+- **server.py 两个新 MCP 工具**（插在 `_dedup_report` 后）：
+  - `index_failures(library="", include_ok=False)`：按库分组列失败文件 + `〆 下轮将自动重试`
+    标注；import `current_backend_sig` 与 `REASON_*` 共用常量（不硬编码）。
+  - `wemm_status()`：读每库 `wemm_meta_*.json` + 实时 config（后端/DPI）+ `health()`，
+    报「库：N 份 PDF、M 页向量、K 份渲染失败」；后端 off 时清晰提示不可用。
+  - 新增 `_wemm_cfg()` helper：调用时现读 `config.load_config()` 取 wemm_backend/wemm_url/
+    wemm_render_dpi 三键，`navigate_knowledge` 门禁与 `wemm_status` 状态都用它（不信任快照）。
+- **config.py / gui/config_editor.py**：新增 `wemm_render_dpi`（int，默认 60，choices 40/60/90/120，
+  FIELD_META 标 rebuild:True → 改后需 `--full` 重建）。config.json 已自动补写该键。
+- **wemm_indexer.py**：`WEMM_RENDER_DPI` 120→60；`index_wemm_library` 读 `wemm_render_dpi`
+  并按 `render_page_b64(..., dpi=dpi)` 生效。
+
+### 真实建库与端到端验证（用户可亲眼确认）
+- 全库页索引（`--library all --backend on`，60 DPI，后台跑 ~16 分钟）：只有 LECTURE NOTE 有
+  PDF（18 份/382 页），Obsidian Vault/test/agents/skills 均 0 PDF → 页库正确为空。**382 页向量、
+  18 份 PDF meta 全部落库**。
+- `wemm_status()`：`wemm_backend=local，渲染分辨率 60 DPI`、看图服务存活
+  （tencent/WeMM-Embedding-2B）、LECTURE NOTE 报「18 份 PDF、382 页向量」，其余库「尚未建页索引」。
+- `navigate_knowledge("Navier-Stokes equation viscous incompressible flow")` 返回真实命中：
+  Bernoulli 方程 PDF 第 6/11/7 页（相似度 0.62/0.61/0.59）、Fluid Statics 第 33 页等，含绝对路径。
+- 说明：`index_failures` 报 LECTURE NOTE 有 5 份 `extract-failed`（FLUID MECHANICS_*），但 WEMM
+  页向量对这些 PDF 照样建出来了——页级视觉导航与文字提取相互独立，即使文字层提取失败也能看图导航。
+- 交付过程的环境坑（记录备用）：Windows 下 `.venv\Scripts\python.exe` 是**重定向 shim**，会再
+  spawn 一个真实解释器子进程——同一 launch 永远显示为"2 个 python.exe（同 cmdline）"，曾误判为
+  双开去"杀重复"结果把真 worker 杀了。判定单实例要认 shim+子进程成对，别按进程数。后台长任务
+  用 `schtasks /Run`（脱离本 shell，避免工具对前台子进程的 tree-kill），`/TR` 命令行有 261 字符
+  上限需包一层 .cmd。
+
+### 测试（test_extractors.py：71/71——含配置隔离修复）
+- 修复了一批**既有环境暴露的测试隔离 bug**：真实 `data/config.json` 把 `pdf_scan_backend`/
+  `pdf_text_backend` 都设成 `mineru-cloud`（带真 Key），而 extractor 用例的**前置假设**是后端为
+  默认 local/none，读到真实配置即报「存在测试间配置泄漏」，一次挂 33 例。
+  - 根因：`config.CFG` 是进程启动时从真实 config.json 一次性加载的全局单例，被用户生产配置污染。
+  - 修法（不改用户磁盘 config.json）：`_run_all()` 包一层快照——跑测前把 OCR/路由相关键重置为
+    `config.DEFAULTS`，测完原地还原。
+  - 另两个遗留：`test_preview_job_process_isolation`（子进程 Windows spawn 重读真实 config →
+    文字 PDF 被带偏去云端）→ 显式 `backend="local"`；`test_preview_job_uses_isolated_cache`
+    （依赖环境全局 `pdf_scan_backend=none`）→ 用例内显式锁定 none。
+  - 修复后 extractors **71/71 稳定**（两次跑一致）。
+- 全量回归：extractors 71/71、audit 38/38、registry 15/15、singleton 5/5、config_editor/gui_store
+  0 failures、verify_export_import 39/39、test_wemm_indexer 26、test_wemm_retriever 13。
+
+### 备注
+- 用户要亲证 WEMM 生效：**重启 MCP server**（加载新 server.py + 现读 config），然后调
+  `wemm_status()`（看 382 页向量）→ `navigate_knowledge(...)`（看真实命中页）。
+- `index_failures` 暴露的待办：`~$BAT3_Technical_Report.docx` 是 Word 锁临时文件（可删）；
+  LECTURE NOTE 5 份 FLUID MECHANICS_* `extract-failed`（xsrc=当前签名，不会自动重试，需人工处理）。
+- 60 DPI 是速度/精度折中；要更高版面清晰度可改 `wemm_render_dpi` 后 `--full` 重建（耗时见背景）。
+

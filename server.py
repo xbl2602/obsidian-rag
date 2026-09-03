@@ -23,7 +23,9 @@ from mcp.server import MCPServer
 
 from config import CFG
 from dedup import DEFAULT_THRESHOLD as DEDUP_THRESHOLD, find_duplicates as dedup_find
-from extractors import BINARY_EXTS, TEXT_EXTS
+from extractors import BINARY_EXTS, TEXT_EXTS, current_backend_sig
+from index import REASON_EXTRACT_FAILED, REASON_TBD, REASON_UNREADABLE
+
 from index import (HEARTBEAT_TIMEOUT, LockBusyError, collect_md_files,
                    index_library, kb_stale, load_meta, log, progress_text,
                    read_progress, resolve_note_relations)
@@ -368,7 +370,8 @@ def navigate_knowledge(query: str, top_k: int = 5, libraries: str = "",
     "A,B" 多库并查，exclude="B" 反选。先调 list_libraries 查看库名。
     需要已开启 wemm_backend（Config 视觉导航）并已跑过 WEMM 页索引。"""
     try:
-        if CFG.get("wemm_backend", "off") == "off":
+        cfg_backend, _, _ = _wemm_cfg()
+        if cfg_backend == "off":
             return ("（WEMM 视觉导航未开启：Config→视觉导航（WEMM）将 wemm_backend"
                     " 设为 on/local，并启动 wemm_server.py 看图服务后，先调"
                     " reindex_knowledge 跑一次 WEMM 页索引。）")
@@ -496,6 +499,158 @@ def _dedup_report(name, clusters, stats, threshold):
         for (a, b, j) in c["links"]:
             lines.append(f"    · {a}  ≈  {b}  （相似度 {j}）")
     return "\n".join(lines)
+
+
+# 终态 reason → 人类可读解释（索引失败溯源用；与 index.py REASON_* 常量同串）
+_TERMINAL_LABELS = {
+    "unreadable": "无法读取（疑似损坏/无权限，指纹两轮才判稳）",
+    "extract-failed": "提取失败（损坏/加密/云端失败，可按需重试）",
+    "empty": "空内容（打开正常但没有可提取的正文）",
+    "tbd": "命中 [TBD] 占位（正文还没写完，写完会自动转正）",
+    "scanned": "扫描件待 OCR（后端 none 时跳过；开启 MinerU 云端后会自动重试）",
+    "not-pdf": "非 PDF（仅 WEMM 页库语境）",
+}
+
+
+@server.tool()
+def index_failures(library: str = "", include_ok: bool = False) -> str:
+    """索引失败溯源（只读诊断）：逐文件列出库内"没转成/没索引上"的文档及原因。
+
+    解决"什么文件转不到、为什么、该不该修"：读每个库的文字索引 meta（index_meta_*.json），
+    把落成终态（unreadable / extract-failed / empty / tbd / scanned）的文件按原因分组列出，
+    每行给 相对路径 + 原因含义 + 是否会自动重试。你看一眼就知道哪份课件没进库、卡在哪。
+
+    library：库名（或逗号分隔多库，"all"=全部；缺省=全部）。include_ok=True 时连同正常索引
+    的文件计数一起列出（便于看出总数 vs 失败数）。只读，绝不触发重新索引或模型加载。"""
+    try:
+        if library in ("", "all"):
+            entries = load_registry()
+        else:
+            entries = resolve_entries(library, "")
+        if not entries:
+            return "（没有已注册的库。）"
+        sig = current_backend_sig()
+        blocks = []
+        for e in entries:
+            cfg = effective_config(e)
+            meta = load_meta(meta_path(cfg["name"]))
+            reasons = {}
+            ok = 0
+            for rel, info in meta.items():
+                if not isinstance(info, dict):
+                    continue
+                r = info.get("reason")
+                if r:
+                    xsrc = info.get("xsrc")
+                    will_retry = (r in ("scanned", "extract-failed")
+                                  and xsrc and xsrc != sig)
+                    reasons.setdefault(r, []).append((rel, bool(will_retry)))
+                elif info.get("xfail") or info.get("tbd"):
+                    r2 = REASON_UNREADABLE if info.get("reason") is None else info["reason"]
+                    reasons.setdefault(r2, []).append((rel, False))
+                else:
+                    ok += 1
+            blocks.append(_failures_report(cfg["name"], reasons, ok, sig, include_ok))
+        return "\n\n".join(blocks)
+    except Exception as exc:
+        import traceback
+        log(f"index_failures 失败：{exc}\n{traceback.format_exc()}")
+        return f"（索引失败溯源失败：{exc}）"
+
+
+def _failures_report(name, reasons, ok, sig, include_ok):
+    lines = [f"库「{name}」索引失败溯源（当前 OCR 能力签名：{sig}）："]
+    if not reasons:
+        lines.append("  ✔ 没有落成败终态的文件（全部成功索引）。")
+        if include_ok:
+            lines.append(f"  正常索引文件：{ok} 份。")
+        return "\n".join(lines)
+    for r in ("unreadable", "extract-failed", "empty", "tbd", "scanned", "not-pdf"):
+        items = reasons.get(r)
+        if not items:
+            continue
+        label = _TERMINAL_LABELS.get(r, r)
+        lines.append(f"  〔{r}〕{len(items)} 份 —— {label}")
+        for rel, will_retry in items:
+            mark = "（〆 下轮将自动重试转正）" if will_retry else ""
+            lines.append(f"      · {rel}{mark}")
+    if include_ok:
+        lines.append(f"  正常索引文件：{ok} 份（不在上述失败清单里）")
+    lines.append("  提示：unreadable/extract-failed 可删掉该文件重试或修复源文件；"
+                 "scanned 需在 Config 开启 MinerU 云端 OCR 才会自动转正。")
+    return "\n".join(lines)
+
+
+def _wemm_cfg():
+    """读 WEMM 相关配置的当前值（每次从 config.json 现读，不用进程启动时的快照）。
+
+    长驻 MCP server 的 CFG 是 import 时加载的副本；用户中途在 Config 里开关了
+    wemm_backend / 改 DPI 后，这里必须拿到最新值，否则导航/状态会一直停在旧开关上。
+    """
+    from config import load_config
+    c = load_config()
+    return (c.get("wemm_backend", "off"),
+            c.get("wemm_url"),
+            c.get("wemm_render_dpi"))
+
+
+@server.tool()
+def wemm_status() -> str:
+    """WEMM 页级视觉导航状态（用户可确认手段）：看它到底建没建、生效没生效。
+
+    读每个库的 WEMM 页库 meta（wemm_meta_*.json）+ 配置后报答：
+      后端开关（wemm_backend off/on-local）、是否已跑过页索引（几个 PDF、几页向量）、
+      当前索引的 PDF 里有哪些失败（未渲染成功）、看图服务是否存活。
+    用这个一眼确认"WEMM 到底能不能用"，而不是靠猜测。只读，不启动服务、不加载模型。"""
+    try:
+        from wemm_indexer import load_wemm_meta, wemm_meta_path
+        from wemm_retriever import health
+        cfg_backend, wemm_url, wemm_dpi = _wemm_cfg()
+        dpi_txt = f"，渲染分辨率 {wemm_dpi} DPI" if wemm_dpi else ""
+        lines = [f"WEMM 页级视觉导航状态（wemm_backend={cfg_backend}{dpi_txt}）："]
+        if cfg_backend not in ("on", "local"):
+            lines.append("  ⚠ 后端未开启（off）——navigate_knowledge 不可用。"
+                         "Config→视觉导航（WEMM）设为 on/local，启动 wemm_server.py，"
+                         "再跑 wemm_indexer.py 建页库后才会生效。")
+            return "\n".join(lines)
+        # 服务存活
+        try:
+            h = health(wemm_url)
+            lines.append(f"  ✔ 看图服务存活：{wemm_url}（{h.get('model', '?')}，"
+                         f"设备 {h.get('device', '?')}）")
+        except Exception as e:
+            lines.append(f"  ✘ 看图服务不可用：{type(e).__name__}（先启动 python wemm_server.py）")
+        # 每库页索引情况
+        any_index = False
+        for e in load_registry():
+            cfg = effective_config(e)
+            mp = wemm_meta_path(cfg["name"])
+            meta = load_wemm_meta(mp)
+            files = {k: v for k, v in meta.items()
+                     if k != "_version" and isinstance(v, dict)}
+            if not files:
+                lines.append(f"  · 库「{cfg['name']}」：尚未建 WEMM 页索引（无 wemm_meta）")
+                continue
+            any_index = True
+            pages = sum(v.get("pages", 0) for v in files.values()
+                        if not (v.get("tbd") or v.get("xfail")))
+            failed = [k for k, v in files.items() if (v.get("tbd") or v.get("xfail"))]
+            hdr = f"  · 库「{cfg['name']}」：已建页索引 —— {len(files)} 份 PDF、{pages} 页向量"
+            if failed:
+                hdr += f"，其中 {len(failed)} 份渲染失败待重试"
+            lines.append(hdr)
+            for k in failed[:10]:
+                lines.append(f"      ✗ {k}")
+            if len(failed) > 10:
+                lines.append(f"      … 其余 {len(failed) - 10} 份省略")
+        if not any_index:
+            lines.append("  ⚠ 所有库都还没建 WEMM 页索引：需先跑 python wemm_indexer.py "
+                         "--library <库名> --backend on 建库，navigate_knowledge 才有东西可导航。")
+        return "\n".join(lines)
+    except Exception as exc:
+        import traceback
+        log(f"wemm_status 失败：{exc}\n{traceback.format_exc()}")
+        return f"（WEMM 状态查询失败：{exc}）"
 
 
 if __name__ == "__main__":

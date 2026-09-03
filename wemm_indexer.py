@@ -43,7 +43,7 @@ REASON_NOT_PDF = "not-pdf"
 
 WEMM_VERSION = 1          # 页级导航自己的版本号；升级后强制全量重建 WEMM 库
 WEMM_META_BASENAME = "wemm_meta_{name}.json"
-WEMM_RENDER_DPI = 120     # 页图渲染 DPI（清晰度与显存/时间的平衡）
+WEMM_RENDER_DPI = 60      # 页图渲染 DPI 默认档（config wemm_render_dpi 可调；改后需 --full 重建）
 WEMM_PAGE_SUFFIX = "wemm"  # 页级 collection 相对文字 collection 的后缀字段
 
 # 远程编码可通过 HTTP 向 wemm_server 请求；测试注入假编码器覆盖这两个模块级函数。
@@ -159,6 +159,7 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
         log("wemm_url 未配置，跳过 WEMM 索引")
         return {}
     url = str(url).rstrip("/")
+    dpi = int(CFG.get("wemm_render_dpi", WEMM_RENDER_DPI))
     tag = f"[{cfg['name']}] "
     data_dir = _data_dir()
     data_dir.mkdir(exist_ok=True)
@@ -236,7 +237,7 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
                 meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
                 continue
             for i in range(n_pages):
-                b64 = render_page_b64(str(fpath), i)
+                b64 = render_page_b64(str(fpath), i, dpi=dpi)
                 vec = call_embed_image(b64, dim, url)
                 page_batches.append((rel, i, vec))
             meta[rel] = {"hash": bhash, "pages": n_pages, "size": st.st_size,

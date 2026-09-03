@@ -78,6 +78,16 @@
 > `read_document`（取完整正文+绝对路径，零触发只读缓存）、`find_duplicates`（近似去重）。
 > 默认关闭（`wemm_backend=off`，隐私/显存优先）。三处 config 同步；新增 58 用例
 > （wemm_indexer 26、wemm_retriever 13、dedup 19）全绿，六件套全绿。详见 TASK_LOG.md 问题37。
+>
+> ✅ **2026-09-04 已完成（问题38）：失败溯源 + WEMM 可确认手段 + 渲染 DPI 档位 + 真实全量建库验证**。
+> 新增 `index_failures(library)`（把提取静默失败变成可溯源清单，按终态原因分组、标注 `〆 下轮将
+> 自动重试`）与 `wemm_status()`（每库 PDF 数/页向量/后端开关/服务存活/渲染失败，一眼确认 WEMM
+> 是否生效）两个 MCP 工具；`navigate_knowledge`/`wemm_status` 改调用时现读 config
+> （长驻 MCP server 的 CFG 是 import 快照，中途开关/改 DPI 旧进程读不到）。新增 `wemm_render_dpi`
+> 设置（40/60/90/120，默认 60，改后需 `--full` 重建；单页嵌入耗时随 DPI 强相关）。真实全量建库
+> 实证：LECTURE NOTE 382 页向量 / 18 PDF，`navigate_knowledge` 返回真实命中页。另修复 test_extractors
+> 配置隔离（真实 config.json 开了 mineru-cloud → 一次挂 33 例，改成跑测前把 OCR 键重置为
+> DEFAULTS、测完还原，71/71 稳定）。详见 TASK_LOG.md 问题38。
 
 ## 核心思想
 

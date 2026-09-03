@@ -1561,11 +1561,21 @@ def test_preview_job_uses_isolated_cache():
             assert prod.exists() == prod_existed, "预览不得凭空创建生产缓存目录"
             assert ex.get_cache_dir() == prod, "预览结束后必须还原缓存目录"
 
-            # 生产路径（全局 backend=none，默认缓存目录）不得看见预览的云端产物
-            md, reason = ex.extract_to_markdown(p)
-            assert md is None and reason == "scanned", \
-                f"正式索引不得命中预览产生的云端缓存（实得 {reason!r}）"
-            assert _snap() == before, "scanned 是失败终态，同样不写缓存"
+            # 生产路径必须走"扫描件无后端=scanned 终态"：锁定 pdf_scan_backend=none
+            # 自证一致性（不依赖本用例之前/之后其它用例留下的全局值），否则正式索引
+            # 若处在 mineru-cloud 等环境会被带偏成其它 reason，测的不是"缓存隔离"。
+            saved_scan = cfgmod.CFG.get("pdf_scan_backend")
+            cfgmod.CFG["pdf_scan_backend"] = "none"
+            try:
+                md, reason = ex.extract_to_markdown(p)
+                assert md is None and reason == "scanned", \
+                    f"正式索引不得命中预览产生的云端缓存（实得 {reason!r}）"
+                assert _snap() == before, "scanned 是失败终态，同样不写缓存"
+            finally:
+                if saved_scan is None:
+                    cfgmod.CFG.pop("pdf_scan_backend", None)
+                else:
+                    cfgmod.CFG["pdf_scan_backend"] = saved_scan
         finally:
             ex._mineru_cloud_extract = orig_cloud
             ex.set_cache_dir(None)
@@ -1666,7 +1676,11 @@ def test_preview_job_process_isolation():
         p = Path(td) / "t.pdf"
         _make_text_pdf(p)
         q = mp.Queue()
-        proc = mp.Process(target=ex._preview_job, args=(q, str(p), None),
+        # backend="local"：子进程是全新进程（Windows spawn 重读真实 config.json，
+        # 会带上生产环境 pdf_text_backend=mineru-cloud 等开关）。本用例只验证进程
+        # 隔离/GIL 解耦，不验证默认路由，故显式钉死 local，与下方 route=="local"
+        # 断言一致，避免子进程被真实配置带偏。
+        proc = mp.Process(target=ex._preview_job, args=(q, str(p), "local"),
                           daemon=True)
         proc.start()
         payload = q.get(timeout=120)
@@ -2504,18 +2518,38 @@ def test_mineru_poll_gone_nonjson_removes_pending_entry():
 # ---------- 运行器（对齐 audit_regression_test.py） ----------
 
 def _run_all():
-    fns = [v for k, v in sorted(globals().items())
-           if k.startswith("test_") and callable(v)]
+    # 配置隔离：本套用例的前提是 OCR 后端为默认值（text=local、scan=none、空 Key），
+    # 但 config.CFG 是从真实 data/config.json 一次性加载的——用户生产环境若把
+    # pdf_scan_backend/pdf_text_backend 设成 mineru-cloud 并配了真实 Key，就会污染
+    # 所有依赖默认值的用例（报"前置假设/配置泄漏"）。因此包一层快照：跑测前把
+    # OCR/路由相关键重置为 DEFAULTS，测完原地还原现场，绝不改用户磁盘上的 config.json。
+    import config as _cfg
+    _KEYS = ("pdf_scan_backend", "pdf_text_backend", "mineru_api_key",
+             "mineru_model_version", "mineru_concurrency",
+             "mineru_rate_per_minute", "mineru_timeout_seconds")
+    _saved = {k: _cfg.CFG.get(k) for k in _KEYS}
+    for _k in _KEYS:
+        if _k in _cfg.DEFAULTS:
+            _cfg.CFG[_k] = _cfg.DEFAULTS[_k]
     failed = 0
-    for fn in fns:
-        try:
-            fn()
-            print(f"PASS {fn.__name__}")
-        except Exception as e:
-            failed += 1
-            import traceback
-            print(f"FAIL {fn.__name__}: {e}")
-            traceback.print_exc()
+    try:
+        fns = [v for k, v in sorted(globals().items())
+               if k.startswith("test_") and callable(v)]
+        for fn in fns:
+            try:
+                fn()
+                print(f"PASS {fn.__name__}")
+            except Exception as e:
+                failed += 1
+                import traceback
+                print(f"FAIL {fn.__name__}: {e}")
+                traceback.print_exc()
+    finally:
+        for _k, _v in _saved.items():
+            if _v is None:
+                _cfg.CFG.pop(_k, None)
+            else:
+                _cfg.CFG[_k] = _v
     print(f"\n{len(fns) - failed}/{len(fns)} 通过")
     return 1 if failed else 0
 

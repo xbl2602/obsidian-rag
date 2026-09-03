@@ -53,7 +53,8 @@ GROUPS = [
              "导航库，告诉 AI 内容在哪个 PDF 哪页。默认关；开需要先手动启动"
              "看图服务（全局 python wemm_server.py）。",
      "fields": [("wemm_backend", "str"), ("wemm_url", "str"),
-                ("wemm_model", "str"), ("wemm_dim", "int")]},
+                ("wemm_model", "str"), ("wemm_dim", "int"),
+                ("wemm_render_dpi", "int")]},
 
     {"title": "融合与排序调优", "level": "advanced", "icon": "TUNE_OUTLINED",
      "desc": "BM25 / RRF 权重 / 候选池 / 重排预算。拿不准就保持默认。",
@@ -167,6 +168,16 @@ FIELD_META = {
     "wemm_dim": {"label": "向量维度",
                  "hint": "matryoshka 截断维度；2B 支持 64/128/256/512/1024/2048，"
                          "512 质量近满、显存/存储适中"},
+    "wemm_render_dpi": {"label": "页图渲染清晰度",
+                        "rebuild": True,
+                        "choices": [
+                            ("40", "40 DPI · 最快（约 0.5s/页，图较糊）"),
+                            ("60", "60 DPI · 均衡（默认，约 2.5s/页）"),
+                            ("90", "90 DPI · 更清楚（约 13s/页）"),
+                            ("120", "120 DPI · 最清楚（约 25s/页，建库很慢）"),
+                        ],
+                        "hint": "页图渲染 DPI；越高越清楚但编码耗时随 DPI 平方暴涨，"
+                                "数百页时 120 会建数小时。改后需 --full 全量重建才生效"},
     # ---- 检索输出 ----
     "return_chunk_limit": {"label": "单块返回字符上限",
                            "hint": "超出截断并附标记；直接影响回答注入的 token 量"},
