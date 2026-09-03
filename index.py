@@ -12,7 +12,11 @@ from pathlib import Path
 import chromadb
 
 from config import CFG
-from extractors import BINARY_EXTS, TEXT_EXTS, current_backend_sig, extract_to_markdown
+from extractors import (BINARY_EXTS, TEXT_EXTS, classify_extraction,
+                        current_backend_sig, extract_to_markdown,
+                        mineru_cloud_extract_for_parallel, mineru_pending_prune,
+                        mineru_quota_add, mineru_quota_today, mineru_token_invalid,
+                        mineru_token_reset)
 from library import effective_config, load_registry, meta_path, resolve_entries
 
 # 跨平台文件锁：Windows 用 msvcrt（字节范围锁），Linux/macOS 用 fcntl（flock）。
@@ -1400,6 +1404,20 @@ def write_lock(timeout=LOCK_TIMEOUT_SECONDS):
     return _lock()
 
 
+def _mineru_concurrency():
+    """配置的 MinerU 云端并行度（config.mineru_concurrency，默认 3）。
+
+    <=1 = 串行（与并行化之前的旧行为完全一致，回退用）；云端调用是纯网络 I/O，
+    线程池足够（无需多进程）；官方未公布"同时处理中任务数"上限，默认保守取 3，
+    实测摸高（问题35）。
+    """
+    try:
+        w = int(CFG.get("mineru_concurrency", 3) or 1)
+    except Exception:
+        w = 3
+    return max(1, w)
+
+
 def index_vault(vault, incremental=True, full=False):
     """旧单库入口（legacy）：按 config 全局配置索引（GUI/export 兼容）。"""
     return _index_core(vault, COLLECTION_NAME, INDEX_META,
@@ -1464,104 +1482,28 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 meta = {}
         current_rels = set()  # 动态构建：本轮磁盘上应存在的文件（含持久化终态条目）
 
-        new_ids, new_texts, new_metas = [], [], []
-        converted = 0  # 本轮做过文档转换（pdf/docx→md）的文件数
-        changed = 0
-        unchanged = 0
-        scan_start = time.time()
+        # 问题35：需要送 MinerU 云端的文件攒批列表——扫描段收集、云端段统一并行，
+        # 把「要不要转换」与「何时真正发网络请求」解耦。元组 =
+        # (rel, fpath, stat, bhash, is_ocr, route, pages)。
+        cloud_jobs = []
 
-        update_progress(phase="scanning", message="比对指纹、切块...")
-        xsig = current_backend_sig()
-        for fpath in files:
-            rel = str(fpath.relative_to(vault)).replace("\\", "/")
-            if agent_allowed is not None and \
-                    fpath.suffix.lower().lstrip(".") not in agent_allowed:
-                # Agent 未授权格式：冻结——保留既有条目与块（不裁剪不清理），
-                # 零 I/O、不转换、不计变更；无条目则视同不存在，待人类路径首建。
-                if meta.get(rel) is not None:
-                    current_rels.add(rel)
-                continue
-            try:
-                st = fpath.stat()
-            except OSError as e:
-                log(f"{tag}无法获取文件状态，本轮跳过（下轮重试）：{rel}（{e}）")
-                continue
-            old = meta.get(rel)
-            current_rels.add(rel)  # 本轮所有存活路径（终态/成功/未变）统一在此持久化
-            # 快速路径：size+mtime 未变则免读全文/免提取（与 kb_stale 同一指纹策略），
-            # 对 xfail/tbd 终态条目同等适用——终态稳定即 O(1) 收敛，绝不重复提取。
-            # 例外：OCR 能力签名变化（启用后端/补 Key）→ 穿透快速路径重试转正。
-            if (incremental and old and old.get("size") == st.st_size
-                    and old.get("mtime") == st.st_mtime_ns
-                    and not _backend_changed(old, xsig)
-                    and not _links_missing(old)):
-                unchanged += 1
-                update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
-                continue
-            text, bhash = _load_text(fpath)
+        def _store_chunks(rel, st, bhash, front, body):
+            """成功提取后的统一收口（问题35 自主循环内联抽取）：链接抽取 → 清洗 →
+            空内容防御 → 两级切块 → meta 条目 + 进度。
 
-            # ---- 统一终态出口（封堵死循环入口）：None 判定严格先于 is_tbd_heavy ----
-            if bhash == _UNREADABLE:
-                meta[rel] = _terminal_entry(st, bhash, REASON_UNREADABLE)
-                log(f"{tag}文件不可读（锁定/权限？），记入 unreadable 终态待重试：{rel}")
-                changed += 1
-                update_progress(files_done=unchanged + changed, message=f"跳过不可读 {rel}")
-                continue
-            suffix = fpath.suffix.lower().lstrip(".")
-            is_text = suffix in TEXT_EXTS
-            if is_text and text is None:
-                # 空文件（含仅 frontmatter 的 md）落 empty 终态。历史上空正文不落
-                # meta，导致每轮重计 added → 每轮误判 stale（备案隐患，就此收敛）
-                meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
-                log(f"{tag}空文件（无正文），记入 empty 终态：{rel}")
-                changed += 1
-                update_progress(files_done=unchanged + changed, message=f"跳过空文件 {rel}")
-                continue
-            if (incremental and old and not _skipped(old) and old.get("hash") == bhash
-                    and not _links_missing(old)):
-                unchanged += 1
-                update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
-                continue
-
-            front, body = {}, ""
-            if is_text:
-                if is_tbd_heavy(text or "", tbd_ratio):
-                    # 占位重文件落 tbd 终态；其旧块由 chunks=0 驱动清理阶段删除
-                    meta[rel] = _terminal_entry(st, bhash, REASON_TBD)
-                    log(f"{tag}跳过占位重文件（TBD 占比 ≥ {tbd_ratio:.0%}）：{rel}")
-                    changed += 1
-                    update_progress(files_done=unchanged + changed,
-                                    message=f"跳过占位重文件 {rel}")
-                    continue
-                front, body = extract_frontmatter(text or "")
-                links = extract_wikilink_targets(body)
-                body = clean_wikilinks(body)
-            else:
-                # 二进制源：转 Markdown 后走同一条切块管线。converting 相位在
-                # progress_text 里豁免停滞告警（大文件转换可能超过 STALL_TIMEOUT）。
-                update_progress(phase="converting", message=f"转换 {rel}...")
-                converted += 1
-                body, reason = extract_to_markdown(fpath)
-                # G7 单点还原（问题 32）：converting 置位后有提取失败 / 空 body
-                # 防御 / 成功切块三个出口，在此一处还原 scanning 即全覆盖——
-                # 转换豁免窗口严格闭合于 extract_to_markdown 的真实耗时，绝不
-                # 泄漏进后续相位（600s 级 MinerU 云端 OCR 也完全在这段窗口内）。
-                update_progress(phase="scanning", message=f"已转换 {rel}")
-                if body is None:
-                    meta[rel] = _terminal_entry(st, bhash, reason or REASON_EXTRACT_FAILED,
-                                                xsrc=xsig)
-                    log(f"{tag}提取失败（{reason or 'extract-failed'}），记入终态待重试：{rel}")
-                    changed += 1
-                    update_progress(files_done=unchanged + changed, message=f"提取失败 {rel}")
-                    continue
-                links = extract_wikilink_targets(body)
-                body = clean_wikilinks(body)
+            三条路径共用：文本类 / 本地内联二进制 / 云端并行结果——与抽取前的
+            内联版本逐行等价。所有状态变更（meta/new_ids/changed）仍只发生在
+            主线程（云端 worker 只做网络 I/O 不碰任何共享状态），并行天然无竞态。
+            """
+            nonlocal changed
+            links = extract_wikilink_targets(body)
+            body = clean_wikilinks(body)
             # 防御分支：正常不应到达（文本空已归一为终态、提取器保证非空产出）
             if not body.strip():
                 meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
                 changed += 1
                 update_progress(files_done=unchanged + changed, message=f"跳过空内容 {rel}")
-                continue
+                return
             # 两级切块：标题切 → 超长块降级段落切 → 超长段级句子剪（永不剪断句子）
             if len(body) <= short_doc:
                 chunks = [(front.get("title", ""), body)]
@@ -1665,6 +1607,174 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                          "mtime": st.st_mtime_ns, "tbd": False, "links": links}
             changed += 1
             update_progress(files_done=unchanged + changed, message=f"切块 {rel}")
+
+        new_ids, new_texts, new_metas = [], [], []
+        converted = 0  # 本轮做过文档转换（pdf/docx→md）的文件数
+        changed = 0
+        unchanged = 0
+        scan_start = time.time()
+
+        update_progress(phase="scanning", message="比对指纹、切块...")
+        xsig = current_backend_sig()
+        for fpath in files:
+            rel = str(fpath.relative_to(vault)).replace("\\", "/")
+            if agent_allowed is not None and \
+                    fpath.suffix.lower().lstrip(".") not in agent_allowed:
+                # Agent 未授权格式：冻结——保留既有条目与块（不裁剪不清理），
+                # 零 I/O、不转换、不计变更；无条目则视同不存在，待人类路径首建。
+                if meta.get(rel) is not None:
+                    current_rels.add(rel)
+                continue
+            try:
+                st = fpath.stat()
+            except OSError as e:
+                log(f"{tag}无法获取文件状态，本轮跳过（下轮重试）：{rel}（{e}）")
+                continue
+            old = meta.get(rel)
+            current_rels.add(rel)  # 本轮所有存活路径（终态/成功/未变）统一在此持久化
+            # 快速路径：size+mtime 未变则免读全文/免提取（与 kb_stale 同一指纹策略），
+            # 对 xfail/tbd 终态条目同等适用——终态稳定即 O(1) 收敛，绝不重复提取。
+            # 例外：OCR 能力签名变化（启用后端/补 Key）→ 穿透快速路径重试转正。
+            if (incremental and old and old.get("size") == st.st_size
+                    and old.get("mtime") == st.st_mtime_ns
+                    and not _backend_changed(old, xsig)
+                    and not _links_missing(old)):
+                unchanged += 1
+                update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
+                continue
+            text, bhash = _load_text(fpath)
+
+            # ---- 统一终态出口（封堵死循环入口）：None 判定严格先于 is_tbd_heavy ----
+            if bhash == _UNREADABLE:
+                meta[rel] = _terminal_entry(st, bhash, REASON_UNREADABLE)
+                log(f"{tag}文件不可读（锁定/权限？），记入 unreadable 终态待重试：{rel}")
+                changed += 1
+                update_progress(files_done=unchanged + changed, message=f"跳过不可读 {rel}")
+                continue
+            suffix = fpath.suffix.lower().lstrip(".")
+            is_text = suffix in TEXT_EXTS
+            if is_text and text is None:
+                # 空文件（含仅 frontmatter 的 md）落 empty 终态。历史上空正文不落
+                # meta，导致每轮重计 added → 每轮误判 stale（备案隐患，就此收敛）
+                meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
+                log(f"{tag}空文件（无正文），记入 empty 终态：{rel}")
+                changed += 1
+                update_progress(files_done=unchanged + changed, message=f"跳过空文件 {rel}")
+                continue
+            if (incremental and old and not _skipped(old) and old.get("hash") == bhash
+                    and not _links_missing(old)):
+                unchanged += 1
+                update_progress(files_done=unchanged + changed, message=f"扫描 {rel}")
+                continue
+
+            front, body = {}, ""
+            if is_text:
+                if is_tbd_heavy(text or "", tbd_ratio):
+                    # 占位重文件落 tbd 终态；其旧块由 chunks=0 驱动清理阶段删除
+                    meta[rel] = _terminal_entry(st, bhash, REASON_TBD)
+                    log(f"{tag}跳过占位重文件（TBD 占比 ≥ {tbd_ratio:.0%}）：{rel}")
+                    changed += 1
+                    update_progress(files_done=unchanged + changed,
+                                    message=f"跳过占位重文件 {rel}")
+                    continue
+                front, body = extract_frontmatter(text or "")
+                _store_chunks(rel, st, bhash, front, body)
+            else:
+                # 二进制源：问题35 分流——先预判会不会走 MinerU 云端网络往返；
+                # 会则攒进 cloud_jobs 延后到云端段并行处理（与「要不要转换」解耦，
+                # 扫描段绝不原地阻塞等云端），不会则按原路径当场提取（缓存秒回 /
+                # 本地直提 / 云端未启用的快速失败，均为秒级，无需并行）。
+                kind, _pages, is_ocr, route = classify_extraction(fpath, md5=bhash)
+                if kind == "cloud" and _mineru_concurrency() > 1:
+                    cloud_jobs.append((rel, fpath, st, bhash, is_ocr, route, _pages))
+                    update_progress(files_done=unchanged + changed,
+                                    message=f"待送云端（已收集 {len(cloud_jobs)} 个）：{rel}")
+                    continue
+                # 本地快速路径：转 Markdown 后走同一条切块管线。converting 相位在
+                # progress_text 里豁免停滞告警（大文件转换可能超过 STALL_TIMEOUT）。
+                update_progress(phase="converting", message=f"转换 {rel}...")
+                converted += 1
+                body, reason = extract_to_markdown(fpath)
+                # G7 单点还原（问题 32）：converting 置位后有提取失败 / 空 body
+                # 防御 / 成功切块三个出口，在此一处还原 scanning 即全覆盖——
+                # 转换豁免窗口严格闭合于 extract_to_markdown 的真实耗时，绝不
+                # 泄漏进后续相位（600s 级 MinerU 云端 OCR 也完全在这段窗口内）。
+                update_progress(phase="scanning", message=f"已转换 {rel}")
+                if body is None:
+                    meta[rel] = _terminal_entry(st, bhash, reason or REASON_EXTRACT_FAILED,
+                                                xsrc=xsig)
+                    log(f"{tag}提取失败（{reason or 'extract-failed'}），记入终态待重试：{rel}")
+                    changed += 1
+                    update_progress(files_done=unchanged + changed, message=f"提取失败 {rel}")
+                    continue
+                _store_chunks(rel, st, bhash, front, body)
+            # 防御分支与两级切块已收口进 _store_chunks（问题35）：文本类、本地
+            # 内联二进制、云端并行结果三条路径共用同一份成功路径逻辑。
+
+        # ---- MinerU 云端并行段（问题35）----
+        # 扫描段攒下的 cloud_jobs 统一处理：线程池只包网络 I/O（提交/上传/轮询/
+        # 下载），结果逐个回到主线程走与本地路径完全相同的 _store_chunks 收口
+        # （单线程状态变更，天然无竞态）；with 语句保证池生命周期严格闭合。
+        # 进度用批量语义："N 个文件云端处理中，已完成 M 个"；converting 相位
+        # 豁免停滞告警同样覆盖云端长等待。
+        if cloud_jobs:
+            workers = min(_mineru_concurrency(), len(cloud_jobs))
+            mineru_token_reset()
+            # 断点簿记清理：文件不在本轮集合 / 字节已变化的条目（续接结果无归宿）
+            mineru_pending_prune({str(fp): bh
+                                  for _r, fp, _s, bh, _io, _rt, _pg in cloud_jobs})
+            total_pages = sum(pg for *_x, pg in cloud_jobs)
+            quota = mineru_quota_today()
+            projected = int(quota.get("pages", 0)) + total_pages
+            if projected > 800:
+                log(f"{tag}⚠ 本轮约 {total_pages} 页送云端，今日累计将达 {projected} 页"
+                    f"（>800）：接近每日 1000 页最高优先级额度，后续任务可能被降"
+                    f"优先级、处理变慢（仍会被处理，不会失败）。")
+            mineru_quota_add(len(cloud_jobs), total_pages)
+            log(f"{tag}并行送 MinerU 云端 {len(cloud_jobs)} 个文件"
+                f"（并发 {workers}，约 {total_pages} 页）...")
+            update_progress(phase="converting",
+                            message=f"MinerU 云端并行处理 {len(cloud_jobs)} 个文件"
+                                    f"（并发 {workers}，中断的任务自动续接）...")
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            cloud_done = 0
+            with ThreadPoolExecutor(max_workers=workers,
+                                    thread_name_prefix="mineru-cloud") as pool:
+                futs = {pool.submit(mineru_cloud_extract_for_parallel, fp, is_ocr, bh):
+                        (rel, fp, st, bh)
+                        for rel, fp, st, bh, is_ocr, _rt, _pg in cloud_jobs}
+                for fut in as_completed(futs):
+                    rel, fp, st, bh = futs[fut]
+                    if fut.cancelled():
+                        # Token 失效后取消的任务：本轮跳过——不落终态、不动 meta
+                        # （保持原条目/无条目原状），下一轮索引自然重试。
+                        log(f"{tag}Token 失效，云端任务本轮跳过（下轮自动重试）：{rel}")
+                        continue
+                    try:
+                        body, reason = fut.result()
+                    except Exception as e:  # worker 入口契约上绝不抛；防御兜底
+                        body, reason = None, REASON_EXTRACT_FAILED
+                        log(f"{tag}云端任务异常（按提取失败处理）：{rel}（{e}）")
+                    cloud_done += 1
+                    converted += 1
+                    update_progress(phase="converting",
+                                    message=f"云端处理中：已完成 {cloud_done}/"
+                                            f"{len(cloud_jobs)}（{rel}）")
+                    if body is None:
+                        meta[rel] = _terminal_entry(st, bh, reason or REASON_EXTRACT_FAILED,
+                                                    xsrc=xsig)
+                        log(f"{tag}提取失败（{reason or 'extract-failed'}），记入终态待重试：{rel}")
+                        changed += 1
+                        update_progress(files_done=unchanged + changed,
+                                        message=f"提取失败 {rel}")
+                        continue
+                    _store_chunks(rel, st, bh, {}, body)
+                    if mineru_token_invalid():
+                        # Token 失效：取消尚未启动的任务（正在跑的会经 worker 入口的
+                        # 快速失败路径自行结束），停止为注定失败的请求烧频控配额。
+                        for f2 in futs:
+                            f2.cancel()
+            update_progress(phase="scanning", message="云端处理完成")
 
         # 裁剪 meta：移除磁盘上已不存在的文件条目（Bug1 关键一步），
         # 这样下方 valid 集合不含已删文件，其块会在清理阶段被 collection.delete。

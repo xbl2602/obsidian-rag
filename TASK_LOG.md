@@ -1353,3 +1353,98 @@ agent 平台本就能按路径读；纯语言模型路径当前无真实使用�
   清理），恢复后自动重试转正——"宁可诚实空缺、不留半份"原则的代价，接受。
 - MinerU 云端批量并行加速（8.2.4 四步方案 + 9.6 健壮性结论）按既定纪律单独开轮，
   紧随本轮实施（见问题 35）。
+
+## 问题 35：MinerU 云端批量并行加速（2026-09-03）
+
+### 背景
+TODO backlog 既定项：`_mineru_cloud_extract` 是"提交→上传→轮询[`time.sleep` 原地阻塞]
+→下载"的单文件阻塞流程，`_index_core` 主循环逐文件顺序处理、零并发原语——库里有几十
+上百份课件要送云端时逐份串行等待，是纯网络 I/O 浪费。方案经调研会话定稿（四步法 +
+九个工程健壮性问题的结论），用户批准本轮与问题34 连续实施、各占一个提交。
+
+### 认知基线（方案设计阶段确认，实施时不再重新论证）
+- 自建 MinerU 服务的并发配置（环境变量/启动参数/扩容）与云端托管 API 完全无关，不可照搬；
+- 官方频控：三个提交接口共用 50 个文件/分钟（滚动）、5000 文件/天、1000 页/天最高优先级
+  （超出降级不拒绝）、单批 ≤50 文件——个人库量级距离触顶有量级余量，限流是"体面退让"
+  的边界情况，不是要突破的瓶颈；
+- "同时处理中任务数"上限官方未公布，并发数必须保守起步（默认 3，做成配置可实测摸高）；
+- 只并行网络 I/O 段：`ThreadPoolExecutor` 足够（无需多进程）；所有共享状态变更保持在
+  主线程单线程执行，天然无竞态。
+
+### 实现
+- **config.py / gui/config_editor.py**：新增 `mineru_concurrency`（int，默认 3，进
+  `_POSITIVE_KEYS`；1=串行=并行化前的旧行为，回退用）与 `mineru_rate_per_minute`
+  （int，默认 45，0=不限速；对应官方 50/分钟频控留安全余量）。两键进「PDF 与云端
+  OCR」组 FIELD_META/fields（test_config_editor 静态契约强制，问题31 机制生效）。
+- **extractors.py**（并行基础设施）：
+  - `_classify_mineru_code` + `_MineruSubmitError(kind, code)`：提交错误三分类——
+    transient（网络异常/429/-10001/-60007/-60009）指数退避+抖动重试（`_SUBMIT_MAX_
+    ATTEMPTS=4`，429 尊重 `Retry-After` 头封顶 60s）；fatal（-60002/-60004/-60005/
+    -60006）立即失败不重试；token（A0202/A0211）置全局失效标志 `_token_invalid`，
+    同批后续请求快速失败、调度方取消未启动任务（停止为注定失败的请求烧频控配额）。
+    未知错误码按 transient 处理（宁可多试一次，不误杀）。
+  - `_window_delay`/`_submit_gate`：滑动窗口限速（发送时间戳队列 + 最近 60s 计数），
+    每次提交尝试（含重试）各占一槽；持锁等待=提交节奏串行化，正是限速目的。
+  - 断点簿记 `data/extract_cache/mineru_pending.json`（`_pending_add/_remove/_match/
+    mineru_pending_prune`）：上传成功即落 `{batch_id: {path, route, md5}}`，进程被杀
+    后条目留存；下一轮同一文件提取时按 path+md5 匹配 → `_mineru_resume` 续接服务器
+    端结果（轮询/下载/写缓存），绝不重复提交。终态语义：成功/failed/gone/no-md/empty
+    → 移除条目；timeout/download/网络异常 → 保留条目（服务器端任务可能仍在跑或结果
+    仍可取）。簿记文件放提取缓存目录下——试验台的隔离缓存目录天然隔离其预览任务
+    的中断条目，不会污染生产簿记（红线 7 同一教训）。孤儿清理（文件不在本轮集合/
+    字节已变化）在云端段开始时执行。
+  - `_mineru_poll_result`：轮询+下载从 `_mineru_cloud_extract` 抽出（新鲜提交与续接
+    共用同一条路径）；返回结构化 `(md, why)`，调用方按 why 决定簿记去留。
+  - `classify_extraction(path, backend, md5)`：分流预判，与 `_extract_pdf` 路由条件
+    严格同源（漂移只影响并行收益、绝不影响产出正确性——真正执行仍走 extract_to_
+    markdown 完整路径）；返回 `(kind, pages, is_ocr, route)`，kind=cloud 才攒批。
+  - `mineru_cloud_extract_for_parallel(path, is_ocr, key)`：worker 显式入口——PyMuPDF
+    不保证多线程安全，worker 只做纯网络 I/O 绝不触碰 pymupdf（路由判定全部在主线程
+    classify 阶段完成）；md5 透传免重复读盘。
+  - `mineru_quota_add/today`：每日文件数/页数计数（`mineru_quota.json`，翻篇自动清零）。
+    仅提醒非硬门禁——降级≠失败，阻断反而制造问题。
+- **index.py**（主循环改造，四步法落地）：
+  - ①分流：二进制分支先 `classify_extraction` 预判，cloud 且并发>1 → 攒进 `cloud_jobs`
+    （rel/fpath/st/bhash/is_ocr/route/pages）继续扫描；inline（缓存秒回/本地直提/
+    快速失败）按原路径当场提取。扫描段绝不原地阻塞等云端。
+  - 成功路径抽取 `_store_chunks(rel, st, bhash, front, body)` 闭包：链接抽取→清洗→
+    空内容防御→两级切块→meta 写入→进度，文本类/本地二进制/云端结果三条路径共用
+    （与抽取前内联版本逐行等价）；G7 单点还原语义不变（converting→scanning 紧跟
+    extract_to_markdown 返回处）。
+  - ②③并行执行+主线程收口：云端段 `ThreadPoolExecutor(max_workers=min(并发, 任务数))`
+    包 `mineru_cloud_extract_for_parallel`，`as_completed` 逐个回主线程——失败落
+    `_terminal_entry`（带 xsrc）、成功走 `_store_chunks`；Token 失效时 `fut.cancel()`
+    取消未启动任务（被取消文件本轮不动 meta，下轮自然重试）。
+  - ④进度批量语义："待送云端（已收集 N 个）"→"MinerU 云端并行处理 N 个文件（并发
+    M，中断的任务自动续接）"→"云端处理中：已完成 K/N（文件）"；converting 相位豁免
+    停滞告警天然覆盖云端长等待。
+  - 配额提醒：分发前按 classify 页数预估，今日累计将超 800 页（1000 页额度的 80%）
+    打日志提醒"会被降优先级、变慢"。
+- server.py / retriever.py / GUI 运行时零改动（config_editor 元数据除外）。
+
+### 测试（tests/test_extractors.py，+11 例，67/67）
+- extractors 层：`test_rate_limiter_window_math`（满额等待/窗口滑动/0=不限）、
+  `test_mineru_submit_retry_transient_then_success`（两次网络失败后退避重试成功，
+  断言 POST 计数与退避记录）、`test_mineru_submit_respects_retry_after`（429+头 →
+  恰按 7s 等待）、`test_mineru_submit_fatal_code_no_retry`（-60005 仅 1 次 POST 零退避）、
+  `test_mineru_token_error_sets_flag_and_folds`（置全局标志+后续调用零请求）、
+  `test_mineru_pending_record_resume_after_interrupt`（轮询途中"被杀"→簿记留存→
+  下轮续接：POST 计数不增、簿记清空、缓存写入）、`test_mineru_pending_prune_orphans`
+  （孤儿/变更文件条目清理）、`test_classify_extraction_matrix`（8 分支矩阵）、
+  `test_mineru_quota_counter`。
+- index 端到端（_IsoEnv 隔离）：`test_index_cloud_parallel_dispatch_and_chunking`
+  （3 份含图 PDF，Barrier 断言真并发 ≥2，meta 出块、簿记清空）、
+  `test_index_token_abort_skips_remaining`（4 任务并发 2：仅 1 个真正上云，其余快速
+  失败/取消，索引正常完成）。
+- 开发中修了一处自测暴露的 bug：`_mineru_submit` 对 token 类错误 raise 前漏调
+  `_token_invalid.set()`（测试先红后绿，正是"Token 失效不置标志则调度方无从取消"）。
+- 六件套全绿：extractors **67/67**、audit **38/38**、registry **15/15**、singleton **5/5**、
+  config_editor/gui_store 0 failures、verify_export_import **39/39**。
+
+### 备注
+- 模拟并发下的真实网络（429/降级）仍属人工冒烟范畴；官方未公布并发上限，`mineru_
+  concurrency` 保持保守值 3，用户实测无 429/无大量降级后可逐步调高。
+- 断点续接只能挽回"已上传成功"的任务（提交失败的任务服务器端不存在，重提交即是
+  正常路径）；簿记文件随缓存目录走，试验台预览中断的条目随临时目录销毁。
+- 并行只覆盖"网络 I/O 等待"的重叠；嵌入/写库仍与之前完全相同（锁外编码+锁内写入），
+  不在本轮范围。

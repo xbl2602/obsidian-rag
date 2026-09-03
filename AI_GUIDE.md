@@ -59,6 +59,12 @@ torch 用 `pip install torch==2.11.0+cu128 --index-url https://download.pytorch.
 3. 无需重建：之前被整本跳过的含图 PDF（扫描件/混合型）会在下一轮索引自动重试
    转正（xsrc 失配机制）
 4. 免费额度：extract 接口注册 Token 后 200MB/200 页；超时默认 600s/文件可调
+5. 并行与健壮性（2026-09-03 起，问题35）：多份文件自动并行送云端
+   （`mineru_concurrency`，默认 3，1=串行回退）；每分钟提交数滑动窗口限速
+   （`mineru_rate_per_minute`，默认 45，官方频控 50/分钟）；临时性失败（网络/429/
+   服务异常）自动指数退避重试；进程中断前已上传的任务下一轮自动续接结果
+   （`data/extract_cache/mineru_pending.json` 断点簿记），不重复消耗配额；
+   Token 失效自动停掉同批剩余任务
 
 ### 2.3 导入数据包（核心步骤）
 ```bash

@@ -347,11 +347,18 @@ python index.py --library "Obsidian Vault"
   **GUI 展示已完成（2026-08-25，问题29）**：语义检索卡每条结果新增"关联笔记"内联展开
   入口（出链/入链列表），与正文展开互相独立的开关，纯展示层接线，复用本条已有的
   `resolve_note_relations`，不改后端。详见 TASK_LOG.md 问题29。
-- **MinerU 云端批量并行加速（"batch功能"）**：❌ **未实现，仅完成方案设计**（2026-09-02
-  确认现状：`extractors._mineru_cloud_extract` 是提交→上传→轮询[`time.sleep` 原地阻塞]
-  →下载的单文件阻塞流程；`index.py` 主循环是普通 `for fpath in files:`，逐个文件顺序处理，
-  **没有任何并发原语**——无 ThreadPoolExecutor/ProcessPoolExecutor/asyncio，代码层面
-  彻头彻尾串行，一次一份）。
+- **MinerU 云端批量并行加速（"batch功能"）**：✅ **已完成（2026-09-03，问题35，与问题34
+  同日各占一提交）**。按下方既定四步方案落地：①主循环扫描段用 `classify_extraction`
+  预判分流，cloud 文件攒进 `cloud_jobs` 与"何时发请求"解耦；②`ThreadPoolExecutor`（配置
+  `mineru_concurrency` 默认 3，1=串行回退）只并行 `_mineru_cloud_extract` 网络段
+  （PyMuPDF 不保证多线程安全，worker 不触碰 pymupdf）；③结果经 `as_completed` 回主
+  线程走统一的 `_store_chunks` 收口（meta/进度/切块全部单线程，无竞态）；④进度改批量
+  语义（"云端处理中：已完成 K/N"）。健壮性配套同步落地：滑动窗口限速
+  （`mineru_rate_per_minute` 默认 45 对官方 50/分钟留余量）、错误三分类（transient 指数
+  退避+抖动重试尊重 Retry-After / fatal 立即失败 / token 置全局标志停整批）、断点簿记
+  `data/extract_cache/mineru_pending.json`（中断任务下轮自动续接，不重复提交）、孤儿
+  清理、每日页数配额 80% 日志提醒。测试 +11 例（67/67），六件套全绿。详见 TASK_LOG.md
+  问题35。以下为方案设计阶段的原始记录（保留备查）：
 
   **认知纠正（方案设计阶段已排除的错误方向）**：GitHub Discussions 里能搜到的
   `MINERU_API_MAX_CONCURRENT_REQUESTS` 环境变量、`--workers` 启动参数、Docker/K8s 水平
@@ -374,9 +381,6 @@ python index.py --library "Obsidian Vault"
   "当前处理哪一个文件"改成"N 个文件云端处理中，已完成 M 个"的批量语义。配额保护必须
   随方案一起落地：分批提交（单批≤50）、接近每日 1000 页配额时记日志提醒会被降优先级。
 
-  **触发条件**：架构级改动，涉及 `index.py` 主循环的并发化，按 AGENTS.md"拿不准的设计
-  决策：停下问用户，不要自行扩大范围"，需要用户确认具体方案后再单独开一轮实施——不与
-  其他改动混在一次提交里，避免影响面过大难以定位问题根源。落地时需新增并发场景测试
-  用例（mock 多个并发请求、验证限流阈值降级行为），纳入六件套回归测试，且不能破坏
-  `AGENTS.md` 架构红线（extractors 契约绝不抛异常、API Key 不进日志）。详见 TASK_LOG.md
-  问题33"遗留"一节。
+  ~~**触发条件**：架构级改动……需要用户确认具体方案后再单独开一轮实施~~（✅ 2026-09-03
+  用户批准后单独一轮实施完成，并发场景测试用例已纳入六件套，AGENTS.md 架构红线
+  全部保持未破坏；历史记录见 TASK_LOG.md 问题33"遗留"与问题35）。

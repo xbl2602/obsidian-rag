@@ -1903,6 +1903,431 @@ def test_page_text_threshold_9_vs_10_chars():
             ex.set_cache_dir(None)
 
 
+# ---------- 问题35：MinerU 云端并行批量 ----------
+
+class _ScriptedSubmitRequests:
+    """提交阶段脚本化 requests 替身：按 script 逐次决定 POST 行为，之后走完整
+    成功流程（提交→上传→轮询 done→下载 zip）。script 元素：
+      ("net",)          — 抛 RequestException（模拟网络抖动，可重试）
+      ("code", <码>)    — 返回业务错误码（HTTP 200）
+      ("http429", <秒>) — HTTP 429 + Retry-After 头
+      ("ok",)           — 提交成功
+    """
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+        self.sleeps = []  # 配合 monkeypatch ex._sleep 记录退避等待
+
+        class _RE(Exception):
+            pass
+        self.RequestException = _RE  # 供 except requests.RequestException 匹配
+
+    def post(self, url, **kw):
+        step = self.script.pop(0) if self.script else ("ok",)
+        self.calls.append(("POST", step[0]))
+        if step[0] == "net":
+            raise self.RequestException("模拟网络抖动")
+        if step[0] == "code":
+            return _FakeResp({"code": step[1]}, 200)
+        if step[0] == "http429":
+            resp = _FakeResp({"code": 429}, 429)
+            resp.headers = {"Retry-After": str(step[1])}
+            return resp
+        return _FakeResp({"code": 0, "data": {"batch_id": "b1",
+                                              "file_urls": ["http://p/put"]}}, 200)
+
+    def put(self, url, data=None, **kw):
+        self.calls.append(("PUT", url))
+        return _FakeResp(status=200)
+
+    def get(self, url, **kw):
+        self.calls.append(("GET", url))
+        if url.endswith("/extract-results/batch/b1"):
+            return _FakeResp({"code": 0, "data": {"extract_result": [
+                {"state": "done", "full_zip_url": "http://cdn/r.zip"}]}}, 200)
+        if url.endswith("r.zip"):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("m/main.md", "# 断点续接正文\n")
+            return _FakeResp(content=buf.getvalue(), status=200)
+        return _FakeResp({}, 404)
+
+
+class _RateLimitStub:
+    """限速闸门测试替身：记录 _window_delay 而不真睡。"""
+
+
+def test_rate_limiter_window_math():
+    """滑动窗口限速的纯计算部分：未满额立即放行；满额等最早时间戳腾出槽位；
+    过期时间戳不计数；limit<=0 不限速。"""
+    saved = cfgmod.CFG.get("mineru_rate_per_minute")
+    try:
+        cfgmod.CFG["mineru_rate_per_minute"] = 3
+        ex._submit_stamps.clear()
+        now = 1000.0
+        assert ex._window_delay(now) == 0.0, "空窗口应立即放行"
+        ex._submit_stamps[:] = [now - 10, now - 5, now - 1]
+        assert ex._window_delay(now) > 0.0, "满额（3/3）必须等待"
+        # 最早的时间戳在 59s 前即将过期 → 等待时长 ≈ 它 +60s - now，且 ≤60s
+        assert ex._window_delay(now) <= 60.0
+        ex._submit_stamps[:] = [now - 61, now - 59, now - 2]
+        assert ex._window_delay(now) == 0.0, "61s 前的提交已滑出窗口，不应计数"
+        cfgmod.CFG["mineru_rate_per_minute"] = 0
+        ex._submit_stamps[:] = [now, now, now, now, now]
+        assert ex._window_delay(now) == 0.0, "0 = 不限速"
+    finally:
+        if saved is None:
+            cfgmod.CFG.pop("mineru_rate_per_minute", None)
+        else:
+            cfgmod.CFG["mineru_rate_per_minute"] = saved
+        ex._submit_stamps.clear()
+
+
+def test_mineru_submit_retry_transient_then_success():
+    """临时性失败（网络抖动）按指数退避重试后成功；退避被记录且 ≥1s；
+    成功后断点簿记清空、缓存正确写入。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        fake = _ScriptedSubmitRequests([("net",), ("net",), ("ok",)])
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        saved_sleep = ex._sleep
+        ex._sleep = fake.sleeps.append
+        ex._submit_stamps.clear()
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)
+        try:
+            md, reason = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert reason == "" and md and "断点续接正文" in md, (reason, md)
+            posts = [c for c in fake.calls if c[0] == "POST"]
+            assert len(posts) == 3, f"两次网络失败后第三次应成功：{fake.calls}"
+            assert len(fake.sleeps) == 2 and fake.sleeps[0] >= 1.0, fake.sleeps
+            assert ex._pending_load() == {}, "成功后断点簿记必须清空"
+        finally:
+            ex._sleep = saved_sleep
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+            ex._submit_stamps.clear()
+
+
+def test_mineru_submit_respects_retry_after():
+    """429 带 Retry-After 头：退避必须按头的秒数等待（不叠加抖动）。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        fake = _ScriptedSubmitRequests([("http429", 7), ("ok",)])
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        saved_sleep = ex._sleep
+        ex._sleep = fake.sleeps.append
+        ex._submit_stamps.clear()
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)
+        try:
+            md, reason = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert reason == "" and md, reason
+            assert fake.sleeps == [7.0], fake.sleeps
+        finally:
+            ex._sleep = saved_sleep
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+            ex._submit_stamps.clear()
+
+
+def test_mineru_submit_fatal_code_no_retry():
+    """永久性失败（-60005 超 200MB 类）：立即失败，绝不重试浪费配额。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        fake = _ScriptedSubmitRequests([("code", -60005)])
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        saved_sleep = ex._sleep
+        ex._sleep = fake.sleeps.append
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)
+        try:
+            md, reason = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert md is None and reason == "extract-failed", (md, reason)
+            posts = [c for c in fake.calls if c[0] == "POST"]
+            assert len(posts) == 1, f"永久失败不得重试：{fake.calls}"
+            assert fake.sleeps == [], "永久失败不应有任何退避等待"
+        finally:
+            ex._sleep = saved_sleep
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+
+
+def test_mineru_token_error_sets_flag_and_folds():
+    """Token 失效（A0202）：本次折叠为 extract-failed + 置全局失效标志；
+    同进程的后续云端调用不发请求直接快速失败（调度方据此取消剩余任务）。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        fake = _ScriptedSubmitRequests([("code", "A0202")])
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        ex.mineru_token_reset()
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)
+        try:
+            md, reason = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert md is None and reason == "extract-failed", (md, reason)
+            assert ex.mineru_token_invalid(), "Token 失效必须置全局标志"
+            n_calls = len(fake.calls)
+            md2, reason2 = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert md2 is None and reason2 == "extract-failed"
+            assert len(fake.calls) == n_calls, "Token 失效后不得再发任何请求"
+        finally:
+            ex.mineru_token_reset()
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+
+
+def test_mineru_pending_record_resume_after_interrupt():
+    """断点簿记与续接（问题35 核心场景）：轮询途中进程"被杀"→ 簿记留存；
+    下一轮同一文件再提取时按 batch_id 续接服务器端结果——绝不重新提交。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        fake = _ScriptedSubmitRequests([])
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        saved_poll = ex._mineru_poll_result
+        saved_sleep = ex._sleep
+        ex._sleep = fake.sleeps.append
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)
+
+        def _crash(*_a, **_k):
+            raise RuntimeError("模拟进程在轮询途中被杀")
+
+        import hashlib as _h
+        key = _h.md5(p.read_bytes()).hexdigest()
+        try:
+            # 第一轮：提交+上传成功、轮询途中"被杀"→ 簿记留存
+            ex._mineru_poll_result = _crash
+            md, reason = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert md is None and reason == "extract-failed", (md, reason)
+            pending = ex._pending_load()
+            assert len(pending) == 1, f"中断后簿记必须留存：{pending}"
+            (bid, entry), = pending.items()
+            assert entry["md5"] == key and entry["route"] == "ocr:mineru-cloud", entry
+
+            # 第二轮：同一文件同一字节内容 → 续接轮询拿结果，绝不重新提交
+            ex._mineru_poll_result = saved_poll
+            n_posts_before = len([c for c in fake.calls if c[0] == "POST"])
+            md2, reason2 = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert reason2 == "" and md2 and "断点续接正文" in md2, (reason2, md2)
+            n_posts_after = len([c for c in fake.calls if c[0] == "POST"])
+            assert n_posts_after == n_posts_before, "续接不得重新提交（POST 计数不应增加）"
+            assert ex._pending_load() == {}, "结果取回后簿记必须清空"
+            cached = list((Path(td) / "c").glob(f"{key}.ocr-mineru-cloud.v{ex.EXTRACT_VERSION}.md"))
+            assert len(cached) == 1, "续接结果必须写入生产缓存（下一轮秒回）"
+        finally:
+            ex._mineru_poll_result = saved_poll
+            ex._sleep = saved_sleep
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+
+
+def test_mineru_pending_prune_orphans():
+    """簿记孤儿清理：文件不在本轮集合 / 字节已变化的条目被移除，匹配项保留。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        try:
+            ex._pending_add("b-alive", "D:/v/a.pdf", "ocr:mineru-cloud", "md5-a")
+            ex._pending_add("b-gone", "D:/v/deleted.pdf", "ocr:mineru-cloud", "md5-g")
+            ex._pending_add("b-changed", "D:/v/a.pdf", "ocr:mineru-cloud", "md5-old")
+            ex.mineru_pending_prune({"D:/v/a.pdf": "md5-a"})
+            pending = ex._pending_load()
+            assert set(pending) == {"b-alive"}, pending
+        finally:
+            ex.set_cache_dir(None)
+
+
+def test_classify_extraction_matrix():
+    """分流预判矩阵：与 _extract_pdf 路由条件同源——含图片页+云端=cloud(is_ocr=True)、
+    混合型未开云端=inline、纯文字层 local=inline、文字层+text云端=cloud(is_ocr=False)、
+    缓存命中=inline、无 Key=inline、非 PDF=inline。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        keys = ("pdf_scan_backend", "pdf_text_backend", "mineru_api_key")
+        saved = {k: cfgmod.CFG.get(k) for k in keys}
+        try:
+            cfgmod.CFG["mineru_api_key"] = "k"
+            cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
+            cfgmod.CFG["pdf_text_backend"] = "local"
+
+            p_scan = Path(td) / "scan.pdf"
+            _make_scanned_pdf(p_scan)
+            assert ex.classify_extraction(p_scan) == ("cloud", 1, True, "ocr:mineru-cloud")
+
+            cfgmod.CFG["mineru_api_key"] = ""
+            assert ex.classify_extraction(p_scan)[0] == "inline", "无 Key 是快速失败，不值得并行"
+            cfgmod.CFG["mineru_api_key"] = "k"
+
+            p_mixed = Path(td) / "mixed.pdf"
+            _make_mixed_pdf(p_mixed, text_pages=2, blank_pages=2)
+            assert ex.classify_extraction(p_mixed) == ("cloud", 4, True, "ocr:mineru-cloud")
+
+            cfgmod.CFG["pdf_scan_backend"] = "none"
+            assert ex.classify_extraction(p_mixed) == ("inline", 4, None, None), \
+                "未开云端 = 整本 scanned 快速路径"
+            cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
+
+            p_text = Path(td) / "t.pdf"
+            _make_text_pdf(p_text, pages=2)
+            assert ex.classify_extraction(p_text) == ("inline", 2, None, None), \
+                "纯文字层 + local = 本地直提"
+
+            ex.extract_to_markdown(p_text)  # 本地直提产出并写缓存
+            assert ex.classify_extraction(p_text)[0] == "inline", "缓存命中秒回，无需并行"
+
+            cfgmod.CFG["pdf_text_backend"] = "mineru-cloud"
+            kind, pages, is_ocr, route = ex.classify_extraction(p_text)
+            assert (kind, pages, is_ocr, route) == ("cloud", 2, False, "mineru-text"), \
+                "文字层送云端换结构识别也值得并行（is_ocr=False）"
+
+            (Path(td) / "a.docx").write_bytes(b"PK\x03\x04")
+            assert ex.classify_extraction(Path(td) / "a.docx")[0] == "inline"
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    cfgmod.CFG.pop(k, None)
+                else:
+                    cfgmod.CFG[k] = v
+            ex.set_cache_dir(None)
+
+
+def test_mineru_quota_counter():
+    """每日配额计数：累计、按日翻篇清零的结构返回。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        try:
+            ex.mineru_quota_add(2, 50)
+            ex.mineru_quota_add(2, 50)
+            q = ex.mineru_quota_today()
+            assert q["files"] == 4 and q["pages"] == 100, q
+            assert q["date"] == time.strftime("%Y-%m-%d")
+        finally:
+            ex.set_cache_dir(None)
+
+
+def test_index_cloud_parallel_dispatch_and_chunking():
+    """问题35 端到端（假云端）：多份含图片页 PDF 在并发 ≥2 下真正并行"上云"，
+    结果回主线程切块入库（meta 有块、无竞态）；进度走批量语义的 converting 相位。"""
+    import threading
+    with _IsoEnv() as iso:
+        ex.set_cache_dir(iso.tmp / "cache")
+        for i in range(3):
+            _make_scanned_pdf(iso.vault / f"scan{i}.pdf")
+        keys = ("pdf_scan_backend", "pdf_text_backend", "mineru_api_key",
+                "mineru_concurrency", "mineru_rate_per_minute")
+        saved = {k: cfgmod.CFG.get(k) for k in keys}
+        cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
+        cfgmod.CFG["pdf_text_backend"] = "local"
+        cfgmod.CFG["mineru_api_key"] = "k"
+        cfgmod.CFG["mineru_concurrency"] = 3
+        cfgmod.CFG["mineru_rate_per_minute"] = 0  # 测试不限速，避免跨用例计数干扰
+        barrier = threading.Barrier(3, timeout=10)
+        state = {"parallel": False}
+        real_extract = ex._mineru_cloud_extract
+
+        def fake_extract(path, is_ocr=True, key=None):
+            try:
+                barrier.wait()          # 3 个任务必须同时在飞（串行则超时破碎）
+                state["parallel"] = True
+            except threading.BrokenBarrierError:
+                pass
+            return f"# 云端正文\n{Path(path).name} 的并行提取内容\n", ""
+
+        ex._mineru_cloud_extract = fake_extract
+        try:
+            _run_index(iso, incremental=False, full=True)
+        finally:
+            ex._mineru_cloud_extract = real_extract
+            for k, v in saved.items():
+                if v is None:
+                    cfgmod.CFG.pop(k, None)
+                else:
+                    cfgmod.CFG[k] = v
+            ex.set_cache_dir(None)
+        assert state["parallel"], "三个云端任务必须真正并行（barrier 通过）"
+        meta = _load_meta(iso)
+        for i in range(3):
+            e = meta.get(f"scan{i}.pdf")
+            assert e and not e.get("xfail") and e.get("chunks", 0) > 0, (i, e)
+        assert ex._pending_load() == {}, "全部成功后断点簿记必须清空"
+
+
+def test_index_token_abort_skips_remaining():
+    """Token 失效（问题35）：同批只有第一个任务真正"上云"，其余全部被快速失败/
+    取消拦下，不再为注定失败的请求烧频控配额；索引正常完成，被处理的文件落
+    extract-failed 终态（被取消的文件本轮无条目，下轮自然重试）。"""
+    import threading
+    with _IsoEnv() as iso:
+        ex.set_cache_dir(iso.tmp / "cache")
+        for i in range(4):
+            _make_scanned_pdf(iso.vault / f"t{i}.pdf")
+        keys = ("pdf_scan_backend", "pdf_text_backend", "mineru_api_key",
+                "mineru_concurrency", "mineru_rate_per_minute")
+        saved = {k: cfgmod.CFG.get(k) for k in keys}
+        cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
+        cfgmod.CFG["pdf_text_backend"] = "local"
+        cfgmod.CFG["mineru_api_key"] = "k"
+        cfgmod.CFG["mineru_concurrency"] = 2
+        cfgmod.CFG["mineru_rate_per_minute"] = 0
+        ex.mineru_token_reset()
+        calls = []
+        skipped = []
+        lock = threading.Lock()
+        real_extract = ex._mineru_cloud_extract
+
+        def fake_extract(path, is_ocr=True, key=None):
+            time.sleep(0.05)  # 让并发 worker 先都启动，制造"取消 vs 快速失败"竞争
+            with lock:
+                if ex.mineru_token_invalid():
+                    skipped.append(Path(path).name)
+                    return None, "extract-failed"
+                calls.append(Path(path).name)
+                ex._token_invalid.set()  # 第一个真正"上云"的任务发现 Token 失效
+            return None, "extract-failed"
+
+        ex._mineru_cloud_extract = fake_extract
+        try:
+            _run_index(iso, incremental=False, full=True)
+        finally:
+            ex._mineru_cloud_extract = real_extract
+            ex.mineru_token_reset()
+            for k, v in saved.items():
+                if v is None:
+                    cfgmod.CFG.pop(k, None)
+                else:
+                    cfgmod.CFG[k] = v
+            ex.set_cache_dir(None)
+        assert len(calls) == 1, f"只允许一个任务真正上云：{calls}"
+        meta = _load_meta(iso)
+        accounted = 0
+        for i in range(4):
+            e = meta.get(f"t{i}.pdf")
+            if e is not None:  # 被取消的任务本轮无条目（下轮自然重试），其余必为终态
+                assert e.get("xfail") and e.get("reason") == "extract-failed", (i, e)
+                accounted += 1
+        assert len(calls) + len(skipped) + (4 - accounted) == 4
+
+
 # ---------- 运行器（对齐 audit_regression_test.py） ----------
 
 def _run_all():

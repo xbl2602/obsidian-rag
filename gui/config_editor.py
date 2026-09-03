@@ -38,7 +38,8 @@ GROUPS = [
      "desc": "扫描件 OCR 与文字层 PDF 的提取后端；切到 mineru-cloud 会上传原始文件。",
      "fields": [("pdf_scan_backend", "str"), ("pdf_text_backend", "str"),
                 ("mineru_model_version", "str"),
-                ("mineru_api_key", "str"), ("mineru_timeout_seconds", "int")]},
+                ("mineru_api_key", "str"), ("mineru_timeout_seconds", "int"),
+                ("mineru_concurrency", "int"), ("mineru_rate_per_minute", "int")]},
     {"title": "检索输出", "level": "basic", "icon": "SEARCH_OUTLINED",
      "desc": "返回内容的形状与低置信护栏，全部实时生效。",
      "fields": [("return_chunk_limit", "int"), ("max_chunks_per_file", "int"),
@@ -137,6 +138,12 @@ FIELD_META = {
                        "hint": "mineru.net → 个人中心 → API Token；敏感信息，不进任何日志"},
     "mineru_timeout_seconds": {"label": "MinerU 超时（秒）",
                                "hint": "单个扫描件「提交+轮询+下载」的总时间预算"},
+    "mineru_concurrency": {"label": "云端并行数",
+                           "hint": "同时送云端提取的线程数（1=串行）；官方未公布并发"
+                                   "上限，默认保守 3，实测无 429 再调高"},
+    "mineru_rate_per_minute": {"label": "每分钟提交上限",
+                               "hint": "滑动窗口限速；官方三个提交接口共用 50 个文件/"
+                                       "分钟，默认 45 留余量，0=不限"},
     # ---- 检索输出 ----
     "return_chunk_limit": {"label": "单块返回字符上限",
                            "hint": "超出截断并附标记；直接影响回答注入的 token 量"},

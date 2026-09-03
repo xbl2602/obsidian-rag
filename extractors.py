@@ -25,8 +25,11 @@
     照常返回结果；None 结果不写缓存。
 """
 import hashlib
+import json
 import os
+import random
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -498,9 +501,445 @@ def _extract_pdf(path, backend=None):
 
 
 # ---------- 扫描件 OCR：MinerU 云端 API（R3a） ----------
+# ---------- 并行批量基础设施（问题35） ----------
 
-def _mineru_cloud_extract(path, is_ocr):
+# 提交错误类别（问题35，按 mineru.net 官方错误码表分类，不能一套重试逻辑应付所有情况）
+_TOKEN_CODES = frozenset({"A0202", "A0211"})              # Token 错误/过期 → 停整批
+_FATAL_CODES = frozenset({"-60002", "-60004", "-60005", "-60006"})  # 格式/空文件/超限 → 不重试
+_TRANSIENT_CODES = frozenset({"-10001", "-60007", "-60009"})        # 服务异常/模型不可用/队列满
+_SUBMIT_MAX_ATTEMPTS = 4   # 1 次首发 + 3 次重试（退避 1/2/4s + 抖动；429 尊重 Retry-After）
+
+
+class _MineruSubmitError(RuntimeError):
+    """MinerU 提交阶段错误：携带官方错误码与类别（kind）。
+
+    transient → 值得重试（网络异常 / 429 限流 / 服务异常类错误码）；
+    fatal     → 重试无意义（超 200MB / 超 200 页 / 格式问题 / 空文件），立即失败；
+    token     → Token 错误或过期——重试只会烧频控配额，且同一批后续请求大概率
+                全部失败，置全局失效标志让调度方停掉剩余任务。
+    """
+
+    def __init__(self, kind, code, msg):
+        super().__init__(msg)
+        self.kind = kind
+        self.code = code
+
+
+def _classify_mineru_code(code):
+    """官方错误码 → 提交错误类别。未知码按可重试处理（宁可多试一次，不误杀）。"""
+    c = str(code).upper()
+    if c in _TOKEN_CODES:
+        return "token"
+    if c in _FATAL_CODES:
+        return "fatal"
+    if c in _TRANSIENT_CODES or c == "429":
+        return "transient"
+    return "transient"
+
+
+def _backoff_delay(attempt, retry_after=None):
+    """指数退避 + 抖动（问题35 调研结论的行业标准做法）：1s→2s→4s→8s…，
+    叠加 0~基数的随机抖动，避免并发请求踩同一时间点重试形成重试风暴。
+    带 Retry-After 头时优先按它等（封顶 60s）。"""
+    if retry_after is not None and retry_after > 0:
+        return min(retry_after, 60.0)
+    base = float(min(2 ** max(0, attempt - 1), 60))
+    return base + random.uniform(0, base)
+
+
+def _retry_after_of(resp):
+    """响应的 Retry-After 头 → 秒数（缺失/解析失败返回 None）。"""
+    if resp is None:
+        return None
+    try:
+        v = float(resp.headers.get("Retry-After"))
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+
+# ---- 提交限速（官方三个提交接口共用 50 个文件/分钟滚动频控，mineru.net 文档） ----
+
+_rate_lock = threading.Lock()
+_submit_stamps = []   # 最近 60s 内已提交时刻（time.monotonic 秒）——测试可直接操纵
+
+
+def get_rate_per_minute():
+    """config.mineru_rate_per_minute：每分钟最多提交多少个文件；<=0 = 不限速。"""
+    try:
+        from config import CFG
+        v = int(CFG.get("mineru_rate_per_minute", 45) or 0)
+    except Exception:
+        v = 45
+    return v
+
+
+def _window_delay(now=None):
+    """纯计算（便于测试）：距下一个可提交槽位还需等待的秒数；0 = 立即可提交。
+
+    滑动窗口计数器：只看"最近 60s 内已提交数"，不做令牌桶——个人库量级下
+    这不是要突破的瓶颈，是"万一触顶体面退让"的节奏器。
+    """
+    limit = get_rate_per_minute()
+    if limit <= 0:
+        return 0.0
+    now = time.monotonic() if now is None else now
+    window = 60.0
+    live = [t for t in _submit_stamps if t > now - window]
+    if len(live) < limit:
+        return 0.0
+    return max(0.0, min(live) + window - now)
+
+
+def _submit_gate():
+    """提交闸门：占一个滑动窗口槽位，必要时睡眠等待。
+
+    持锁等待 = 提交节奏串行化，正是限速的目的；等待时长受窗口长度约束有界。
+    每次提交尝试（含重试）各占一个槽位——重试也是一次真实提交。
+    """
+    with _rate_lock:
+        while True:
+            delay = _window_delay()
+            if delay <= 0:
+                now = time.monotonic()
+                _submit_stamps[:] = [t for t in _submit_stamps if t > now - 60.0]
+                _submit_stamps.append(now)
+                return
+            time.sleep(min(delay, 1.0))
+
+
+# ---- Token 失效全局标志（问题35） ----
+# A0202/A0211 一旦出现，同一批后续请求大概率全部失败，继续提交只是烧频控配额。
+# 置位后：worker 快速失败不发请求；index 调度方取消尚未启动的任务。索引每轮
+# 云端段开始时调用 mineru_token_reset() 归零（长驻 server 进程跨轮次复用）。
+_token_invalid = threading.Event()
+
+
+def mineru_token_invalid():
+    """本进程内是否已发现 MinerU Token 失效。"""
+    return _token_invalid.is_set()
+
+
+def mineru_token_reset():
+    """清除 Token 失效标志（每轮索引的云端段开始时调用）。"""
+    _token_invalid.clear()
+
+
+# ---- 在途任务簿记（问题35，断点恢复）：data/extract_cache/mineru_pending.json ----
+# 提交成功并上传完成后、进入轮询前落盘 {batch_id: {path, route, md5}}。进程被杀
+# 后条目留存；下一轮对同一文件提取时按 path+md5 匹配 → 续接轮询拿结果，不重复
+# 提交（服务器端任务独立于本进程存活，重复提交纯烧配额）。簿记文件放在提取缓存
+# 目录下：试验台的隔离缓存目录天然隔离（预览中断的条目随临时目录销毁，绝不会
+# 污染生产簿记——架构红线 7 的同一教训）。
+_pending_lock = threading.Lock()
+
+
+def _pending_path():
+    return get_cache_dir() / "mineru_pending.json"
+
+
+def _quota_path():
+    return get_cache_dir() / "mineru_quota.json"
+
+
+def _json_load(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _json_save(path, d):
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError as e:
+        log(f"{Path(path).name} 状态写失败（忽略，仅影响断点恢复/计数）：{e}")
+
+
+def _pending_load():
+    return _json_load(_pending_path())
+
+
+def _pending_save(d):
+    _json_save(_pending_path(), d)
+
+
+def _pending_add(batch_id, path_str, route, key):
+    with _pending_lock:
+        d = _pending_load()
+        d[batch_id] = {"path": path_str, "route": route, "md5": key}
+        _pending_save(d)
+
+
+def _pending_remove(batch_id):
+    with _pending_lock:
+        d = _pending_load()
+        if d.pop(str(batch_id), None) is not None:
+            _pending_save(d)
+
+
+def _pending_match(path_str, key):
+    """按 文件路径 + 字节指纹 匹配在途任务（md5 不一致 = 文件已变，续接无意义）。"""
+    with _pending_lock:
+        d = _pending_load()
+        for bid, e in d.items():
+            if e.get("path") == path_str and e.get("md5") == key:
+                return {"batch_id": bid, "path": e.get("path"),
+                        "route": e.get("route") or "ocr:mineru-cloud",
+                        "md5": e.get("md5")}
+    return None
+
+
+def mineru_pending_prune(alive_md5):
+    """清理在途簿记孤儿：文件不在本轮待处理集合、或字节已变化的条目。
+
+    alive_md5：{文件绝对路径字符串: 当前字节 md5}。只做本地簿记清理、不查询
+    服务器——孤儿任务的结果即使服务器完成也没有归宿（md5 对不上任何当前文件）。
+    """
+    with _pending_lock:
+        d = _pending_load()
+        kept = {bid: e for bid, e in d.items()
+                if alive_md5.get(e.get("path")) == e.get("md5")}
+        if len(kept) != len(d):
+            _pending_save(kept)
+
+
+# ---- 每日配额计数（问题35：仅提醒用，非硬门禁） ----
+# 官方：每账号每日 1000 页最高优先级额度，超出降优先级但仍处理（非拒绝）。
+# 个人库量级几乎不可能触顶；计数只用于接近额度时打日志提醒"接下来会被降优先级、
+# 处理变慢"，避免用户困惑于莫名变慢。不做成硬门禁：降级 ≠ 失败，阻断反而制造问题。
+
+def mineru_quota_add(files, pages):
+    """按日累计云端提交量（文件数/页数）；日期翻篇自动清零。"""
+    today = time.strftime("%Y-%m-%d")
+    with _pending_lock:
+        d = _json_load(_quota_path())
+        if not isinstance(d, dict) or d.get("date") != today:
+            d = {"date": today, "files": 0, "pages": 0}
+        d["files"] = int(d.get("files", 0)) + int(files)
+        d["pages"] = int(d.get("pages", 0)) + int(pages)
+        _json_save(_quota_path(), d)
+        return d
+
+
+def mineru_quota_today():
+    """读取今日累计 {date, files, pages}（无记录/跨天返回零值结构）。"""
+    d = _json_load(_quota_path())
+    today = time.strftime("%Y-%m-%d")
+    if not isinstance(d, dict) or d.get("date") != today:
+        return {"date": today, "files": 0, "pages": 0}
+    return d
+
+
+def _cloud_key_ready():
+    """mineru_api_key 是否已配置（分流预判用：没 Key 的云端调用是快速失败，不值得并行）。"""
+    try:
+        from config import CFG
+        return bool(str(CFG.get("mineru_api_key", "")).strip())
+    except Exception:
+        return False
+
+
+def classify_extraction(path, backend=None, md5=None):
+    """并行分流预判（问题35）：这份文件的提取会不会走 MinerU 云端网络往返。
+
+    md5：调用方已持有的文件字节指纹（如 index 的 bhash），传入可免重复读盘；
+    未传则现算。
+
+    返回 (kind, pages, is_ocr, route)：
+      kind="cloud"  → 需要云端往返，值得攒批并行；is_ocr/route 给出实际路由
+                      （worker 用它们调 mineru_cloud_extract_for_parallel，
+                      不再重开 PDF——PyMuPDF 不保证多线程安全，worker 线程
+                      绝不触碰 pymupdf）。
+      kind="inline" → 本地快速路径（缓存秒回 / 本地直提 / 云端未启用的快速失败），
+                      当场跑完即可。pages = 页数（非 PDF 或打不开为 0）。
+    判定与 _extract_pdf 的路由条件严格同源；漂移只影响并行收益（该并行的没并行 /
+    不该并行的多绕一道），绝不影响产出正确性——真正执行仍走 extract_to_markdown
+    的完整路径（缓存、终态语义均以它为准）。
+    """
+    path = Path(path)
+    if path.suffix.lower().lstrip(".") != "pdf":
+        return "inline", 0, None, None
+    if isinstance(md5, str) and md5 and md5 != "unreadable":
+        key = md5
+    else:
+        try:
+            key = _file_md5(path)
+        except OSError:
+            return "inline", 0, None, None
+    text_backend = backend or get_text_backend()
+    text_route = "mineru-text" if text_backend == "mineru-cloud" else "local"
+    hit, _ = _cache_get(key, ["ocr:mineru-cloud", "ocr:mineru-local", text_route])
+    if hit is not None:
+        return "inline", 0, None, None
+    try:
+        import pymupdf
+        doc = pymupdf.open(str(path))
+    except Exception:
+        return "inline", 0, None, None
+    try:
+        pages = doc.page_count
+        if pages <= 0:
+            return "inline", 0, None, None
+
+        def _pt(pg):
+            t = pg.get_text("text")
+            return t if isinstance(t, str) else ""
+
+        text_pages = sum(1 for pg in doc
+                         if len(_pt(pg).strip()) >= _TEXT_PAGE_MIN_CHARS)
+        if text_pages < pages:
+            # 与 _extract_pdf 扫描分支同源（问题34）：有图片页 → 仅 mineru-cloud
+            # 且 Key 已配时值得并行（没 Key 是快速失败）
+            if (backend or get_scan_backend()) == "mineru-cloud" and _cloud_key_ready():
+                return "cloud", pages, True, "ocr:mineru-cloud"
+            return "inline", pages, None, None
+        if text_backend == "mineru-cloud" and _cloud_key_ready():
+            return "cloud", pages, False, "mineru-text"
+        return "inline", pages, None, None
+    except Exception:
+        return "inline", 0, None, None
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+
+def mineru_cloud_extract_for_parallel(path, is_ocr, key=None):
+    """云端并行 worker 入口（问题35）＝ _mineru_cloud_extract 的显式公开面。
+
+    路由与 is_ocr 已由主线程 classify_extraction 判定；worker 只做纯网络 I/O
+    （提交/上传/轮询/下载），缓存与断点簿记在 _mineru_cloud_extract 内部完成。
+    key：主线程已持有的文件字节指纹（免重复读盘）。失败折叠 (None, reason)，
+    与 extract_to_markdown 同一契约。
+    """
+    return _mineru_cloud_extract(path, is_ocr=is_ocr, key=key)
+
+
+def _mineru_resume(job, headers, budget):
+    """断点续接（问题35）：对中断前已提交的任务按服务器端状态收尾。
+
+    - done → 下载解包 → 写缓存（按条目记录的 md5/route）→ 移除条目 → 返回正文；
+    - 超时 / 下载失败 → 保留条目（服务器端结果仍可能取回），返回提取失败；
+    - failed / gone / no-md → 移除条目，返回提取失败（下一轮正常重提）；
+    - 正文为空 → 移除条目，返回 (None, "empty")。
+    """
+    import requests
+    deadline = time.monotonic() + max(30.0, budget)
+    md, why = _mineru_poll_result(job["batch_id"], headers, deadline, requests)
+    if md is not None:
+        _cache_put(job["md5"], md, job["route"])
+        _pending_remove(job["batch_id"])
+        return md, ""
+    if why in ("timeout", "download"):
+        return None, "extract-failed"          # 保留条目，下轮续接
+    _pending_remove(job["batch_id"])
+    return None, "empty" if why == "empty" else "extract-failed"
+
+
+def _mineru_poll_result(batch_id, headers, deadline, requests_mod):
+    """轮询 batch 至终态并下载解包取正文 .md（问题35 自 _mineru_cloud_extract 抽出，
+    新鲜提交与断点续接共用同一条轮询路径）。
+
+    返回 (md, why)：md 非 None 时 why="done"；md 为 None 时 why ∈
+      timeout  — 本地预算耗尽（服务器端可能仍在跑，调用方应保留 pending 条目）
+      failed   — 服务器报任务失败（调用方移除条目，下一轮正常重提）
+      gone     — 服务器不认识该 batch / 轮询响应异常（移除条目）
+      download — 结果包下载失败（保留条目，下轮重取）
+      no-md    — 结果包里没有 .md（移除条目）
+      empty    — 提取成功但正文为空（移除条目）
+    网络异常上抛，由调用方的统一异常折叠处理（有 pending 条目时保留）。
+    """
+    zip_url = None
+    while time.monotonic() < deadline:
+        poll = requests_mod.get(
+            f"{_MINERU_BASE}/extract-results/batch/{batch_id}",
+            headers=headers, timeout=30)
+        pdata = poll.json()
+        if poll.status_code != 200 or pdata.get("code") not in (0, 200):
+            return None, "gone"
+        items = (pdata.get("data") or {}).get("extract_result") or []
+        state = items[0].get("state") if items else "pending"
+        if state == "done":
+            zip_url = items[0].get("full_zip_url")
+            break
+        if state in ("failed", "error"):
+            return None, "failed"
+        time.sleep(_POLL_INTERVAL)
+    if not zip_url:
+        return None, "timeout"
+    zreq = requests_mod.get(zip_url, timeout=120)
+    if zreq.status_code != 200:
+        return None, "download"
+    import io
+    import zipfile
+    zf = zipfile.ZipFile(io.BytesIO(zreq.content))
+    mds = [zi for zi in zf.infolist() if zi.filename.lower().endswith(".md")]
+    if not mds:
+        return None, "no-md"
+    best = max(mds, key=lambda zi: zi.file_size)  # 最大者=正文主文档
+    md = zf.read(best).decode("utf-8", "replace")
+    return (md, "done") if md.strip() else (None, "empty")
+
+
+_sleep = time.sleep  # 测试注入点（重试退避不真睡）
+
+
+def _mineru_submit(path, is_ocr, headers):
+    """提交批任务（问题35：滑动窗口限速 + 按错误类别重试）。
+
+    临时性失败（网络异常 / 429 / 服务异常类错误码）按指数退避 + 抖动重试，
+    429 尊重 Retry-After；永久性失败（超限/格式/空文件）与 Token 失效立即上抛
+    （Token 失效同时置全局标志，调度方据此停掉同批剩余任务）。
+    返回提交响应的 data dict（含 batch_id / file_urls）。
+    """
+    import requests
+    fname = Path(path).name
+    body = {"enable_formula": True, "enable_table": True,
+            "model_version": get_model_version(),
+            "files": [{"name": fname, "is_ocr": is_ocr, "data_id": "doc"}]}
+    last = None
+    for attempt in range(1, _SUBMIT_MAX_ATTEMPTS + 1):
+        resp = None
+        try:
+            _submit_gate()
+            resp = requests.post(
+                f"{_MINERU_BASE}/file-urls/batch",
+                headers={**headers, "Content-Type": "application/json"},
+                json=body, timeout=30)
+            data = resp.json()
+            if resp.status_code != 200 or data.get("code") not in (0, 200):
+                code = data.get("code", resp.status_code)
+                raise _MineruSubmitError(
+                    _classify_mineru_code(code), code,
+                    f"任务提交异常 HTTP {resp.status_code} code={code}")
+            return data
+        except _MineruSubmitError as e:
+            if e.kind != "transient" or attempt == _SUBMIT_MAX_ATTEMPTS:
+                if e.kind == "token":
+                    # A0202/A0211：置全局失效标志——同批后续请求大概率全部失败，
+                    # worker 入口据此快速失败、index 调度方据此取消剩余任务。
+                    _token_invalid.set()
+                raise
+            _sleep(_backoff_delay(attempt, _retry_after_of(resp)))
+        except requests.RequestException as e:   # 网络层异常：可重试
+            last = e
+            if attempt == _SUBMIT_MAX_ATTEMPTS:
+                break
+            _sleep(_backoff_delay(attempt))
+    if last is not None:
+        raise last
+    raise RuntimeError("任务提交失败")
+
+def _mineru_cloud_extract(path, is_ocr, key=None):
     """MinerU 云端 API：申请批任务 → 预签名 PUT 上传 → 轮询 → 下载 zip 取正文 .md。
+
+    key：调用方已持有的文件字节 md5（并行 worker 传入，免重复读盘）；None 现算。
 
     契约（mineru.net 官方文档 https://mineru.net/apiManage/docs，2026-08-26 实测校正）：
     POST {BASE}/file-urls/batch 携带 Bearer Token 取得 batch_id 与预签名上传地址；
@@ -519,6 +958,11 @@ def _mineru_cloud_extract(path, is_ocr):
     实际用哪个模型解析，因此不需要新的缓存路由标签，只靠 EXTRACT_VERSION 递增
     让旧缓存（用未指定版本时的默认模式产出的结果）整体失效重提。
     所有异常折叠为 (None, reason)；任何日志绝不包含 api_key 与响应体全文。
+    问题35（2026-09-03）并行化改造：提交段抽到 _mineru_submit（滑动窗口限速 +
+    错误分类重试）；轮询/下载抽到 _mineru_poll_result（与断点续接共用）；上传成功
+    即落 _pending_add 断点簿记（进程中断后下一轮按 batch_id 续接服务器端结果，
+    不重复提交）；同文件同字节内容已有在途任务时优先续接（_pending_match →
+    _mineru_resume）而非重新提交。
     """
     try:
         import requests
@@ -547,21 +991,21 @@ def _mineru_cloud_extract(path, is_ocr):
         budget = float(CFG.get("mineru_timeout_seconds") or 600)
     except Exception:
         budget = 600.0
-    deadline = time.monotonic() + max(30.0, budget)
-
-    fname = Path(path).name
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
-        resp = requests.post(
-            f"{_MINERU_BASE}/file-urls/batch",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"enable_formula": True, "enable_table": True,
-                  "model_version": get_model_version(),
-                  "files": [{"name": fname, "is_ocr": is_ocr, "data_id": "doc"}]},
-            timeout=30)
-        data = resp.json()
-        if resp.status_code != 200 or data.get("code") not in (0, 200):
-            raise RuntimeError(f"任务提交异常 HTTP {resp.status_code} code={data.get('code')}")
+        if not (isinstance(key, str) and key and key != "unreadable"):
+            key = _file_md5(path)
+        # 断点恢复优先（问题35）：同一文件同一字节内容已有在途任务 → 续接轮询
+        # 拿结果，不重复提交（重复提交纯烧配额；服务器端任务独立于本进程存活）。
+        job = _pending_match(str(path), key)
+        if job is not None:
+            return _mineru_resume(job, headers, budget)
+        if _token_invalid.is_set():
+            # 同批已有任务发现 Token 失效：本文件不发请求直接失败（index 调度方
+            # 会取消尚未启动的其余任务）；没有 pending 条目可留。
+            return None, "extract-failed"
+
+        data = _mineru_submit(path, is_ocr, headers)
         batch_id = (data.get("data") or {}).get("batch_id")
         put_url = ((data.get("data") or {}).get("file_urls") or [None])[0]
         if not batch_id or not put_url:
@@ -569,40 +1013,26 @@ def _mineru_cloud_extract(path, is_ocr):
         put = requests.put(put_url, data=Path(path).read_bytes(), timeout=120)
         if put.status_code not in (200, 201):
             raise RuntimeError(f"文件上传失败 HTTP {put.status_code}")
-
-        zip_url = None
-        while time.monotonic() < deadline:
-            poll = requests.get(
-                f"{_MINERU_BASE}/extract-results/batch/{batch_id}",
-                headers=headers, timeout=30)
-            pdata = poll.json()
-            if poll.status_code != 200 or pdata.get("code") not in (0, 200):
-                raise RuntimeError(f"轮询异常 HTTP {poll.status_code}")
-            items = (pdata.get("data") or {}).get("extract_result") or []
-            state = items[0].get("state") if items else "pending"
-            if state == "done":
-                zip_url = items[0].get("full_zip_url")
-                break
-            if state in ("failed", "error"):
-                raise RuntimeError(f"云端解析失败 state={state}")
-            time.sleep(_POLL_INTERVAL)
-        if not zip_url:
-            raise RuntimeError("轮询超时（mineru_timeout_seconds）")
-
-        zreq = requests.get(zip_url, timeout=120)
-        if zreq.status_code != 200:
-            raise RuntimeError(f"结果下载失败 HTTP {zreq.status_code}")
-        import io
-        import zipfile
-        zf = zipfile.ZipFile(io.BytesIO(zreq.content))
-        mds = [zi for zi in zf.infolist() if zi.filename.lower().endswith(".md")]
-        if not mds:
-            raise RuntimeError("结果包中没有 .md")
-        best = max(mds, key=lambda zi: zi.file_size)  # 最大者=正文主文档
-        md = zf.read(best).decode("utf-8", "replace")
-        return (md, "") if md.strip() else (None, "empty")
+        # 上传成功即落断点簿记（问题35）：从此刻起无论本进程死活，下一轮都能按
+        # batch_id 续接服务器端结果；成功取回正文后移除。
+        route = "ocr:mineru-cloud" if is_ocr else "mineru-text"
+        _pending_add(batch_id, str(path), route, key)
+        md, why = _mineru_poll_result(batch_id, headers,
+                                      time.monotonic() + max(30.0, budget), requests)
+        if md is not None:
+            _cache_put(key, md, route)
+            _pending_remove(batch_id)
+            return md, ""
+        if why in ("timeout", "download"):
+            # 保留簿记：服务器端任务可能仍在跑 / 结果包仍可取，下一轮续接，
+            # 不浪费已花掉的提交配额
+            return None, "extract-failed"
+        _pending_remove(batch_id)   # failed / gone / no-md：下一轮按正常流程重提
+        return None, "empty" if why == "empty" else "extract-failed"
     except Exception as e:
-        # 只记类型与摘要：api_key 与响应体全文绝不进日志
+        # 只记类型与摘要：api_key 与响应体全文绝不进日志。
+        # 此处已有 pending 条目的失败（轮询/下载中的网络异常等）保留条目——
+        # 下一轮断点续接，不重复提交。
         _warn_once(f"mineru:{e.__class__.__name__}",
                    f"MinerU 云端 OCR 失败（按提取失败处理，待重试）：{e}")
         return None, "extract-failed"
