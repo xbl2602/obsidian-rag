@@ -202,6 +202,12 @@ def main():
 
     # ---------- 6. 端到端检索对比（真库 vs 副本） ----------
     section("6. 端到端检索对比")
+    # 先让主进程把常驻模型吐出来：接下来两个子进程各加载一份模型做检索，
+    # 主进程不放手的话 8GB 卡上两份并存 → WDDM 溢出共享显存、性能骤降（问题40）
+    from index import release_model
+    from retriever import release_reranker
+    release_reranker()
+    release_model()
     query = "免费证书"
     r_true = run(["-c", f"from retriever import hybrid_search; print(hybrid_search({query!r}, top_k=3, include_body=False))"],
                  cwd=ROOT)

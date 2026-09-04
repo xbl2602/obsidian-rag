@@ -214,6 +214,12 @@ _reranker_lock = threading.Lock()  # 懒加载互斥：并发首次搜索会同�
 rerank_failures = 0  # 重排执行失败次数（eval 回归据此检测"静默降级"）
 
 
+def release_reranker():
+    """释放常驻重排模型（配合 index.release_model 让显存；下次懒加载回来）。"""
+    global _reranker
+    _reranker = None
+
+
 def _get_reranker():
     """懒加载 cross-encoder 重排器。加载失败置标记（本次会话不再重试，降级纯融合）。
 

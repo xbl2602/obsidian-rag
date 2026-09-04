@@ -30,6 +30,7 @@ from worker import IndexWorker, read_history  # noqa: E402
 from widgets import (  # noqa: E402
     KpiCard, StatusCard, HeartbeatPill, ProgressCard, SearchCard, LogView,
     DeviceBar, SettingsDialog, LibraryPicker, LibraryManagerDialog,
+    FileStatusDialog,
     ALL_LIBRARIES, PHASE_TEXT,
 )
 
@@ -193,6 +194,12 @@ class App:
             tooltip="设置", on_click=self._open_settings,
         )
         self.settings = SettingsDialog(self._on_settings_saved)
+        self.file_status = FileStatusDialog(on_open_file=self._open_any_file)
+        self.detail_btn = ft.IconButton(
+            icon=ft.Icons.FACT_CHECK_OUTLINED, icon_color=DARK['t2'],
+            tooltip='文件生效明细：逐文件看哪些真进了索引/页库（失败原因、点行打开源文件）',
+            on_click=self._open_file_status,
+        )
 
     def _build_layout(self):
         header = ft.Row([
@@ -202,6 +209,7 @@ class App:
             ft.Container(expand=True),
             self.lib_picker.card,
             self.library_btn,
+            self.detail_btn,
             self.settings_btn,
             self.theme_btn,
             self.heartbeat.card,
@@ -338,6 +346,17 @@ class App:
     def _open_library_manager(self, e):
         self.lib_manager.open(self.page)
 
+    def _open_file_status(self, e):
+        self.file_status.open(self.page)
+
+    def _open_any_file(self, path):
+        """文件生效明细点行 → 系统默认程序打开源文件（手动确认内容）。"""
+        try:
+            os.startfile(path)
+            self._log_line('── 打开 %s' % path)
+        except OSError as ex:
+            self._snack('无法打开：%s' % ex, is_error=True)
+
     def _selected_rows(self):
         """当前范围内的库快照行 [(name, state, files, chunks, path)]。"""
         _, rows = library_snapshot()
@@ -432,7 +451,7 @@ class App:
         detail = "、".join(
             "%s×%d" % (ISSUE_TEXT.get(r, (r, ""))[0], c)
             for r, c in sorted(tally.items(), key=lambda kv: -kv[1]))
-        return "提取跳过 %d 个文件：%s" % (total, detail)
+        return "提取跳过 %d 个文件：%s（点顶部工具栏「文件生效明细」逐文件看原因）" % (total, detail)
 
     def _update_time_kpi(self, progress, running, colors):
         """耗时卡状态机：进行中=实时计时；未索引=「—」；其余=上次完成耗时。"""

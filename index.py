@@ -693,6 +693,26 @@ def get_model():
     return _model
 
 
+def release_model():
+    """释放常驻 embedding 模型与 CUDA 缓存（下次 get_model 重新懒加载）。
+
+    2026-09-04（问题40）：verify_export_import 的端到端检索对比要在主进程与
+    子进程各加载一份模型——主进程模型不释放，8GB 卡上两份并存 = WDDM 溢出
+    共享显存、整机性能骤降。生产路径不调用本函数（server 常驻模型是检索
+    延迟的根基）；只给"拉起别的模型进程前让路"的批处理/测试用。
+    """
+    global _model
+    _model = None
+    try:
+        import gc
+        gc.collect()
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _is_memory_error(e):
     """是否内存/显存不足类错误（WinError 1455 页面文件不足、CUDA OOM、MemoryError）。"""
     text = str(e).lower()

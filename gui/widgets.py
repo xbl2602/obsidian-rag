@@ -11,6 +11,14 @@ import time
 import flet as ft
 
 from theme import DARK, FONT_MONO, FONT_NUM, FONT_UI, SIZE
+from store import (  # noqa: F401  零侵入数据层：只读 meta/注册表，绝不加载模型
+    library_entries,
+    library_snapshot,
+    file_index_rows_for,
+    wemm_status_for,
+    wemm_backend_state,
+    wemm_service_probe,
+)
 
 
 def card_container(content, colors, bg=None, radius=None, pad=None):
@@ -1957,6 +1965,233 @@ def _fmt_ts(ts):
         return "从未"
     from datetime import datetime
     return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+
+
+# ---- 文件生效明细：逐文件看"哪些真进来了"（问题39 用户要求的手动确认手段） ----
+
+class FileStatusDialog:
+    """文件生效明细对话框（零侵入只读）：不给"382 页"这种数字，逐文件列出——
+
+    文字索引区：正常 N 份 + 每个失败/跳过文件一行（人话原因 + 是否下轮自动重试）；
+    WEMM 页级导航区：后端/服务状态 + 每份 PDF 一行（页向量数 / 渲染失败原因），
+    点行直接打开那份 PDF——配合 navigate_knowledge 返回的页码翻页对答案，眼见为实。
+    数据全部来自 meta 指纹文件与 wemm meta（不加载模型、不碰 Chroma，红线4）。
+    """
+
+    _REASON_TEXT = {
+        "scanned": "扫描件待云端 OCR（设置里开启 MinerU 云端后，下轮索引自动重试）",
+        "unreadable": "不可读（文件被占用/权限不足，解除后重新索引自动重试）",
+        "extract-failed": "提取失败（损坏/加密/云端失败，下轮自动重试或修复源文件）",
+        "empty": "空文件（无正文，补全内容后自动入索引）",
+        "tbd": "TBD 占位过多（正文写完后自动恢复）",
+        "unknown": "未知终态（请截图反馈排查）",
+    }
+
+    def __init__(self, on_open_file=None, colors=DARK):
+        self._on_open_file = on_open_file or (lambda path: None)
+        self._cols = colors
+        self._page = None
+        self._dlg = None
+        self._cfg = None
+        self._lib_dd = ft.Dropdown(
+            label="选择库", width=280, dense=True, text_size=13,
+            border_radius=SIZE["radius_control"],
+        )
+        # flet 0.86：Dropdown 事件名为 on_select（构造器不接受 on_change）
+        self._lib_dd.on_select = lambda e: self._load(e.control.value)
+        self._body = ft.Column(spacing=SIZE["gap_tight"], expand=True,
+                               scroll=ft.ScrollMode.AUTO)
+        self._summary = ft.Text("", size=12, color=colors["t2"], font_family=FONT_UI)
+        self._build()
+
+    # ---- 构建 ----
+
+    def _build(self):
+        body = ft.Column([
+            ft.Row([self._lib_dd], spacing=10),
+            self._summary,
+            self._body,
+        ], spacing=SIZE["gap_tight"], expand=True)
+        self._dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("文件生效明细", size=18, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Container(content=body, width=780, height=520),
+            actions=[ft.TextButton("关闭", on_click=self._close)],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+
+    def open(self, page):
+        self._page = page
+        names = [r[0] for r in library_snapshot()[1]]
+        self._lib_dd.options = [ft.dropdown.Option(n) for n in names]
+        self._lib_dd.value = names[0] if names else None
+        page.show_dialog(self._dlg)
+        if names:
+            self._load(names[0])
+        else:
+            self._summary.value = "尚未注册库，先到库管理添加。"
+            self._body.controls = []
+            self._safe_update()
+
+    def _close(self, e=None):
+        if self._dlg:
+            self._dlg.open = False
+            self._safe_update()
+
+    def _safe_update(self):
+        try:
+            if self._page:
+                self._page.update()
+        except RuntimeError:
+            pass  # 会话已销毁（GUI 关闭）：静默退出
+
+    def apply(self, colors):
+        self._cols = colors
+        self._summary.color = colors["t2"]
+        if self._lib_dd.value:
+            self._load(self._lib_dd.value)
+        self._safe_update()
+
+    # ---- 数据加载与渲染 ----
+
+    def _load(self, lib_name):
+        colors = self._cols
+        cfg = None
+        for c in library_entries():
+            if c["name"] == lib_name:
+                cfg = c
+                break
+        if cfg is None:
+            self._summary.value = "库不存在：%s" % lib_name
+            self._body.controls = []
+            self._safe_update()
+            return
+        self._cfg = cfg
+        text = file_index_rows_for(cfg)
+        wemm = wemm_status_for(cfg)
+        n_fail = len(text["rows"])
+        self._summary.value = (
+            "库「%s」：文字索引正常 %d 份、未入索引 %d 份；页级导航 %s" %
+            (lib_name, text["total"], n_fail,
+             ("%d 页向量" % wemm["total_pages"]) if wemm["exists"] else "尚未建页索引"))
+        controls = [self._section_header("文字索引（哪些文件没进来、为什么）",
+                                         ft.Icons.FACT_CHECK_OUTLINED)]
+        if n_fail:
+            for rel, reason, will in text["rows"]:
+                controls.append(self._row(
+                    icon=ft.Icons.ERROR_OUTLINE, icon_color=colors["warning"],
+                    title=rel,
+                    sub=self._REASON_TEXT.get(reason, reason) +
+                        ("　✅ 下轮索引将自动重试" if will else "")))
+        else:
+            controls.append(self._plain("✔ 全部文件正常入索引，没有失败或跳过。",
+                                        colors["success"]))
+        controls.append(ft.Container(height=6))
+        controls.append(self._section_header(
+            "WEMM 页级导航（每份 PDF 建了几页向量）", ft.Icons.MAP_OUTLINED))
+        backend, url = wemm_backend_state()
+        if backend not in ("on", "local"):
+            controls.append(self._plain(
+                "页级导航未开启（wemm_backend=off）。要用：设置里开启 → "
+                "命令行启动 python wemm_server.py → python wemm_indexer.py 建页库。",
+                colors["t2"]))
+        else:
+            probe_row = self._plain("正在检测看图服务…", colors["t3"])
+            controls.append(probe_row)
+            self._probe_async(probe_row, url)
+            if not wemm["exists"]:
+                controls.append(self._plain(
+                    "本库还没建页索引：命令行运行 python wemm_indexer.py --library %s "
+                    "--backend on（每页渲染成图编码入库，耗时随页数与 DPI 增长）。"
+                    % lib_name, colors["t2"]))
+            else:
+                for rel, pages, failed, reason in wemm["rows"]:
+                    if failed:
+                        controls.append(self._row(
+                            icon=ft.Icons.ERROR_OUTLINE, icon_color=colors["danger"],
+                            title=rel,
+                            sub="渲染失败：%s（下一轮页索引自动重试）" % reason))
+                    else:
+                        controls.append(self._row(
+                            icon=ft.Icons.CHECK_CIRCLE, icon_color=colors["success"],
+                            title=rel, sub="已建 %d 页向量" % pages))
+                if not wemm["rows"]:
+                    controls.append(self._plain("页索引 meta 为空。", colors["t2"]))
+                controls.append(self._plain(
+                    "手动验证：点任意一行直接打开那份 PDF，配合 navigate_knowledge "
+                    "返回的页码翻到对应页对内容。", colors["t3"]))
+        self._body.controls = controls
+        self._safe_update()
+
+    def _probe_async(self, row, url):
+        """服务存活探测放后台线程（本机回环 HTTP，最多等 5s），完成后回 UI 更新。"""
+        import threading
+        colors = self._cols
+
+        def run():
+            alive, detail = wemm_service_probe(url)
+            row.controls[0].icon = ft.Icons.CHECK_CIRCLE if alive \
+                else ft.Icons.CANCEL_OUTLINED
+            row.controls[0].icon_color = colors["success"] if alive \
+                else colors["danger"]
+            row.controls[1].value = "看图服务：%s" % detail
+            row.controls[1].color = colors["t2"] if alive else colors["danger"]
+            self._safe_update()
+
+        threading.Thread(target=run, daemon=True, name="wemm-probe").start()
+
+    # ---- 行渲染 ----
+
+    def _section_header(self, text, icon):
+        colors = self._cols
+        return ft.Row([
+            ft.Icon(icon, size=16, color=colors["accent_soft"]),
+            ft.Text(text, size=13, weight=ft.FontWeight.W_600, color=colors["t1"],
+                    font_family=FONT_UI),
+        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    def _plain(self, text, color):
+        return ft.Container(
+            content=ft.Text(text, size=12, color=color, font_family=FONT_UI),
+            padding=ft.Padding(left=24, right=24, top=2, bottom=2))
+
+    def _row(self, icon, icon_color, title, sub):
+        """单文件行：✔/✗ 图标 + 文件名 + 人话状态；点击打开源文件（手动确认）。"""
+        colors = self._cols
+        abs_path = self._rel_path(title)
+
+        def _click(e):
+            self._on_open_file(abs_path)
+
+        # flet 0.86：Container 只有 on_hover 一个事件，e.data=='true' 为悬入
+        def _on_hover(e):
+            e.control.bgcolor = colors["hover"] if e.data == "true" else colors["surface"]
+
+        return ft.Container(
+            content=ft.Row([
+                ft.Icon(icon, size=16, color=icon_color),
+                ft.Column([
+                    ft.Text(title, size=13, color=colors["t1"], font_family=FONT_UI,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(sub, size=11, color=colors["t2"], font_family=FONT_UI,
+                            max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                ], spacing=1, expand=True),
+                ft.Icon(ft.Icons.OPEN_IN_NEW, size=13, color=colors["t3"]),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=colors["surface"], border_radius=SIZE["radius_control"],
+            padding=ft.Padding(left=10, right=10, top=6, bottom=6),
+            on_click=_click, on_hover=_on_hover,
+            tooltip=abs_path,
+        )
+
+    def _rel_path(self, rel):
+        """行内 rel → 磁盘绝对路径（打开回调用）。"""
+        try:
+            return str(Path(self._cfg["path"]) / rel)
+        except Exception:
+            return rel
 
 
 # ---- 提取试验台：单文件转译效果预览（选文件 → 实时看 Markdown 产出） ----

@@ -1714,3 +1714,45 @@ MD 正文 + 绝对路径）与**近似文档去重**（找出库内内容几乎�
   数十秒）。
 - Vault 文档组（20-Projects/Obsidian RAG/）的同步更新本轮按用户约束跳过（跨工作区），待用户
   决策后补。
+
+---
+
+## 问题40：GUI「文件生效明细」面板——逐文件确认生效状态（2026-09-04）
+
+### 背景
+用户反馈两个点：①确认 WEMM/MinerU 是否生效，现有手段（wemm_status / index_failures /
+"382 页向量"这种数字）不直观——看不出**哪个文件**是否正确生效；②问题38 交付的失败清单
+"列出展开"体验没做好（MCP 输出只有 AI 能看，且 GUI 状态卡上的失败提示只有计数没有文件名）。
+
+### 交付（零侵入，红线4：只读 meta/注册表，不加载模型、不碰 Chroma）
+- **store 层（gui/store.py）**：
+  - `file_index_rows_for(cfg)`：单库逐文件"未正常入索引"明细（rel + reason + will_retry），
+    will_retry 复用 `index._backend_changed` 同一谓词——GUI 说"下轮会重试"就真会重试；
+  - `wemm_status_for(cfg)`：单库逐 PDF 页索引状态（页向量数 / 渲染失败原因），
+    meta 不存在或为空 = 尚未建页索引；
+  - `wemm_backend_state()`（现读 config）/ `wemm_service_probe(url)`（127.0.0.1 回环
+    短超时探测，人话返回：模型已进显存 / 待首次请求加载 / 未启动；只读绝不拉起服务）。
+- **widgets 层**：新 `FileStatusDialog`——库下拉 + 两个分区：
+  - 文字索引区：✔ 正常 N 份；每个失败/跳过文件一行（图标 + 文件名 + 人话原因 +
+    "✅ 下轮索引将自动重试"标注）；
+  - WEMM 区：后端未开启给三步开启指引；已开启则后台线程探测服务存活（不阻塞 UI）、
+    每份 PDF 一行"已建 N 页向量"或"渲染失败：<原因>"；**点任意行用系统默认程序打开
+    那份 PDF**（tooltip 显示绝对路径）——配合 navigate_knowledge 返回的页码翻页对内容，
+    眼见为实；
+  - 主界面入口：顶部工具栏新增"文件生效明细"按钮；状态卡的 ⚠ 失败后缀文案同步指引。
+- flet 0.86 API 适配（沿用既有先例）：Dropdown 事件为 `on_select`（构造器不收 on_change）、
+  `ft.Padding(...)` 而非 `ft.padding.symmetric`、Container 只有 `on_hover`（e.data=='true'
+  为悬入）。
+
+### 测试（test_gui_store.py：55 用例）
+新增 5 例：失败明细与重试判定（xsrc 与签名比对两个方向）、meta 缺失空态、WEMM 逐行/
+缺失语义、服务探测三分支（mock health）、对话框无窗口构造冒烟（提前抓 flet API 错位——
+on_change/on_exit/padding 三个 API 错位全是这个用例先抓出来的）。
+
+### 附记（同轮）：真库演练"双份模型并存"溢出修复
+用户实测发现跑回归时两个 python 进程同时持显存（一份 bge-m3 在主进程、一份在检索对比
+子进程），8GB 卡直接 WDDM 溢出。根因：`verify_export_import` 第 0 节的主进程检索让模型
+常驻，第 6 节又拉子进程各加载一份。修法：`index.release_model()` + `retriever.release_reranker()`
+（释放常驻模型 + gc + empty_cache，下次懒加载回来；生产 server 路径不调用——检索模型
+常驻是响应速度的根基），演练在第 6 节拉子进程前先让主进程吐模型；子进程本身串行。
+验证：39/39 全过，15s 间隔采样全程无"两进程并存"。

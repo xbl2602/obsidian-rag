@@ -31,8 +31,9 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   `xsrc=wemm:<模型>:<维度>:<DPI>` 签名，失败每轮真重试、改档自动重渲染；upsert 分批、
   写库成功才落成功 meta）+ `wemm_retriever.py`（查询零写副作用）。MCP：`navigate_knowledge`、
   `read_document`（零触发只读缓存，交付全文）、`find_duplicates`（dedup.py MinHash+LSH 只读）、
-  `index_failures`、`wemm_status`。长驻 MCP 进程配置一律经 `config.reload_config()` 现读
-  （问题39），不要再读 import 快照
+  `index_failures`、`wemm_status`。GUI「文件生效明细」面板（问题40）：逐文件展示
+  索引/页库状态与失败原因、点行打开源文件，数据全走 gui/store 零侵入只读函数。长驻 MCP
+  进程配置一律经 `config.reload_config()` 现读（问题39），不要再读 import 快照
 - 详细机制：`AI_GUIDE.md`（部署/使用）、Vault 内 `20-Projects/Obsidian RAG/` 文档组、
   开发史 `TASK_LOG.md`（问题 1–39）、路线 `TODO.md`
 

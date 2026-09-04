@@ -8,7 +8,9 @@ import time
 from pathlib import Path
 
 from config import CFG
+from extractors import current_backend_sig
 from index import (
+    _backend_changed,
     kb_stale,
     load_meta,
     collect_md_files,
@@ -16,6 +18,7 @@ from index import (
     resolve_note_relations,
     _pid_alive,
 )
+from wemm_indexer import load_wemm_meta, wemm_meta_path as wemm_meta_file
 from library import (
     load_registry,
     effective_config,
@@ -212,6 +215,84 @@ def meta_issues_for(cfg):
             r = v.get("reason") or "unknown"
             issues[r] = issues.get(r, 0) + 1
     return issues
+
+
+def file_index_rows_for(cfg):
+    """单库逐文件「未正常入索引」明细（零侵入：只读 meta 指纹文件）。
+
+    返回 {"total": 正常索引文件数, "rows": [(rel, reason, will_retry), ...]}，
+    rows 按 rel 排序，只列落了终态（提取失败/扫描件/空/不可读/TBD）的文件。
+    will_retry 复用 index._backend_changed 同一谓词——签名不符 = 下轮真会
+    自动重试，不给用户与实际行为相反的提示（问题39 同款纪律）。
+    """
+    try:
+        meta = load_meta(meta_path(cfg["name"]))
+    except Exception:
+        return {"total": 0, "rows": []}
+    sig = current_backend_sig()
+    rows = []
+    total = 0
+    for rel, info in meta.items():
+        if not isinstance(info, dict):
+            continue
+        reason = info.get("reason")
+        if reason:
+            rows.append((rel, reason, bool(_backend_changed(info, sig))))
+        elif info.get("xfail") or info.get("tbd"):
+            rows.append((rel, "unknown", False))
+        else:
+            total += 1
+    rows.sort(key=lambda r: r[0])
+    return {"total": total, "rows": rows}
+
+
+def wemm_status_for(cfg):
+    """单库 WEMM 页索引逐 PDF 状态（零侵入：只读 wemm_meta_<库>.json）。
+
+    返回 {"exists": meta 是否存在, "total_pages": 页向量总数,
+          "rows": [(rel, pages|None, failed, reason)]}（按 rel 排序）；
+    failed 行 pages=None、reason 为人话原因。meta 不存在 = 还没建页索引。
+    """
+    try:
+        meta = load_wemm_meta(wemm_meta_file(cfg["name"]))
+    except Exception:
+        return {"exists": False, "total_pages": 0, "rows": []}
+    rows = []
+    total = 0
+    for rel, info in meta.items():
+        if rel == "_version" or not isinstance(info, dict):
+            continue
+        if info.get("tbd") or info.get("xfail"):
+            rows.append((rel, None, True, info.get("reason") or "渲染失败"))
+        else:
+            pages = int(info.get("pages", 0))
+            total += pages
+            rows.append((rel, pages, False, ""))
+    rows.sort(key=lambda r: r[0])
+    # meta 文件不存在时 load_wemm_meta 返回空 dict（不抛异常）：无条目 = 还没建页索引
+    return {"exists": bool(rows), "total_pages": total, "rows": rows}
+
+
+def wemm_backend_state():
+    """WEMM 开关与地址（现读 config，不用进程启动时的快照）。"""
+    from config import reload_config
+    reload_config()
+    return CFG.get("wemm_backend", "off"), CFG.get("wemm_url") or ""
+
+
+def wemm_service_probe(url):
+    """探测本机 WEMM 看图服务存活（127.0.0.1 回环短超时；GUI 须放后台线程调用）。
+
+    返回 (alive, detail)；detail 为人话。只读探测，绝不启动服务、不加载模型。
+    """
+    try:
+        from wemm_retriever import health
+        h = health(url)
+        if h.get("loaded"):
+            return True, "模型已进显存（%s · %s）" % (h.get("model", "?"), h.get("device", "?"))
+        return True, "服务存活，待首次请求时自动加载模型"
+    except Exception as e:
+        return False, "未启动或不可达（%s）——命令行运行 python wemm_server.py" % type(e).__name__
 
 
 def note_relations_for(cfg, target):

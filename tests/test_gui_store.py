@@ -19,6 +19,7 @@ from gui.store import (  # noqa: E402
     library_state,
     library_snapshot, is_library_dir, meta_issues_for, ISSUE_TEXT,
     note_relations_for,
+    file_index_rows_for, wemm_status_for, wemm_service_probe,
 )
 from gui.app import format_elapsed, format_mmss, App  # noqa: E402 纯函数，不触发窗口
 from gui.theme import DARK  # noqa: E402
@@ -973,6 +974,92 @@ def test_dual_watchdog_consistency_on_grace_samples():
             # 运行中且进度久未推进：两侧都必须按「合法静默」处理而非告警
             assert "⚠" not in txt and "进度停滞" not in txt, label
             assert "文档转换中" in txt or "宽限剩余" in txt, label
+
+
+
+# ---- 问题39：逐文件生效明细（store 层纯逻辑） ----
+
+def test_file_index_rows_for_lists_terminals_and_retry():
+    with tempfile.TemporaryDirectory() as td:
+        mp = Path(td) / 'index_meta_A.json'
+        meta = {
+            'ok.md': {'chunks': 3, 'size': 1, 'mtime': 1},
+            'bad.pdf': {'hash': 'x', 'chunks': 0, 'size': 1, 'mtime': 1,
+                        'tbd': False, 'xfail': True, 'reason': 'extract-failed',
+                        'xsrc': 'backend:key/nokey-OLD'},
+            'scan.pdf': {'hash': 'y', 'chunks': 0, 'size': 1, 'mtime': 1,
+                         'tbd': False, 'xfail': True, 'reason': 'scanned',
+                         'xsrc': 'backend:key/nokey'},
+        }
+        mp.parent.mkdir(parents=True, exist_ok=True)
+        mp.write_text(json.dumps(meta), encoding='utf-8')
+        cfg = _fake_cfg('A', td)
+        with patch('gui.store.meta_path', return_value=mp),              patch('gui.store.current_backend_sig',
+                   return_value='backend:key/nokey'):
+            out = file_index_rows_for(cfg)
+        assert out['total'] == 1, out['total']
+        rows = {r[0]: r for r in out['rows']}
+        assert set(rows) == {'bad.pdf', 'scan.pdf'}, sorted(rows)
+        # xsrc 与当前签名不符 → 下轮真会重试；相符 → 不重试（判定与 index 一致）
+        assert rows['bad.pdf'][1] == 'extract-failed' and rows['bad.pdf'][2] is True
+        assert rows['scan.pdf'][1] == 'scanned' and rows['scan.pdf'][2] is False
+
+
+def test_file_index_rows_for_missing_meta():
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _fake_cfg('A', td)
+        with patch('gui.store.meta_path',
+                   return_value=Path(td) / 'nope.json'):
+            out = file_index_rows_for(cfg)
+        assert out == {'total': 0, 'rows': []}
+
+
+def test_wemm_status_for_rows_and_missing():
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _fake_cfg('A', td)
+        # meta 不存在 → exists=False（还没建页索引）
+        with patch('gui.store.wemm_meta_file',
+                   return_value=Path(td) / 'nope.json'):
+            out = wemm_status_for(cfg)
+        assert out['exists'] is False and out['rows'] == []
+        mp = Path(td) / 'wemm_meta_A.json'
+        meta = {
+            '_version': 1,
+            'a.pdf': {'hash': 'x', 'pages': 9, 'size': 1, 'mtime': 1,
+                      'tbd': False, 'xsrc': 'wemm:m:512:60'},
+            'broken.pdf': {'hash': 'y', 'chunks': 0, 'size': 1, 'mtime': 1,
+                           'tbd': False, 'xfail': True, 'reason': 'extract-failed'},
+        }
+        mp.write_text(json.dumps(meta), encoding='utf-8')
+        with patch('gui.store.wemm_meta_file', return_value=mp):
+            out = wemm_status_for(cfg)
+        assert out['exists'] is True and out['total_pages'] == 9
+        rows = {r[0]: r for r in out['rows']}
+        assert rows['a.pdf'][1] == 9 and rows['a.pdf'][2] is False
+        assert rows['broken.pdf'][1] is None and rows['broken.pdf'][2] is True
+        assert rows['broken.pdf'][3] == 'extract-failed'
+
+
+def test_file_status_dialog_constructs():
+    """对话框无需窗口即可构建（捕获构造期 API/语法错误）。"""
+    from gui.widgets import FileStatusDialog
+    d = FileStatusDialog(on_open_file=lambda p: None)
+    assert d._dlg is not None and d._lib_dd is not None
+    row = d._row(icon=None, icon_color='#fff', title='a.pdf', sub='ok')
+    assert row.content is not None
+
+
+def test_wemm_service_probe_branches():
+    with patch('wemm_retriever.health', return_value={'loaded': True,
+                                                      'model': 'm', 'device': 'cuda'}):
+        alive, detail = wemm_service_probe('http://127.0.0.1:9101')
+    assert alive and '已进显存' in detail and 'cuda' in detail
+    with patch('wemm_retriever.health', return_value={'loaded': False}):
+        alive, detail = wemm_service_probe('http://127.0.0.1:9101')
+    assert alive and '待首次请求' in detail
+    with patch('wemm_retriever.health', side_effect=OSError('refused')):
+        alive, detail = wemm_service_probe('http://127.0.0.1:9101')
+    assert not alive and '未启动' in detail
 
 
 if __name__ == "__main__":

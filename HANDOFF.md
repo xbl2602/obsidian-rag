@@ -17,7 +17,7 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 - **EXTRACT_VERSION**: 4（PDF 分拣规则 + MinerU model_version 参数）
 - **WEMM_VERSION**: 1（页级视觉导航独立版本号，独立自愈，互不影响文字索引）
 - **回归九件套**: 全绿（extractors 72/72, audit 38/38, registry 15/15, singleton 5/5,
-  config_editor 0, gui_store 0, wemm_indexer 36/36, wemm_retriever 13/13, dedup 23/23,
+  config_editor 0, gui_store 55, wemm_indexer 36/36, wemm_retriever 13/13, dedup 23/23,
   verify_export_import 39/39）
 
 ---
@@ -56,6 +56,12 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
    死代码清理。
 
 **接手注意**：既有 WEMM 页库 meta 无 `xsrc` 字段，本轮后首轮增量会整体重渲染一次（一次性）。
+
+**问题40（GUI 文件生效明细）**：主界面工具栏「文件生效明细」对话框——逐文件看文字索引
+失败原因（含下轮是否自动重试）与 WEMM 每 PDF 页向量数/渲染失败，点行直接打开源文件人工
+核对。store 层只读函数：file_index_rows_for / wemm_status_for / wemm_backend_state /
+wemm_service_probe；flet 0.86 事件名先例：Dropdown=on_select、Container 仅 on_hover、
+padding 用 ft.Padding。
 
 ---
 
