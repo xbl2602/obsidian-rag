@@ -1,0 +1,1279 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Obsidian RAG · 操作台（交互原型）</title>
+<style>
+  :root{
+    --bg:#0F1216; --panel:#161B22; --panel-hi:#1D232C; --stroke:#262E39;
+    --text:#E6E9EE; --text-2:#8B94A3; --amber:#E8A33D; --ok:#3FB27F;
+    --warn:#D97742; --err:#E05561;
+    --mono:"Cascadia Code",Consolas,"Sarasa Mono SC","Microsoft YaHei Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    --shadow:0 12px 40px rgba(0,0,0,.5);
+  }
+  html[data-theme="light"]{
+    --bg:#ECECE7; --panel:#F6F6F2; --panel-hi:#FDFDF9; --stroke:#D4D4CC;
+    --text:#22262C; --text-2:#6B7280; --amber:#A96F10; --ok:#25795A;
+    --warn:#B45A22; --err:#B93A46;
+    --shadow:0 12px 40px rgba(60,60,50,.22);
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%;}
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--sans);
+    font-size:14px; line-height:1.6; overflow:hidden;
+  }
+  button,input,select{font-family:inherit; color:inherit;}
+  button{cursor:pointer;}
+  :focus-visible{outline:2px solid var(--amber); outline-offset:2px; border-radius:3px;}
+  .mono{font-family:var(--mono);}
+  ::selection{background:rgba(232,163,61,.3);}
+
+  /* ============ 布局骨架 ============ */
+  #app{display:grid; grid-template-rows:48px 1fr 40px; height:100vh;}
+  header{
+    display:flex; align-items:center; gap:12px; padding:0 16px;
+    border-bottom:1px solid var(--stroke); background:var(--panel);
+  }
+  header .logo{
+    font-family:var(--mono); font-weight:700; letter-spacing:1px; font-size:13px;
+    color:var(--amber);
+  }
+  header .sub{color:var(--text-2); font-size:12px;}
+  header .spacer{flex:1;}
+  .btn-ghost{
+    background:transparent; border:1px solid var(--stroke); color:var(--text-2);
+    padding:5px 12px; border-radius:6px; font-size:12px; transition:border-color .15s,color .15s;
+  }
+  .btn-ghost:hover{border-color:var(--amber); color:var(--text);}
+
+  main{display:grid; grid-template-columns:220px 1fr; overflow:hidden;}
+  nav{
+    border-right:1px solid var(--stroke); background:var(--panel);
+    padding:14px 10px; display:flex; flex-direction:column; gap:4px; overflow-y:auto;
+  }
+  nav .nav-item{
+    display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+    background:transparent; border:none; color:var(--text-2); padding:9px 12px;
+    border-radius:8px; font-size:13.5px; transition:background .15s,color .15s;
+  }
+  nav .nav-item:hover{background:var(--panel-hi); color:var(--text);}
+  nav .nav-item.active{background:var(--panel-hi); color:var(--amber);}
+  nav .nav-item .ico{width:18px; text-align:center; font-size:15px;}
+  nav .nav-item .cnt{
+    margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--text-2);
+  }
+  nav .nav-sep{margin:10px 12px 6px; font-size:11px; color:var(--text-2); letter-spacing:2px;}
+
+  #content{overflow-y:auto; padding:26px 32px 90px;}
+  .page{display:none; max-width:880px;}
+  .page.active{display:block;}
+  .page h1{font-size:19px; font-weight:600; margin-bottom:4px;}
+  .page .desc{color:var(--text-2); font-size:12.5px; margin-bottom:22px;}
+
+  /* ============ 通用组件 ============ */
+  .panel{
+    background:var(--panel); border:1px solid var(--stroke); border-radius:10px;
+    padding:16px 18px; margin-bottom:14px;
+  }
+  .panel h2{font-size:13px; font-weight:600; margin-bottom:12px; letter-spacing:.5px;
+    display:flex; align-items:center; gap:8px;}
+  .panel h2 .tag{
+    font-family:var(--mono); font-size:10.5px; font-weight:400; color:var(--text-2);
+    border:1px solid var(--stroke); border-radius:4px; padding:0 6px;
+  }
+  .chip{
+    display:inline-flex; align-items:center; gap:6px; font-size:11.5px;
+    border-radius:99px; padding:2px 10px; border:1px solid var(--stroke); color:var(--text-2);
+  }
+  .chip.ok{color:var(--ok); border-color:var(--ok);}
+  .chip.err{color:var(--err); border-color:var(--err);}
+  .chip.amber{color:var(--amber); border-color:var(--amber);}
+  .btn{
+    background:var(--panel-hi); border:1px solid var(--stroke); color:var(--text);
+    padding:7px 16px; border-radius:7px; font-size:13px;
+    transition:border-color .15s, background .15s, transform .05s;
+  }
+  .btn:hover:not(:disabled){border-color:var(--amber);}
+  .btn:active:not(:disabled){transform:translateY(1px);}
+  .btn:disabled{opacity:.45; cursor:not-allowed;}
+  .btn.primary{background:var(--amber); border-color:var(--amber); color:#14100A; font-weight:600;}
+  html[data-theme="light"] .btn.primary{color:#fff;}
+  .btn.primary:hover:not(:disabled){filter:brightness(1.08);}
+  .btn.danger{background:var(--err); border-color:var(--err); color:#fff; font-weight:600;}
+  .btn.sm{padding:3px 10px; font-size:12px; border-radius:6px;}
+  .field{margin-bottom:14px;}
+  .field label{display:block; font-size:12px; color:var(--text-2); margin-bottom:5px;}
+  .field input[type=text],.field input[type=password],.field select{
+    width:100%; background:var(--bg); border:1px solid var(--stroke); border-radius:7px;
+    padding:7px 10px; font-size:13px; color:var(--text); transition:border-color .15s;
+  }
+  .field input:focus,.field select:focus{border-color:var(--amber); outline:none;}
+  .field select option{background:var(--panel);}
+  /* 开关 */
+  .switch{position:relative; display:inline-block; width:38px; height:21px; flex:none;}
+  .switch input{opacity:0; width:0; height:0;}
+  .switch .track{
+    position:absolute; inset:0; background:var(--panel-hi); border:1px solid var(--stroke);
+    border-radius:99px; cursor:pointer; transition:background .2s,border-color .2s;
+  }
+  .switch .track::after{
+    content:""; position:absolute; top:2px; left:2px; width:15px; height:15px;
+    background:var(--text-2); border-radius:50%; transition:transform .2s,background .2s;
+  }
+  .switch input:checked + .track{background:rgba(232,163,61,.25); border-color:var(--amber);}
+  .switch input:checked + .track::after{transform:translateX(17px); background:var(--amber);}
+  .switch input:focus-visible + .track{outline:2px solid var(--amber); outline-offset:2px;}
+  .switch-row{display:flex; align-items:center; gap:10px; padding:6px 0; font-size:13px;}
+  .switch-row .hint{color:var(--text-2); font-size:11.5px;}
+  /* 推荐芯片 */
+  .reco{
+    display:inline-flex; align-items:center; gap:4px; font-size:11px;
+    color:var(--ok); border:1px dashed var(--ok); border-radius:99px;
+    padding:1px 8px; margin-left:8px; vertical-align:1px;
+  }
+  .notice-warn{
+    background:rgba(217,119,66,.12); border:1px solid var(--warn); color:var(--warn);
+    border-radius:7px; padding:8px 12px; font-size:12.5px; margin:10px 0;
+  }
+  .notice-warn[hidden]{display:none;}
+  .checkline{display:flex; align-items:center; gap:8px; padding:4px 0; font-size:13px;}
+  .checkline input{accent-color:var(--amber); width:14px; height:14px;}
+
+  /* ============ 检索页 ============ */
+  .search-box{display:flex; gap:10px; align-items:stretch;}
+  .search-box .input-wrap{flex:1; position:relative;}
+  .search-box input[type=text]{
+    width:100%; background:var(--panel); border:1px solid var(--stroke); border-radius:9px;
+    padding:12px 14px 12px 38px; font-size:14.5px; color:var(--text); transition:border-color .15s;
+  }
+  .search-box input[type=text]:focus{border-color:var(--amber); outline:none;}
+  .search-box .mag{position:absolute; left:13px; top:50%; transform:translateY(-50%); color:var(--text-2);}
+  .search-box select{
+    background:var(--panel); border:1px solid var(--stroke); border-radius:9px;
+    padding:0 10px; font-size:13px; color:var(--text); font-family:var(--mono);
+  }
+  .search-box select option{background:var(--panel);}
+  .search-meta{display:flex; align-items:center; gap:14px; margin:14px 0 4px; font-size:12px; color:var(--text-2);}
+  .search-meta .mono{color:var(--amber);}
+  .spinner{
+    width:15px; height:15px; border:2px solid var(--stroke); border-top-color:var(--amber);
+    border-radius:50%; display:inline-block; vertical-align:-3px; margin-right:7px;
+    animation:spin .8s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  #resultList{margin-top:12px;}
+  .result{
+    background:var(--panel); border:1px solid var(--stroke); border-radius:10px;
+    padding:13px 16px; margin-bottom:10px; cursor:pointer; transition:border-color .15s;
+  }
+  .result:hover{border-color:var(--amber);}
+  .result .r-head{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+  .result .r-path{font-family:var(--mono); font-size:12.5px; color:var(--text); word-break:break-all;}
+  .badge{
+    font-family:var(--mono); font-size:11px; border-radius:5px; padding:0 7px; flex:none;
+  }
+  .badge.hi{background:rgba(63,178,127,.15); color:var(--ok); border:1px solid var(--ok);}
+  .badge.mid{background:rgba(232,163,61,.13); color:var(--amber); border:1px solid var(--amber);}
+  .badge.low{background:rgba(217,119,66,.13); color:var(--warn); border:1px solid var(--warn);}
+  .result .r-actions{margin-left:auto; display:flex; gap:6px; flex:none;}
+  .result .r-snippet{
+    margin-top:9px; color:var(--text-2); font-size:12.5px; line-height:1.7;
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .result.expanded .r-snippet{-webkit-line-clamp:unset;}
+  .result .r-snippet mark{background:rgba(232,163,61,.28); color:var(--amber); border-radius:2px; padding:0 2px;}
+  html[data-theme="light"] .result .r-snippet mark{background:rgba(169,111,16,.18); color:var(--amber);}
+  .result .r-links{
+    margin-top:10px; border-top:1px dashed var(--stroke); padding-top:9px;
+    font-size:12px; display:flex; gap:26px; flex-wrap:wrap;
+  }
+  .result .r-links .lk-title{color:var(--text-2); font-size:11px; letter-spacing:1px; margin-bottom:4px;}
+  .result .r-links a{color:var(--amber); text-decoration:none; font-family:var(--mono); font-size:12px;
+    display:inline-block; margin-right:12px;}
+  .result .r-links a:hover{text-decoration:underline;}
+  .r-links-wrap[hidden]{display:none;}
+  #emptyHint{color:var(--text-2); font-size:13px; text-align:center; padding:46px 0;
+    border:1px dashed var(--stroke); border-radius:10px; margin-top:12px;}
+
+  /* ============ 库管理 ============ */
+  .lib-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:12px;}
+  .lib-card{background:var(--panel); border:1px solid var(--stroke); border-radius:10px; padding:15px 16px;}
+  .lib-card:hover{border-color:var(--amber);}
+  .lib-card .lname{font-size:14.5px; font-weight:600; display:flex; align-items:center; gap:8px;}
+  .lib-card .lpath{font-family:var(--mono); font-size:11px; color:var(--text-2); margin:5px 0 10px; word-break:break-all;}
+  .lib-card .lstats{display:flex; gap:16px; font-size:12px; color:var(--text-2); margin-bottom:4px;}
+  .lib-card .lstats b{font-family:var(--mono); color:var(--text); font-weight:600;}
+  .lib-card .ltime{font-family:var(--mono); font-size:11px; color:var(--text-2); margin-bottom:12px;}
+  .lib-card .lbtns{display:flex; gap:6px; flex-wrap:wrap;}
+
+  /* ============ 索引页 ============ */
+  .kpi-row{display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:14px;}
+  .kpi{background:var(--panel); border:1px solid var(--stroke); border-radius:10px; padding:12px 14px;}
+  .kpi .kv{font-family:var(--mono); font-size:22px; color:var(--amber); font-weight:600; line-height:1.2;}
+  .kpi .kl{font-size:11px; color:var(--text-2); margin-top:3px;}
+  .stepper{display:flex; align-items:flex-start; gap:0; margin:18px 0 6px;}
+  .step{flex:1; text-align:center; position:relative;}
+  .step .dot{
+    width:26px; height:26px; border-radius:50%; border:1.5px solid var(--stroke);
+    background:var(--panel); color:var(--text-2); font-family:var(--mono); font-size:12px;
+    display:flex; align-items:center; justify-content:center; margin:0 auto 7px; z-index:1;
+    position:relative; transition:border-color .3s,color .3s,background .3s;
+  }
+  .step::before{
+    content:""; position:absolute; top:13px; left:-50%; width:100%; height:1.5px;
+    background:var(--stroke); transition:background .3s;
+  }
+  .step:first-child::before{display:none;}
+  .step .sl{font-size:11.5px; color:var(--text-2); transition:color .3s;}
+  .step.done .dot{border-color:var(--ok); color:var(--ok); background:rgba(63,178,127,.1);}
+  .step.done::before{background:var(--ok);}
+  .step.active .dot{border-color:var(--amber); color:var(--amber); background:rgba(232,163,61,.12);}
+  .step.active .sl{color:var(--amber);}
+  .step.done .sl{color:var(--ok);}
+  .idx-progress{display:flex; align-items:baseline; gap:14px; margin:14px 0 4px;}
+  .idx-progress .pct{font-family:var(--mono); font-size:38px; color:var(--amber); font-weight:700;}
+  .idx-progress .stage{font-size:13px; color:var(--text-2);}
+  .idx-progress .eta{margin-left:auto; font-family:var(--mono); font-size:13px; color:var(--text-2);}
+  .bar{height:6px; background:var(--bg); border:1px solid var(--stroke); border-radius:99px; overflow:hidden;}
+  .bar > i{display:block; height:100%; width:0; background:var(--amber); border-radius:99px; transition:width .12s linear;}
+  .idx-btns{display:flex; gap:10px; margin-top:16px;}
+  .idx-stopnote{font-size:12px; color:var(--warn); margin-top:10px;}
+
+  /* ============ 诊断页 ============ */
+  table.fail{width:100%; border-collapse:collapse; font-size:12px;}
+  table.fail th{
+    text-align:left; color:var(--text-2); font-weight:500; font-size:11px;
+    border-bottom:1px solid var(--stroke); padding:6px 8px; letter-spacing:.5px;
+  }
+  table.fail td{padding:7px 8px; border-bottom:1px solid var(--stroke); vertical-align:top;}
+  table.fail tr:last-child td{border-bottom:none;}
+  table.fail tr:hover td{background:var(--panel-hi);}
+  .fpath{font-family:var(--mono); font-size:11.5px; word-break:break-all;}
+  .st-scanned{color:var(--amber);}
+  .st-unreadable,.st-extract{color:var(--err);}
+  .st-empty{color:var(--text-2);}
+  .guide{color:var(--text-2); font-size:11.5px;}
+  .dedup-pair{
+    display:flex; align-items:center; gap:12px; padding:9px 0;
+    border-bottom:1px solid var(--stroke); flex-wrap:wrap;
+  }
+  .dedup-pair:last-child{border-bottom:none;}
+  .dedup-pair .paths{flex:1; min-width:220px;}
+  .dedup-pair .paths .p{font-family:var(--mono); font-size:11.5px; word-break:break-all;}
+  .dedup-pair .paths .p + .p::before{content:"↔ "; color:var(--text-2);}
+  .dedup-pair .sim{font-family:var(--mono); color:var(--amber); font-size:13px; flex:none;}
+  .exp-progress{height:5px; background:var(--bg); border:1px solid var(--stroke); border-radius:99px;
+    overflow:hidden; margin-top:10px;}
+  .exp-progress > i{display:block; height:100%; width:0; background:var(--ok); transition:width 2s linear;}
+  .wemm-chip{margin-left:10px;}
+
+  /* ============ 设置页 ============ */
+  .settings-wrap{display:grid; grid-template-columns:170px 1fr; gap:18px;}
+  .set-nav{display:flex; flex-direction:column; gap:3px;}
+  .set-nav button{
+    text-align:left; background:transparent; border:none; color:var(--text-2);
+    padding:8px 12px; border-radius:7px; font-size:13px; transition:background .15s,color .15s;
+  }
+  .set-nav button:hover{background:var(--panel-hi); color:var(--text);}
+  .set-nav button.active{background:var(--panel-hi); color:var(--amber);}
+  .set-group{display:none;}
+  .set-group.active{display:block;}
+  .set-foot{margin-top:6px; display:flex; gap:10px; align-items:center;}
+  .set-foot .note{font-size:11.5px; color:var(--text-2);}
+
+  /* ============ 右侧详情面板 ============ */
+  #detail{
+    position:fixed; top:48px; right:0; bottom:40px; width:340px; z-index:60;
+    background:var(--panel); border-left:1px solid var(--stroke); box-shadow:var(--shadow);
+    transform:translateX(105%); transition:transform .28s ease; display:flex; flex-direction:column;
+  }
+  #detail.open{transform:translateX(0);}
+  #detail .d-head{padding:14px 16px 10px; border-bottom:1px solid var(--stroke);}
+  #detail .d-title{font-size:13.5px; font-weight:600; word-break:break-all;}
+  #detail .d-meta{font-family:var(--mono); font-size:11px; color:var(--text-2); margin-top:4px;
+    display:flex; gap:10px; align-items:center;}
+  #detail .d-body{flex:1; overflow-y:auto; padding:14px 16px; font-size:12.5px; line-height:1.85; color:var(--text);}
+  #detail .d-body mark{background:rgba(232,163,61,.28); color:var(--amber); border-radius:2px; padding:0 2px;}
+  html[data-theme="light"] #detail .d-body mark{background:rgba(169,111,16,.18);}
+  #detail .d-body p{margin-bottom:10px;}
+  #detail .d-foot{padding:12px 16px; border-top:1px solid var(--stroke); display:flex; gap:8px;}
+
+  /* ============ 底部仪表读数状态带（签名元素） ============ */
+  #readout{
+    display:flex; align-items:center; gap:0; padding:0 18px; border-top:1px solid var(--stroke);
+    background:var(--panel); font-family:var(--mono); font-size:12px; color:var(--text-2);
+    overflow:hidden; white-space:nowrap;
+    transition:color .5s, background .5s;
+  }
+  #readout .seg{display:flex; align-items:center; gap:6px; padding:0 12px; border-right:1px solid var(--stroke); height:100%;}
+  #readout .seg:last-child{border-right:none;}
+  #readout .num{color:var(--amber); transition:color .5s;}
+  #readout .beat{width:8px; height:8px; border-radius:50%; background:var(--text-2); transition:background .5s;}
+  #readout.lit{color:var(--text);}
+  #readout.lit .beat{background:var(--amber); animation:breath 1.6s ease-in-out infinite;}
+  @keyframes breath{0%,100%{opacity:.35; transform:scale(.85);}50%{opacity:1; transform:scale(1.15);}}
+  #readout .lbl{font-size:10.5px; letter-spacing:1px; opacity:.75;}
+
+  /* ============ 模态 ============ */
+  #modalOverlay{
+    position:fixed; inset:0; background:rgba(6,8,11,.62); z-index:100;
+    display:none; align-items:center; justify-content:center;
+  }
+  #modalOverlay.open{display:flex;}
+  .modal-card{
+    background:var(--panel); border:1px solid var(--stroke); border-radius:12px;
+    width:min(520px, 92vw); max-height:82vh; overflow-y:auto; padding:20px 22px; box-shadow:var(--shadow);
+    animation:mIn .18s ease;
+  }
+  @keyframes mIn{from{opacity:0; transform:translateY(10px) scale(.98);}to{opacity:1; transform:none;}}
+  .modal-card h3{font-size:15px; margin-bottom:4px;}
+  .modal-card .m-sub{font-size:12px; color:var(--text-2); margin-bottom:14px;}
+  .m-btns{display:flex; gap:10px; justify-content:flex-end; margin-top:18px;}
+  .m-option{
+    display:block; width:100%; text-align:left; background:var(--bg); border:1px solid var(--stroke);
+    border-radius:8px; padding:11px 13px; margin-bottom:9px; color:var(--text); font-size:13px;
+    transition:border-color .15s, background .15s;
+  }
+  .m-option:hover{border-color:var(--amber);}
+  .m-option.sel{border-color:var(--amber); background:rgba(232,163,61,.08);}
+  .m-option .o-sub{display:block; font-size:11.5px; color:var(--text-2); margin-top:2px;}
+  .confirm-list{font-size:12.5px; color:var(--text-2); margin:10px 0; line-height:2;}
+  .confirm-list .mono{color:var(--text);}
+  .red-confirm{
+    background:rgba(224,85,97,.1); border:1px solid var(--err); border-radius:8px;
+    padding:10px 13px; font-size:12.5px; color:var(--err); margin:10px 0;
+  }
+
+  /* ============ Toast ============ */
+  #toasts{position:fixed; right:18px; bottom:52px; z-index:200; display:flex; flex-direction:column; gap:8px;}
+  .toast{
+    background:var(--panel-hi); border:1px solid var(--amber); color:var(--text);
+    border-radius:8px; padding:9px 14px; font-size:12.5px; box-shadow:var(--shadow);
+    max-width:340px; animation:tIn .2s ease;
+  }
+  @keyframes tIn{from{opacity:0; transform:translateY(8px);}to{opacity:1; transform:none;}}
+  .toast.out{opacity:0; transform:translateY(6px); transition:opacity .25s, transform .25s;}
+  .toast.ok{border-color:var(--ok);}
+  .toast.err{border-color:var(--err);}
+
+  /* 角标 */
+  #protoBadge{
+    position:fixed; right:12px; bottom:8px; z-index:50;
+    background:rgba(22,27,34,.55); color:var(--text-2); border:1px solid var(--stroke);
+    border-radius:6px; padding:2px 10px; font-size:10.5px; backdrop-filter:blur(4px);
+    pointer-events:none; font-family:var(--mono);
+  }
+  html[data-theme="light"] #protoBadge{background:rgba(246,246,242,.6);}
+
+  /* 滚动条 */
+  ::-webkit-scrollbar{width:9px; height:9px;}
+  ::-webkit-scrollbar-thumb{background:var(--stroke); border-radius:99px; border:2px solid var(--bg);}
+  ::-webkit-scrollbar-track{background:transparent;}
+
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation:none !important; transition:none !important;}
+  }
+  @media (max-width: 1080px){
+    .kpi-row{grid-template-columns:repeat(2,1fr);}
+    .settings-wrap{grid-template-columns:1fr;}
+    .set-nav{flex-direction:row; flex-wrap:wrap;}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- 顶栏 -->
+  <header>
+    <span class="logo">OBSIDIAN RAG</span>
+    <span class="sub">本地知识库语义检索 · 操作台</span>
+    <span class="spacer"></span>
+    <span class="chip mono" id="devChip">CUDA RTX 4070 · BGE-M3 · bge-reranker-v2-m3</span>
+    <button class="btn-ghost" id="themeBtn" title="切换深/浅主题">◐ 主题</button>
+  </header>
+
+  <main>
+    <!-- 左栏导航 -->
+    <nav aria-label="主导航">
+      <div class="nav-sep">工作台</div>
+      <button class="nav-item active" data-page="search"><span class="ico">⌕</span>检索</button>
+      <button class="nav-item" data-page="library"><span class="ico">▦</span>库管理<span class="cnt">3</span></button>
+      <button class="nav-item" data-page="index"><span class="ico">↻</span>索引</button>
+      <button class="nav-item" data-page="diag"><span class="ico">✚</span>诊断</button>
+      <div class="nav-sep">系统</div>
+      <button class="nav-item" data-page="settings"><span class="ico">⚙</span>设置</button>
+    </nav>
+
+    <!-- 中央内容 -->
+    <div id="content">
+
+      <!-- ===== 检索页 ===== -->
+      <section class="page active" id="page-search">
+        <h1>语义检索</h1>
+        <p class="desc">混合检索 + 重排 · 查询本地知识库的语义近邻</p>
+        <div class="search-box">
+          <div class="input-wrap">
+            <span class="mag">⌕</span>
+            <input type="text" id="qInput" placeholder="试试：WEMM 页级视觉导航是怎么实现的？" aria-label="检索问题">
+          </div>
+          <select id="topkSel" aria-label="返回条数 Top-K">
+            <option value="3">Top-K 3</option>
+            <option value="5" selected>Top-K 5</option>
+            <option value="8">Top-K 8</option>
+            <option value="10">Top-K 10</option>
+            <option value="15">Top-K 15</option>
+          </select>
+          <button class="btn primary" id="searchBtn">搜索</button>
+        </div>
+        <div class="search-meta">
+          <label class="switch-row" style="padding:0;">
+            <span class="switch"><input type="checkbox" id="expandAllChk"><span class="track"></span></span>
+            <span>展开正文</span>
+          </label>
+          <span id="searchStatus">输入问题，或直接点「搜索」查看预置演示结果</span>
+        </div>
+        <div id="resultList"></div>
+        <div id="emptyHint">尚无结果 · 检索只在本地进行，任何内容都不会离开这台设备</div>
+      </section>
+
+      <!-- ===== 库管理页 ===== -->
+      <section class="page" id="page-library">
+        <h1>库管理</h1>
+        <p class="desc">多库隔离索引 · 每个库独立 collection 与元数据</p>
+        <div style="margin-bottom:14px;">
+          <button class="btn primary" id="addLibBtn">＋ 添加库</button>
+        </div>
+        <div class="lib-grid" id="libGrid"></div>
+      </section>
+
+      <!-- ===== 索引页 ===== -->
+      <section class="page" id="page-index">
+        <h1>索引</h1>
+        <p class="desc">扫描 → 转换 → 嵌入 → 写库 · 一致性自愈与断点簿记</p>
+        <div class="kpi-row">
+          <div class="kpi"><div class="kv">1,894</div><div class="kl">文件数</div></div>
+          <div class="kpi"><div class="kv">8,306</div><div class="kl">检索块数</div></div>
+          <div class="kpi"><div class="kv" id="kpiLast">1:20</div><div class="kl">上次耗时</div></div>
+          <div class="kpi"><div class="kv mono" id="kpiState" style="font-size:15px; padding-top:6px;">● 空闲</div><div class="kl">状态聚合</div></div>
+        </div>
+        <div class="panel">
+          <h2>重建流水线 <span class="tag" id="runModeTag">IDLE</span></h2>
+          <div class="stepper" id="stepper">
+            <div class="step" data-stage="扫描"><div class="dot">1</div><div class="sl">扫描</div></div>
+            <div class="step" data-stage="转换"><div class="dot">2</div><div class="sl">转换</div></div>
+            <div class="step" data-stage="嵌入"><div class="dot">3</div><div class="sl">嵌入</div></div>
+            <div class="step" data-stage="写库"><div class="dot">4</div><div class="sl">写库</div></div>
+            <div class="step" data-stage="完成"><div class="dot">✓</div><div class="sl">完成</div></div>
+          </div>
+          <div class="idx-progress">
+            <span class="pct" id="idxPct">0%</span>
+            <span class="stage" id="idxStage">等待任务</span>
+            <span class="eta" id="idxEta">ETA --:--</span>
+          </div>
+          <div class="bar"><i id="idxBar"></i></div>
+          <div class="idx-btns">
+            <button class="btn" id="incBtn">增量重建</button>
+            <button class="btn" id="fullBtn">全量重建</button>
+            <button class="btn danger" id="stopBtn" hidden>■ 停止</button>
+          </div>
+          <div class="idx-stopnote" id="stopNote" hidden>运行中：停止将在当前文件边界安全收口，已写库的块保留</div>
+        </div>
+      </section>
+
+      <!-- ===== 诊断页 ===== -->
+      <section class="page" id="page-diag">
+        <h1>诊断</h1>
+        <p class="desc">失败溯源 · WEMM 视觉导航 · 近似去重 · 导出/导入</p>
+
+        <div class="panel">
+          <h2>① 失败溯源明细 <span class="tag">7 条</span></h2>
+          <table class="fail">
+            <thead><tr><th style="width:34%">文件路径</th><th>终态</th><th>处置</th><th>指引</th></tr></thead>
+            <tbody id="failBody"></tbody>
+          </table>
+        </div>
+
+        <div class="panel">
+          <h2>② WEMM 页级视觉导航 <span class="tag">wemm_backend</span></h2>
+          <div class="switch-row">
+            <span class="switch"><input type="checkbox" id="wemmToggle"><span class="track"></span></span>
+            <span>启用 WEMM 后端</span>
+            <span class="hint">页向量独立 collection &lt;collection&gt;.wemm · 默认关闭</span>
+            <span class="chip wemm-chip" id="wemmChip">未启用</span>
+          </div>
+          <div style="margin-top:10px;">
+            <button class="btn sm" id="wemmProbeBtn">探测服务</button>
+            <span class="hint" style="margin-left:10px; font-size:11.5px; color:var(--text-2);">探测会在本机检查 wemm_server 进程与显存占用</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>③ 近似去重 <span class="tag">MinHash + LSH · 只读</span></h2>
+          <div id="dedupList"></div>
+        </div>
+
+        <div class="panel">
+          <h2>④ 导出 / 导入</h2>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <button class="btn" id="exportBtn">导出全库快照</button>
+            <button class="btn" id="importBtn">导入快照副本</button>
+            <span class="hint" style="font-size:11.5px; color:var(--text-2);">快照含 meta + Chroma 数据 + 缓存簿记</span>
+          </div>
+          <div class="exp-progress" id="expBarWrap" hidden><i id="expBar"></i></div>
+        </div>
+      </section>
+
+      <!-- ===== 设置页 ===== -->
+      <section class="page" id="page-settings">
+        <h1>设置</h1>
+        <p class="desc">长驻 MCP 进程一律经 config.reload_config() 现读，保存即热生效</p>
+        <div class="settings-wrap">
+          <div class="set-nav" id="setNav">
+            <button class="active" data-group="kb">知识库</button>
+            <button data-group="model">模型</button>
+            <button data-group="pdf">PDF 与云端 OCR</button>
+            <button data-group="retr">检索输出</button>
+            <button data-group="wemm">视觉导航 WEMM</button>
+          </div>
+          <div>
+            <div class="set-group active" data-group="kb">
+              <div class="panel">
+                <h2>知识库</h2>
+                <div class="field"><label>默认库</label>
+                  <select><option>技术笔记</option><option>论文阅读</option><option>会议记录</option></select>
+                </div>
+                <div class="field"><label>Agent 已批准格式（agent_formats）</label>
+                  <label class="checkline"><input type="checkbox" checked>md</label>
+                  <label class="checkline"><input type="checkbox" checked>txt</label>
+                  <label class="checkline"><input type="checkbox">pdf</label>
+                  <label class="checkline"><input type="checkbox">docx</label>
+                </div>
+                <div class="switch-row"><span class="switch"><input type="checkbox" checked><span class="track"></span></span><span>一致性自愈（块数不符自动全量重建）</span></div>
+                <div class="switch-row"><span class="switch"><input type="checkbox" checked><span class="track"></span></span><span>统一终态簿记（不产块文件也落持久化终态）</span></div>
+              </div>
+            </div>
+            <div class="set-group" data-group="model">
+              <div class="panel">
+                <h2>模型</h2>
+                <div class="field"><label>嵌入模型 <span class="reco">BGE-M3 · ✓ 使用中</span></label>
+                  <select><option selected>BGE-M3</option><option>bge-large-zh-v1.5</option><option>text-embedding-3-small</option></select>
+                </div>
+                <div class="field"><label>重排模型 <span class="reco">bge-reranker-v2-m3 · ✓ 使用中</span></label>
+                  <select><option selected>bge-reranker-v2-m3</option><option>关闭重排</option></select>
+                </div>
+                <div class="field"><label>计算设备 <span class="reco">CUDA · ✓ 使用中</span></label>
+                  <select><option selected>CUDA（RTX 4070）</option><option>CPU</option></select>
+                </div>
+              </div>
+            </div>
+            <div class="set-group" data-group="pdf">
+              <div class="panel">
+                <h2>PDF 与云端 OCR</h2>
+                <div class="field"><label>文字层 PDF 后端（pdf_text_backend）<span class="reco">local · ✓ 使用中</span></label>
+                  <select><option selected>local 本地直提</option><option>MinerU 云端（更准的版面/表格）</option></select>
+                </div>
+                <div class="field"><label>扫描件后端（pdf_scan_backend）</label>
+                  <select id="scanBackendSel"><option value="none" selected>none（扫描件落终态待自愈）</option><option value="mineru">MinerU 云端 API（vlm 认字）</option></select>
+                </div>
+                <div class="field"><label>MinerU API Key</label>
+                  <input type="password" id="mineruKey" placeholder="••••••••••••••••" value="demo-key-not-real">
+                </div>
+                <div class="field"><label>云端并行度（mineru_concurrency）</label>
+                  <select class="mono"><option>1</option><option selected>3</option><option>0（最大吞吐）</option></select>
+                </div>
+                <div class="field"><label>限速（mineru_rate_per_minute）</label>
+                  <input type="text" class="mono" value="45">
+                </div>
+              </div>
+            </div>
+            <div class="set-group" data-group="retr">
+              <div class="panel">
+                <h2>检索输出</h2>
+                <div class="field"><label>默认 Top-K</label>
+                  <select><option>3</option><option selected>5</option><option>8</option><option>10</option><option>15</option></select>
+                </div>
+                <div class="switch-row"><span class="switch"><input type="checkbox" checked><span class="track"></span></span><span>显示置信度徽章</span></div>
+                <div class="switch-row"><span class="switch"><input type="checkbox" checked><span class="track"></span></span><span>结果内高亮命中片段</span></div>
+                <div class="switch-row"><span class="switch"><input type="checkbox"><span class="track"></span></span><span>默认展开双链关系（出链/入链）</span></div>
+              </div>
+            </div>
+            <div class="set-group" data-group="wemm">
+              <div class="panel">
+                <h2>视觉导航 WEMM</h2>
+                <div class="switch-row"><span class="switch"><input type="checkbox" id="wemmToggleSet"><span class="track"></span></span><span>wemm_backend 启用<span class="reco">✓ 推荐 16GB+ 显存时使用</span></span></div>
+                <div class="field"><label>页面渲染 DPI</label>
+                  <select class="mono"><option>96</option><option selected>150</option><option>200</option></select>
+                </div>
+                <div class="switch-row"><span class="switch"><input type="checkbox" checked><span class="track"></span></span><span>空闲自动卸载显存</span></div>
+                <div class="switch-row"><span class="switch"><input type="checkbox" checked><span class="track"></span></span><span>失败条目每轮真重试、改档自动重渲染</span></div>
+              </div>
+            </div>
+            <div class="set-foot">
+              <button class="btn primary" id="saveSettingsBtn">保存</button>
+              <button class="btn" id="resetSettingsBtn">还原默认</button>
+              <span class="note">保存后配置热读生效，长驻进程无需重启</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- 底部仪表读数状态带（签名元素） -->
+  <footer id="readout" aria-live="polite">
+    <span class="seg"><span class="beat" aria-hidden="true"></span><span class="lbl">心跳</span></span>
+    <span class="seg"><span class="lbl">阶段</span><span id="roPhase">空闲</span></span>
+    <span class="seg"><span class="lbl">嵌入</span><span class="num" id="roEmbed">0%</span></span>
+    <span class="seg"><span class="lbl">块</span><span class="num" id="roBlocks">8,306/8,306</span></span>
+    <span class="seg"><span class="lbl">用时</span><span class="num" id="roClock">01:20</span></span>
+    <span class="seg"><span class="lbl">ETA</span><span class="num" id="roEta">--:--</span></span>
+    <span class="seg"><span class="num">CUDA</span><span class="lbl">RTX 4070</span></span>
+    <span class="seg"><span class="num">BGE-M3</span><span class="lbl">embed</span></span>
+  </footer>
+</div>
+
+<!-- 右侧详情面板 -->
+<aside id="detail" aria-hidden="true">
+  <div class="d-head">
+    <div class="d-title" id="dTitle">—</div>
+    <div class="d-meta"><span id="dPath" class="mono">—</span><span class="badge mid" id="dScore">—</span></div>
+  </div>
+  <div class="d-body" id="dBody"></div>
+  <div class="d-foot">
+    <button class="btn primary sm" id="dOpenBtn">在 Obsidian 打开</button>
+    <button class="btn sm" id="dCloseBtn">关闭</button>
+  </div>
+</aside>
+
+<!-- 模态 -->
+<div id="modalOverlay"><div class="modal-card" id="modalCard" role="dialog" aria-modal="true"></div></div>
+
+<!-- Toast -->
+<div id="toasts" aria-live="polite"></div>
+
+<!-- 角标 -->
+<div id="protoBadge">交互原型 · 数据为演示假数据</div>
+
+<script>
+"use strict";
+var $ = function(s){ return document.querySelector(s); };
+var $$ = function(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); };
+
+/* ================= 全局状态 ================= */
+var state = {
+  k: 5,
+  expandAll: false,
+  running: false,
+  runTimer: null,
+  wemmOn: false,
+  wemmProbed: false,
+  cloudConsent: false,
+  detailResult: null
+};
+
+/* ================= Toast ================= */
+function toast(msg, type){
+  var box = document.createElement("div");
+  box.className = "toast" + (type ? " " + type : "");
+  box.textContent = msg;
+  $("#toasts").appendChild(box);
+  setTimeout(function(){
+    box.classList.add("out");
+    setTimeout(function(){ if (box.parentNode) box.parentNode.removeChild(box); }, 300);
+  }, 2500);
+}
+
+/* ================= 模态 ================= */
+function openModal(html){
+  $("#modalCard").innerHTML = html;
+  $("#modalOverlay").classList.add("open");
+}
+function closeModal(){ $("#modalOverlay").classList.remove("open"); }
+$("#modalOverlay").addEventListener("click", function(e){
+  if (e.target === this) closeModal();
+});
+
+/* Esc 关闭一切弹层：先模态，再详情面板 */
+document.addEventListener("keydown", function(e){
+  if (e.key === "Escape"){
+    if ($("#modalOverlay").classList.contains("open")) closeModal();
+    else if ($("#detail").classList.contains("open")) closeDetail();
+  }
+});
+
+/* ================= 导航切换 ================= */
+$$(".nav-item").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    $$(".nav-item").forEach(function(b){ b.classList.remove("active"); });
+    btn.classList.add("active");
+    var page = btn.dataset.page;
+    $$(".page").forEach(function(p){ p.classList.remove("active"); });
+    $("#page-" + page).classList.add("active");
+  });
+});
+
+/* ================= 主题切换 ================= */
+$("#themeBtn").addEventListener("click", function(){
+  var html = document.documentElement;
+  var next = html.dataset.theme === "dark" ? "light" : "dark";
+  html.dataset.theme = next;
+  toast(next === "dark" ? "已切换到暗色操作台" : "已切换到浅色纸灰操作台");
+});
+
+/* ================= 底部读数状态带 ================= */
+function fmtClock(sec){
+  var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+}
+function fmtNum(n){ return n.toLocaleString("en-US"); }
+function setReadout(o){
+  var ro = $("#readout");
+  if (o.lit) ro.classList.add("lit"); else ro.classList.remove("lit");
+  $("#roPhase").textContent = o.phase;
+  $("#roEmbed").textContent = o.embed + "%";
+  $("#roBlocks").textContent = fmtNum(o.blocks) + "/8,306";
+  $("#roClock").textContent = o.clock;
+  $("#roEta").textContent = o.eta;
+}
+function idleReadout(){
+  setReadout({ lit:false, phase:"空闲", embed:0, blocks:8306, clock:"01:20", eta:"--:--" });
+}
+idleReadout();
+
+/* ================= 检索页 ================= */
+var RESULTS = [
+  {
+    path: "20-Projects/Obsidian RAG/WEMM 设计.md",
+    score: 0.87,
+    snippet: "页级视觉导航采用独立的页向量 collection，命名为 <mark>&lt;collection&gt;.wemm</mark>，与主文本库物理隔离。页面按可配置的 <mark>DPI 渲染档位</mark>（默认 150）渲染成图后过视觉编码器，页向量携带 xsrc 签名（模型:维度:DPI），改档自动重渲染，upsert 分批、写库成功才落成功 meta。",
+    full: "<p><mark>WEMM 页级视觉导航</mark>的核心是「页」成为一等检索单元：每个 PDF/文档页渲染为图像，经视觉编码器产出页向量，写入独立 collection <mark>&lt;collection&gt;.wemm</mark>，与文本主库互不干扰。</p><p>渲染采用可配置 <mark>DPI 档位</mark>（96/150/200），每条成功条目携带 xsrc=wemm:模型:维度:DPI 签名；后端或档位变更时签名不匹配，自动重渲染覆盖。</p><p>索引侧由 wemm_indexer.py 负责：upsert 分批执行，Chroma 写库成功后才落成功 meta，避免半写状态；失败条目每轮真重试。检索侧 wemm_retriever.py 保证查询零写副作用。服务由全局 Python 运行的 wemm_server.py 承载，懒加载模型、可选空闲卸载显存。</p>",
+    links: { out: ["检索与重排", "MinerU 笔记"], back: ["TASK_LOG"] }
+  },
+  {
+    path: "20-Projects/Obsidian RAG/检索与重排.md",
+    score: 0.74,
+    snippet: "混合检索将向量召回与 BM25 关键词召回两路结果用 <mark>RRF</mark>（Reciprocal Rank Fusion）融合，再交给 <mark>bge-reranker-v2-m3</mark> 精排。RRF 不依赖两路分数的可比性，只看排名，工程上稳定；重排取 Top-K 送交叉编码器…",
+    full: "<p>混合检索 = 向量召回（BGE-M3 稠密向量）+ 关键词召回（BM25），两路结果用 <mark>RRF</mark> 融合：score = Σ 1/(k+rank)，k 通常取 60。</p><p>融合候选送 <mark>bge-reranker-v2-m3</mark> 交叉编码器精排，最终截断为用户请求的 Top-K。重排在 CUDA 上批量打分，RTX 4070 下 50 候选耗时约 80ms。</p><p>GUI 与 MCP 工具共用同一检索入口，保证行为一致；检索路径零写副作用。</p>",
+    links: { out: ["WEMM 设计"], back: ["WEMM 设计", "TODO"] }
+  },
+  {
+    path: "02-Areas/MinerU 笔记.md",
+    score: 0.61,
+    snippet: "<mark>云端 OCR 路由</mark>：classify_extraction 在扫描段分流攒批，线程池只并行网络 I/O，结果回主线程单线程收口。混合型 PDF（任一页无文字层）整本按扫描件路由——宁可诚实空缺，绝不产出半份拼接内容…",
+    full: "<p><mark>云端 OCR</mark> 走 MinerU vlm 认字：滑动窗口限速（默认 45/min）、提交错误三分类重试、断点簿记到 data/extract_cache/mineru_pending.json，中断任务下轮续接不重复提交。</p><p><mark>路由规则</mark>：混合型 PDF 只要有一页无文字层（含「PPT 文字页 + 扫描图」混装课件），整本按扫描件处理；云端开启则整本送 MinerU 产出一份完整 MD，未开启则整本落 scanned 终态待 xsrc 自愈。</p><p>API Key 不进日志：错误消息只含类型与摘要。</p>",
+    links: { out: ["WEMM 设计"], back: ["WEMM 设计", "TASK_LOG"] }
+  },
+  {
+    path: "03-Journals/2026-08-30.md",
+    score: 0.55,
+    snippet: "今天把 WEMM 的 DPI 档位从 96 调到 150，页向量召回明显更稳了，扫描版课件的公式页终于能命中。另外试了 find_duplicates，跑出三组疑似重复笔记，周末清理…",
+    full: "<p>今天把 WEMM 的 <mark>DPI 档位</mark>从 96 调到 150，页向量召回明显更稳，扫描版课件的公式页终于能命中了。显存占用约 2.1GB，空闲卸载开着没问题。</p><p>顺手跑了 find_duplicates：MinHash+LSH 只读，三组疑似重复，都是「先写日记后整理进笔记」造成的，周末统一清理。</p><p>明天计划：给诊断页补失败溯源的处置指引文案。</p>",
+    links: { out: ["WEMM 设计"], back: [] }
+  }
+];
+
+function badgeClass(score){
+  if (score >= 0.75) return "badge hi";
+  if (score >= 0.5) return "badge mid";
+  return "badge low";
+}
+function renderResults(list){
+  var wrap = $("#resultList");
+  wrap.innerHTML = "";
+  $("#emptyHint").style.display = list.length ? "none" : "block";
+  list.forEach(function(r, i){
+    var card = document.createElement("div");
+    card.className = "result" + (state.expandAll ? " expanded" : "");
+    card.setAttribute("tabindex", "0");
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", "检索结果 " + (i + 1) + "，回车展开/收起");
+
+    var linksId = "rlinks-" + i;
+    var linksHtml = r.links ? (
+      '<div class="r-links-wrap" id="' + linksId + '" hidden>' +
+        '<div class="r-links">' +
+          '<div><div class="lk-title">出链 →</div>' +
+            (r.links.out.length ? r.links.out.map(function(n){ return '<a href="javascript:void(0)" data-link="' + n + '">' + n + "</a>"; }).join("") : '<span class="guide">无</span>') +
+          '</div>' +
+          '<div><div class="lk-title">← 入链</div>' +
+            (r.links.back.length ? r.links.back.map(function(n){ return '<a href="javascript:void(0)" data-link="' + n + '">' + n + "</a>"; }).join("") : '<span class="guide">无</span>') +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    ) : "";
+
+    card.innerHTML =
+      '<div class="r-head">' +
+        '<span class="badge ' + badgeClass(r.score) + '">' + r.score.toFixed(2) + "</span>" +
+        '<span class="r-path">' + r.path + "</span>" +
+        '<span class="r-actions">' +
+          '<button class="btn sm" data-act="preview">预览</button>' +
+          '<button class="btn sm" data-act="links">关联</button>' +
+          '<button class="btn sm" data-act="open">打开源文件</button>' +
+        "</span>" +
+      "</div>" +
+      '<div class="r-snippet">' + r.snippet + "</div>" +
+      linksHtml;
+
+    card.addEventListener("click", function(e){
+      if (e.target.closest("button") || e.target.closest("a")) return;
+      card.classList.toggle("expanded");
+    });
+    card.addEventListener("keydown", function(e){
+      if (e.key === "Enter" && !e.target.closest("button")){ e.preventDefault(); card.classList.toggle("expanded"); }
+    });
+
+    card.querySelector('[data-act="preview"]').addEventListener("click", function(e){
+      e.stopPropagation(); openDetail(r);
+    });
+    card.querySelector('[data-act="links"]').addEventListener("click", function(e){
+      e.stopPropagation();
+      var w = card.querySelector(".r-links-wrap");
+      if (!r._linksLoaded){
+        // 首次展开：模拟 300ms 加载后缓存
+        var btn = e.currentTarget;
+        btn.disabled = true; btn.textContent = "加载中…";
+        setTimeout(function(){
+          btn.disabled = false; btn.textContent = "关联";
+          w.hidden = false; r._linksLoaded = true;
+        }, 300);
+      } else {
+        w.hidden = !w.hidden;
+      }
+    });
+    card.querySelector('[data-act="open"]').addEventListener("click", function(e){
+      e.stopPropagation();
+      toast("已在 Obsidian 中打开（原型模拟）", "ok");
+    });
+    if (linksHtml){
+      card.querySelectorAll("a[data-link]").forEach(function(a){
+        a.addEventListener("click", function(e){ e.stopPropagation(); toast("跳转笔记：" + a.dataset.link + "（原型模拟）"); });
+      });
+    }
+    wrap.appendChild(card);
+  });
+}
+
+$("#expandAllChk").addEventListener("change", function(){
+  state.expandAll = this.checked;
+  $$(".result").forEach(function(c){ c.classList.toggle("expanded", state.expandAll); });
+  toast(state.expandAll ? "已默认展开全部正文片段" : "已收起为 3 行预览");
+});
+$("#topkSel").addEventListener("change", function(){
+  state.k = parseInt(this.value, 10);
+  toast("Top-K 已设为 " + state.k + "，下次搜索生效");
+});
+$("#searchBtn").addEventListener("click", doSearch);
+$("#qInput").addEventListener("keydown", function(e){ if (e.key === "Enter") doSearch(); });
+
+function doSearch(){
+  var status = $("#searchStatus");
+  var btn = $("#searchBtn");
+  btn.disabled = true;
+  status.innerHTML = '<span class="spinner" aria-hidden="true"></span>向量召回 + RRF 融合 + 重排中…';
+  $("#resultList").innerHTML = "";
+  $("#emptyHint").style.display = "none";
+  setTimeout(function(){
+    btn.disabled = false;
+    var list = RESULTS.slice(0, state.k);
+    renderResults(list);
+    status.innerHTML = "命中 <span class='mono'>" + list.length + "</span> 条 · 耗时 <span class='mono'>0.42s</span> · 混合检索+RRF+重排";
+    toast("检索完成（原型模拟）", "ok");
+  }, 800);
+}
+
+/* ================= 右侧详情面板 ================= */
+function openDetail(r){
+  state.detailResult = r;
+  $("#dTitle").textContent = r.path.split("/").pop();
+  $("#dPath").textContent = r.path;
+  var b = $("#dScore");
+  b.className = badgeClass(r.score);
+  b.textContent = "置信度 " + r.score.toFixed(2);
+  $("#dBody").innerHTML = r.full;
+  $("#detail").classList.add("open");
+  $("#detail").setAttribute("aria-hidden", "false");
+}
+function closeDetail(){
+  $("#detail").classList.remove("open");
+  $("#detail").setAttribute("aria-hidden", "true");
+}
+$("#dCloseBtn").addEventListener("click", closeDetail);
+$("#dOpenBtn").addEventListener("click", function(){
+  toast("已在 Obsidian 中打开（原型模拟）", "ok");
+});
+
+/* ================= 库管理页 ================= */
+var LIBS = [
+  { name:"技术笔记", path:"D:/Vault/技术笔记", files:"1,284", blocks:"5,731", time:"2026-09-03 21:14" },
+  { name:"论文阅读", path:"D:/Vault/论文阅读", files:"412", blocks:"1,930", time:"2026-09-02 18:40" },
+  { name:"会议记录", path:"D:/Vault/会议记录", files:"198", blocks:"645", time:"2026-09-01 09:02" }
+];
+function renderLibs(){
+  var grid = $("#libGrid");
+  grid.innerHTML = "";
+  LIBS.forEach(function(lib, i){
+    var card = document.createElement("div");
+    card.className = "lib-card";
+    card.innerHTML =
+      '<div class="lname">▦ ' + lib.name + (i === 0 ? '<span class="reco">✓ 默认库</span>' : "") + "</div>" +
+      '<div class="lpath">' + lib.path + "</div>" +
+      '<div class="lstats"><span>文件 <b>' + lib.files + "</b></span><span>块 <b>" + lib.blocks + "</b></span></div>" +
+      '<div class="ltime">最近索引 ' + lib.time + "</div>" +
+      '<div class="lbtns">' +
+        '<button class="btn sm" data-act="cfg">配置</button>' +
+        '<button class="btn sm" data-act="folder">打开文件夹</button>' +
+        '<button class="btn sm" data-act="rm">移除</button>' +
+      "</div>";
+    card.querySelector('[data-act="cfg"]').addEventListener("click", function(){ openLibConfig(lib); });
+    card.querySelector('[data-act="folder"]').addEventListener("click", function(){
+      toast("已在资源管理器打开 " + lib.path + "（原型模拟）", "ok");
+    });
+    card.querySelector('[data-act="rm"]').addEventListener("click", function(){ openLibRemove(lib); });
+    grid.appendChild(card);
+  });
+}
+renderLibs();
+
+$("#addLibBtn").addEventListener("click", function(){
+  openModal(
+    "<h3>添加库</h3><p class='m-sub'>新增一个独立 collection，路径下的支持格式文件将被扫描入库</p>" +
+    "<div class='field'><label>库名称</label><input type='text' id='mLibName' placeholder='例如：项目归档'></div>" +
+    "<div class='field'><label>本地路径</label><input type='text' id='mLibPath' placeholder='D:/Vault/项目归档' class='mono'></div>" +
+    "<div class='m-btns'><button class='btn' id='mCancel'>取消</button><button class='btn primary' id='mSubmit'>添加</button></div>"
+  );
+  $("#mCancel").addEventListener("click", closeModal);
+  $("#mSubmit").addEventListener("click", function(){
+    var name = $("#mLibName").value.trim();
+    var path = $("#mLibPath").value.trim();
+    if (!name || !path){ toast("库名称与路径不能为空", "err"); return; }
+    closeModal();
+    toast("已提交添加库「" + name + "」（原型模拟，仅 toast）", "ok");
+  });
+});
+
+function openLibConfig(lib){
+  openModal(
+    "<h3>配置 · " + lib.name + "</h3><p class='m-sub mono'>" + lib.path + "</p>" +
+    "<div class='field'><label>索引格式</label>" +
+      "<label class='checkline'><input type='checkbox' checked>md</label>" +
+      "<label class='checkline'><input type='checkbox' checked>pdf</label>" +
+      "<label class='checkline'><input type='checkbox' checked>docx</label>" +
+      "<label class='checkline'><input type='checkbox' checked>txt</label>" +
+    "</div>" +
+    "<div class='switch-row'><span class='switch'><input type='checkbox' id='mAgentGate' checked><span class='track'></span></span><span>Agent 门禁（agent_allowed）</span></div>" +
+    "<div class='notice-warn' id='mGateWarn' hidden>⚠ AI Agent 将无法自动索引该库的二进制文件，未授权文件会被冻结（保留条目与块）</div>" +
+    "<div class='m-btns'><button class='btn' id='mCancel'>取消</button><button class='btn primary' id='mSave'>保存</button></div>"
+  );
+  var gate = $("#mAgentGate");
+  gate.addEventListener("change", function(){
+    $("#mGateWarn").hidden = gate.checked;
+  });
+  $("#mCancel").addEventListener("click", closeModal);
+  $("#mSave").addEventListener("click", function(){
+    closeModal();
+    toast("已保存「" + lib.name + "」的库配置（原型模拟）", "ok");
+  });
+}
+
+function openLibRemove(lib){
+  var chosen = null; // 'keep' | 'purge'
+  openModal(
+    "<h3>移除库 · " + lib.name + "</h3><p class='m-sub'>请选择移除方式（两种方式互斥，源文件都不会被删除）</p>" +
+    "<button class='m-option' id='optKeep'><b>仅注销</b><span class='o-sub'>从索引系统注销该库，保留 Chroma 数据与缓存，可随时重新挂载</span></button>" +
+    "<button class='m-option' id='optPurge'><b>注销并删除数据</b><span class='o-sub'>注销并删除该库的索引数据、嵌入缓存与 meta（约 " + lib.blocks + " 块），不可恢复</span></button>" +
+    "<label class='checkline' id='confirmRow' style='visibility:hidden;'><input type='checkbox' id='confirmChk'>我确认不可恢复</label>" +
+    "<div class='m-btns'><button class='btn' id='mCancel'>取消</button><button class='btn' id='mConfirm' disabled>确认移除</button></div>"
+  );
+  var optKeep = $("#optKeep"), optPurge = $("#optPurge");
+  var confirmBtn = $("#mConfirm"), confirmChk = $("#confirmChk"), confirmRow = $("#confirmRow");
+  function refresh(){
+    optKeep.classList.toggle("sel", chosen === "keep");
+    optPurge.classList.toggle("sel", chosen === "purge");
+    confirmRow.style.visibility = chosen === "purge" ? "visible" : "hidden";
+    if (chosen !== "purge"){ confirmChk.checked = false; confirmBtn.classList.remove("danger"); }
+    else confirmBtn.classList.add("danger");
+    confirmBtn.disabled = chosen === null || (chosen === "purge" && !confirmChk.checked);
+  }
+  optKeep.addEventListener("click", function(){ chosen = "keep"; refresh(); });
+  optPurge.addEventListener("click", function(){ chosen = "purge"; refresh(); });
+  confirmChk.addEventListener("change", refresh);
+  $("#mCancel").addEventListener("click", closeModal);
+  confirmBtn.addEventListener("click", function(){
+    closeModal();
+    toast(chosen === "keep" ? "已注销「" + lib.name + "」，数据保留（原型模拟）" : "已注销并删除「" + lib.name + "」的索引数据（原型模拟）", "ok");
+  });
+}
+
+/* ================= 索引页 ================= */
+var STAGES = [
+  { name:"扫描", from:0.00, to:0.14 },
+  { name:"转换", from:0.14, to:0.32 },
+  { name:"嵌入", from:0.32, to:0.80 },
+  { name:"写库", from:0.80, to:0.95 },
+  { name:"完成", from:0.95, to:1.00 }
+];
+var TOTAL_BLOCKS = 8306;
+var RUN_MS = 8000;
+
+function setStepper(pct){
+  var steps = $$("#stepper .step");
+  steps.forEach(function(st, i){
+    var sg = STAGES[i];
+    st.classList.remove("active", "done");
+    if (pct / 100 >= sg.to) st.classList.add("done");
+    else if (pct / 100 >= sg.from) st.classList.add("active");
+  });
+}
+function stageAt(frac){
+  for (var i = 0; i < STAGES.length; i++){
+    if (frac < STAGES[i].to || i === STAGES.length - 1) return STAGES[i].name;
+  }
+  return "完成";
+}
+
+function startRun(mode){
+  if (state.running) return;
+  state.running = true;
+  $("#runModeTag").textContent = mode === "full" ? "FULL" : "INCR";
+  $("#incBtn").disabled = true;
+  $("#fullBtn").disabled = true;
+  $("#stopBtn").hidden = false;
+  $("#stopNote").hidden = false;
+  $("#kpiState").textContent = "● " + (mode === "full" ? "全量重建中" : "增量重建中");
+  toast(mode === "full" ? "全量重建已启动（原型模拟 8 秒）" : "增量重建已启动（原型模拟 8 秒）");
+
+  var t0 = Date.now();
+  state.runTimer = setInterval(function(){
+    var elapsed = Date.now() - t0;
+    var frac = Math.min(elapsed / RUN_MS, 1);
+    var pct = Math.floor(frac * 100);
+    var stage = stageAt(frac);
+    var embedPct = frac < 0.32 ? 0 : Math.min(Math.round((frac - 0.32) / 0.48 * 100), 100);
+    var blocks = Math.round(TOTAL_BLOCKS * frac);
+    var remain = Math.max(0, Math.ceil((RUN_MS - elapsed) / 1000));
+
+    setStepper(pct);
+    $("#idxPct").textContent = pct + "%";
+    $("#idxStage").textContent = stage === "完成" ? "收口写 meta" : stage + "中";
+    $("#idxEta").textContent = "ETA " + fmtClock(remain);
+    $("#idxBar").style.width = pct + "%";
+    setReadout({
+      lit:true, phase:stage, embed:embedPct, blocks:blocks,
+      clock:fmtClock(elapsed / 1000), eta:fmtClock(remain)
+    });
+
+    if (frac >= 1){
+      clearInterval(state.runTimer);
+      state.runTimer = null;
+      state.running = false;
+      $("#idxPct").textContent = "100%";
+      $("#idxStage").textContent = "全部完成";
+      $("#idxEta").textContent = "ETA 00:00";
+      setStepper(100);
+      setReadout({ lit:true, phase:"完成", embed:100, blocks:TOTAL_BLOCKS, clock:"00:08", eta:"00:00" });
+      $("#incBtn").disabled = false;
+      $("#fullBtn").disabled = false;
+      $("#stopBtn").hidden = true;
+      $("#stopNote").hidden = true;
+      $("#runModeTag").textContent = "IDLE";
+      $("#kpiState").textContent = "● 空闲";
+      $("#kpiLast").textContent = "0:08";
+      toast((mode === "full" ? "全量" : "增量") + "重建完成（原型模拟）", "ok");
+      setTimeout(function(){
+        if (!state.running) idleReadout();
+      }, 2500);
+    }
+  }, 100);
+}
+
+$("#incBtn").addEventListener("click", function(){ startRun("incr"); });
+$("#fullBtn").addEventListener("click", function(){
+  openModal(
+    "<h3 style='color:var(--err);'>⚠ 全量重建确认</h3>" +
+    "<p class='m-sub'>该操作将丢弃现有向量，对以下库整体重新嵌入：</p>" +
+    "<div class='confirm-list'>" +
+      "· <span class='mono'>技术笔记</span> — 1,284 文件 / 5,731 块<br>" +
+      "· <span class='mono'>论文阅读</span> — 412 文件 / 1,930 块<br>" +
+      "· <span class='mono'>会议记录</span> — 198 文件 / 645 块" +
+    "</div>" +
+    "<div class='red-confirm'>共约 <b class='mono'>8,306</b> 块，预计耗时 <b class='mono'>3–5 分钟</b>。重建期间<b>检索可用性将下降</b>（部分块暂时不可召回），完成后自动恢复。</div>" +
+    "<div class='m-btns'><button class='btn' id='mCancel'>取消</button><button class='btn danger' id='mGo'>确认全量重建</button></div>"
+  );
+  $("#mCancel").addEventListener("click", closeModal);
+  $("#mGo").addEventListener("click", function(){
+    closeModal();
+    startRun("full");
+  });
+});
+$("#stopBtn").addEventListener("click", function(){
+  if (state.runTimer){ clearInterval(state.runTimer); state.runTimer = null; }
+  state.running = false;
+  $$("#stepper .step").forEach(function(s){ s.classList.remove("active", "done"); });
+  $("#idxPct").textContent = "0%";
+  $("#idxStage").textContent = "已停止 · 等待任务";
+  $("#idxEta").textContent = "ETA --:--";
+  $("#idxBar").style.width = "0%";
+  $("#incBtn").disabled = false;
+  $("#fullBtn").disabled = false;
+  $("#stopBtn").hidden = true;
+  $("#stopNote").hidden = true;
+  $("#runModeTag").textContent = "IDLE";
+  $("#kpiState").textContent = "● 空闲";
+  idleReadout();
+  toast("已停止，进度将在当前文件边界安全收口（原型模拟）", "err");
+});
+
+/* ================= 诊断页 ================= */
+var FAILS = [
+  { p:"论文阅读/附扫描件/ICLR2026_review.pdf", st:"scanned", cls:"st-scanned", disp:"will_retry", g:"整本无文字层，已攒批等待 MinerU 云端；保持联网后自动重试" },
+  { p:"论文阅读/附扫描件/NeurIPS2025_paper.pdf", st:"scanned", cls:"st-scanned", disp:"will_retry", g:"同上，随批次提交，断点簿记不重复提交" },
+  { p:"会议记录/扫描件/白板-2026-08-12.pdf", st:"scanned", cls:"st-scanned", disp:"will_retry", g:"混合型 PDF 整本路由为扫描件，等云端批次" },
+  { p:"技术笔记/附件/损坏文档.docx", st:"unreadable", cls:"st-unreadable", disp:"terminal", g:"文件损坏或加密，无法解析；请修复源文件后重建该库" },
+  { p:"技术笔记/模板/空模板.md", st:"empty", cls:"st-empty", disp:"terminal", g:"无正文内容，已落 empty 终态，不会重复扫描" },
+  { p:"会议记录/旧归档/empty-notes.txt", st:"empty", cls:"st-empty", disp:"terminal", g:"空文件，同上" },
+  { p:"论文阅读/组会/周报-2026-07.docx", st:"extract-failed", cls:"st-extract", disp:"will_retry", g:"提取器异常，下一轮自动重试；连续失败请检查文件格式" }
+];
+(function renderFails(){
+  var tb = $("#failBody");
+  FAILS.forEach(function(f){
+    var tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td class='fpath'>" + f.p + "</td>" +
+      "<td><span class='" + f.cls + " mono'>" + f.st + "</span></td>" +
+      "<td class='mono' style='font-size:11px;'>" + f.disp + "</td>" +
+      "<td class='guide'>" + f.g + "</td>";
+    tb.appendChild(tr);
+  });
+})();
+
+/* WEMM 探测 */
+function syncWemmUI(){
+  $("#wemmToggle").checked = state.wemmOn;
+  $("#wemmToggleSet").checked = state.wemmOn;
+  var chip = $("#wemmChip");
+  if (!state.wemmOn){ chip.className = "chip wemm-chip"; chip.textContent = "未启用"; }
+  else { chip.className = "chip wemm-chip amber"; chip.textContent = "已启用 · 未探测"; }
+}
+$("#wemmToggle").addEventListener("change", function(){
+  state.wemmOn = this.checked; state.wemmProbed = false;
+  syncWemmUI();
+  toast(state.wemmOn ? "WEMM 后端已开启，索引时将渲染页向量" : "WEMM 后端已关闭");
+});
+$("#wemmToggleSet").addEventListener("change", function(){
+  state.wemmOn = this.checked; state.wemmProbed = false;
+  syncWemmUI();
+  toast(state.wemmOn ? "WEMM 后端已开启" : "WEMM 后端已关闭");
+});
+$("#wemmProbeBtn").addEventListener("click", function(){
+  var btn = this, chip = $("#wemmChip");
+  btn.disabled = true; btn.textContent = "探测中…";
+  setTimeout(function(){
+    btn.disabled = false; btn.textContent = "探测服务";
+    state.wemmProbed = true;
+    if (state.wemmOn){
+      chip.className = "chip wemm-chip ok";
+      chip.textContent = "已加载 · VRAM 2.1GB";
+      toast("WEMM 服务探测成功（原型模拟）", "ok");
+    } else {
+      chip.className = "chip wemm-chip err";
+      chip.textContent = "服务未运行";
+      toast("WEMM 服务未运行：请先在设置或本面板开启后端（原型模拟）", "err");
+    }
+  }, 900);
+});
+syncWemmUI();
+
+/* 近似去重 */
+var DEDUPS = [
+  { a:"技术笔记/部署/Obsidian RAG 部署.md", b:"20-Projects/Obsidian RAG/部署手册.md", sim:"0.91" },
+  { a:"论文阅读/RAG 综述笔记.md", b:"论文阅读/Retrieval-Augmented Survey.md", sim:"0.87" },
+  { a:"会议记录/2026-08-19 周会.md", b:"会议记录/周会纪要-0819.md", sim:"0.83" }
+];
+(function renderDedup(){
+  var wrap = $("#dedupList");
+  DEDUPS.forEach(function(d){
+    var row = document.createElement("div");
+    row.className = "dedup-pair";
+    row.innerHTML =
+      '<div class="paths"><div class="p">' + d.a + '</div><div class="p">' + d.b + '</div></div>' +
+      '<span class="sim">相似度 ' + d.sim + '</span>' +
+      '<button class="btn sm" data-act="diff">查看差异</button>';
+    row.querySelector('[data-act="diff"]').addEventListener("click", function(){
+      toast("已打开差异视图（原型模拟）· 相似度 " + d.sim);
+    });
+    wrap.appendChild(row);
+  });
+})();
+
+/* 导出/导入 */
+function fakeTransfer(btn, label){
+  if (btn.disabled) return;
+  btn.disabled = true;
+  var wrap = $("#expBarWrap"), bar = $("#expBar");
+  wrap.hidden = false;
+  bar.style.transition = "none"; bar.style.width = "0%";
+  requestAnimationFrame(function(){
+    requestAnimationFrame(function(){
+      bar.style.transition = "width 2s linear";
+      bar.style.width = "100%";
+    });
+  });
+  setTimeout(function(){
+    btn.disabled = false;
+    wrap.hidden = true;
+    toast(label + "完成（原型模拟）", "ok");
+  }, 2100);
+}
+$("#exportBtn").addEventListener("click", function(){ fakeTransfer(this, "导出全库快照"); });
+$("#importBtn").addEventListener("click", function(){ fakeTransfer(this, "导入快照副本"); });
+
+/* ================= 设置页 ================= */
+$$("#setNav button").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    $$("#setNav button").forEach(function(b){ b.classList.remove("active"); });
+    btn.classList.add("active");
+    $$(".set-group").forEach(function(g){ g.classList.toggle("active", g.dataset.group === btn.dataset.group); });
+  });
+});
+$("#saveSettingsBtn").addEventListener("click", function(){
+  toast("已保存，配置已热读生效（原型模拟）", "ok");
+});
+$("#resetSettingsBtn").addEventListener("click", function(){
+  toast("已还原默认配置（原型模拟）");
+});
+
+/* PDF 扫描后端 → MinerU 云端：必须先弹同意弹窗 */
+(function(){
+  var sel = $("#scanBackendSel");
+  var prev = sel.value;
+  sel.addEventListener("change", function(){
+    if (sel.value === "mineru" && !state.cloudConsent){
+      sel.value = prev; // 先回退，同意后再生效
+      openModal(
+        "<h3>⚠ 启用 MinerU 云端 OCR 前请确认</h3>" +
+        "<div class='red-confirm'>启用后，<b>原始文件（含扫描页图像）将被上传至 MinerU 第三方云端 API</b> 进行 vlm 认字处理。请确认这些内容不含敏感或涉密信息。API Key 仅用于鉴权、不会写入日志。</div>" +
+        "<p class='m-sub'>扫描段将分流攒批并行提交（限速 45/min），断点簿记、中断可续接。</p>" +
+        "<div class='m-btns'><button class='btn' id='mNo'>取消</button><button class='btn primary' id='mYes'>同意并启用</button></div>"
+      );
+      $("#mNo").addEventListener("click", closeModal);
+      $("#mYes").addEventListener("click", function(){
+        state.cloudConsent = true;
+        sel.value = "mineru";
+        prev = "mineru";
+        closeModal();
+        toast("已启用 MinerU 云端 OCR 后端（原型模拟）", "ok");
+      });
+    } else {
+      prev = sel.value;
+      toast(sel.value === "mineru" ? "扫描后端：MinerU 云端" : "扫描后端：none（扫描件落终态待自愈）");
+    }
+  });
+})();
+</script>
+</body>
+</html>

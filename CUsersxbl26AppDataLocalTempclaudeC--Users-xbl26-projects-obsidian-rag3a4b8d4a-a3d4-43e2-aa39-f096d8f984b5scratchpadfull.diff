@@ -1,0 +1,847 @@
+diff --git a/extractors.py b/extractors.py
+index 171a7e1..555b3d0 100644
+--- a/extractors.py
++++ b/extractors.py
+@@ -377,8 +377,17 @@ def _extract_pdf(path, backend=None):
+             _warn_once(f"pdf-conv:{e.__class__.__name__}",
+                        f"PDF 转 Markdown 失败（按提取失败处理）：{e}")
+             return None, "extract-failed", "local"
++    except Exception as e:
++        # 外层兜底：page_count / 逐页 get_text / OCR 路由这几段一旦抛异常，
++        # 必须折叠成终态，绝不外抛（模块契约 + AGENTS.md 架构红线 1）。
++        _warn_once(f"pdf-scan:{e.__class__.__name__}",
++                   f"PDF 逐页扫描/路由异常（按提取失败处理）：{e}")
++        return None, "extract-failed", "local"
+     finally:
+-        doc.close()
++        try:
++            doc.close()
++        except Exception:
++            pass
+     if isinstance(out, str):
+         md = out
+     elif isinstance(out, list):
+@@ -487,9 +496,22 @@ def _preview_job(q, path_str, backend=None):
+ 
+     独立进程彻底绕开 GIL——重转换期间 UI 线程零争抢；
+     超时/取消由父进程 terminate() 即时强杀，无残留状态可担心。
++
++    缓存隔离：预览全程用一次性临时缓存目录，读写都不碰生产缓存
++    （data/extract_cache）。否则试验台里手选 mineru-cloud 的产物会写进生产缓存，
++    之后即使全局 pdf_scan_backend=none，正式索引也会在查缓存那步直接命中这份
++    云端 OCR 产物、跳过 backend=none 本该走的"跳过"分支——一次随手预览变成了
++    正式索引里不可追溯、不可撤销的既成事实。读也要隔离：预览的意图是"看这次
++    用这个后端会提取出什么"，读到别的后端产出的历史缓存同样会误导用户。
+     """
++    import tempfile
++    prev = _cache_dir  # 直接读模块全局：None（=用默认目录）也能原样还原
+     try:
+-        info = extract_preview(Path(path_str), backend=backend)
++        with tempfile.TemporaryDirectory(prefix="extract_preview_") as tmp:
++            set_cache_dir(tmp)
++            info = extract_preview(Path(path_str), backend=backend)
+         q.put({"ok": True, "info": info})
+     except Exception as e:
+         q.put({"ok": False, "error": f"{e.__class__.__name__}: {e}"})
++    finally:
++        set_cache_dir(prev)
+diff --git a/gui/store.py b/gui/store.py
+index 84e98ac..8908da0 100644
+--- a/gui/store.py
++++ b/gui/store.py
+@@ -151,7 +151,9 @@ def heartbeat_state(progress):
+ 
+ # 提取失败（xfail 终态）的展示文案：reason → (短标签, 处置指引)
+ ISSUE_TEXT = {
+-    "scanned": ("扫描件 PDF", "暂不支持 OCR，计划末轮接入；如需检索请使用文字层版本"),
++    "scanned": ("扫描件 PDF",
++                "如已在设置中启用 pdf_scan_backend（云端 OCR），下一轮索引会自动重试；"
++                "未启用则请到设置中开启，或改用文字层版本"),
+     "unreadable": ("不可读", "文件被占用/权限不足，解除后重新索引自动重试"),
+     "extract-failed": ("提取失败", "文件可能损坏或加密，修复源文件后重建"),
+     "empty": ("空文件", "无正文内容，补全内容后自动入索引"),
+diff --git a/gui/widgets.py b/gui/widgets.py
+index 8f80e45..97f7fd5 100644
+--- a/gui/widgets.py
++++ b/gui/widgets.py
+@@ -852,6 +852,7 @@ class SettingsDialog:
+         self._status = ft.Text("", size=12, color=colors["warning"],
+                                font_family=FONT_UI, visible=False, expand=True)
+         self._dlg = None
++        self._page = None
+         self._build()
+ 
+     # ---- 构建 ----
+@@ -913,13 +914,79 @@ class SettingsDialog:
+ 
+     def open(self, page):
+         self.show_status("", None)
++        self._page = page
+         page.show_dialog(self._dlg)
+ 
+     def _save(self, e):
+-        import config_editor as ce
++        from config import CFG
+         updates = {}
+         for key, (inp, kind) in self._fields.items():
+             updates[key] = (kind, inp.value)
++        # 从"非云端"切到 mineru-cloud = 库里全部存量扫描件都会在下次索引时被
++        # 批量上传到第三方，属于不可撤销的外传决定，必须先取得明示同意。
++        # 本来就是 mineru-cloud 时改别的字段不再打扰用户。
++        new_raw = updates.get("pdf_scan_backend")
++        new_val = str((new_raw[1] if new_raw else "") or "").strip().lower()
++        cur_val = str(CFG.get("pdf_scan_backend") or "").strip().lower()
++        if new_val == "mineru-cloud" and cur_val != "mineru-cloud":
++            self._confirm_cloud_backend(updates)
++            return
++        self._apply_updates(updates)
++
++    def _confirm_cloud_backend(self, updates):
++        """启用云端 OCR 后端前的二次确认框。"""
++        c = self._cols
++        dlg = ft.AlertDialog(
++            modal=True,
++            title=ft.Text("确认启用云端 OCR", size=16, weight=ft.FontWeight.W_600,
++                          font_family=FONT_UI),
++            content=ft.Text(
++                "开启后，扫描件 PDF 的原始文件会被上传至第三方服务 MinerU"
++                "（mineru.net）进行处理；\n"
++                "库中已有的扫描件也会在下次索引时被自动批量上传。\n"
++                "请确认知识库中没有你不希望上传的敏感扫描件。",
++                size=13, font_family=FONT_UI, height=1.6, color=c["t2"]),
++            actions=[
++                ft.TextButton(
++                    "取消",
++                    on_click=lambda _e: self._cancel_cloud_backend(dlg)),
++                ft.FilledButton(
++                    "确认启用",
++                    style=ft.ButtonStyle(
++                        bgcolor=c["accent"], color=c["on_accent"],
++                        shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
++                        text_style=ft.TextStyle(font_family=FONT_UI,
++                                                weight=ft.FontWeight.W_600)),
++                    on_click=lambda _e: self._confirmed_apply(dlg, updates),
++                ),
++            ],
++            actions_alignment=ft.MainAxisAlignment.END,
++            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
++        )
++        try:
++            if self._page is not None:
++                self._page.show_dialog(dlg)
++        except Exception:
++            pass  # 冒烟/无窗口环境：不真实挂载
++
++    @staticmethod
++    def _close_confirm(dlg):
++        try:
++            dlg.open = False
++            dlg.update()
++        except (RuntimeError, AttributeError):
++            pass
++
++    def _cancel_cloud_backend(self, dlg):
++        self._close_confirm(dlg)
++        self.show_status("已取消（未保存）", None)
++
++    def _confirmed_apply(self, dlg, updates):
++        self._close_confirm(dlg)
++        self._apply_updates(updates)
++
++    def _apply_updates(self, updates):
++        import config_editor as ce
+         errors = ce.apply_updates(updates)
+         if errors:
+             first = next(iter(errors))
+@@ -1476,7 +1543,8 @@ class LibraryManagerDialog:
+                     color=colors["t2"], font_family=FONT_UI),
+             fmt_row,
+             ft.Text("AI Agent 权限（关 = 非文本格式仅由你手动索引入库；"
+-                    "开 = 一次授权长期有效，取消勾选即收回；扫描件 PDF 暂不支持 OCR）",
++                    "开 = 一次授权长期有效，取消勾选即收回；"
++                    "扫描件 PDF 的 OCR 处理取决于设置中的 pdf_scan_backend）",
+                     size=11, color=colors["t4"], font_family=FONT_UI, height=1.4),
+             self._agent_switch,
+         ], spacing=6))
+@@ -1675,6 +1743,7 @@ class ExtractLabDialog:
+         self._stop = threading.Event()
+         self._t0 = 0.0
+         self._proc = None
++        self._run_id = 0  # 自增运行代号：轮询线程据此认领"这是不是我那一轮"
+ 
+     # ---- 打开 / 构建 ----
+ 
+@@ -1804,7 +1873,8 @@ class ExtractLabDialog:
+         return sel
+ 
+     def _hint_text(self):
+-        base = "与索引用同一条提取管线（含缓存）；预览不写入索引。"
++        base = ("与索引用同一条提取逻辑；预览使用独立临时缓存，"
++                "不写入/读取生产缓存，也不写入索引。")
+         tail = {"none": "当前后端：本地直提——扫描件将被跳过并说明原因。",
+                 "mineru-cloud": "当前后端：MinerU 云端——每个扫描件可能需要数十秒。",
+                 "mineru-local": "本地部署属 R3b 尚未支持，扫描件将跳过。",
+@@ -1866,12 +1936,71 @@ class ExtractLabDialog:
+     def _run(self, _e=None):
+         if self._busy or not self._file_path:
+             return  # 防重入：进行中/未选文件一律忽略
++        # 云端后端 = 真实文件将离开本机上传第三方，必须先取得用户明示同意。
++        # 此处尚未改动 _busy / 按钮状态，取消分支无需复位任何东西。
++        if self._effective_backend() == "mineru-cloud":
++            self._confirm_cloud()
++            return
++        self._start_extraction()
++
++    def _confirm_cloud(self):
++        """云端 OCR 上传前的二次确认框（确认后才真正启动提取）。"""
++        c = self._cols
++        dlg = ft.AlertDialog(
++            modal=True,
++            title=ft.Text("确认上传到云端", size=16, weight=ft.FontWeight.W_600,
++                          font_family=FONT_UI),
++            content=ft.Text(
++                "该文件将被上传至第三方服务 MinerU（mineru.net）进行 OCR 识别。\n"
++                "上传的是原始文件本身，请确认它不含你不希望外传的敏感内容。\n"
++                "是否继续？",
++                size=13, font_family=FONT_UI, height=1.6, color=c["t2"]),
++            actions=[
++                ft.TextButton("取消", on_click=lambda _e: self._close_confirm(dlg)),
++                ft.FilledButton(
++                    "确认上传并提取",
++                    style=ft.ButtonStyle(
++                        bgcolor=c["accent"], color=c["on_accent"],
++                        shape=ft.RoundedRectangleBorder(radius=SIZE["radius_control"]),
++                        text_style=ft.TextStyle(font_family=FONT_UI,
++                                                weight=ft.FontWeight.W_600)),
++                    on_click=lambda _e: self._confirmed_start(dlg),
++                ),
++            ],
++            actions_alignment=ft.MainAxisAlignment.END,
++            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
++        )
++        try:
++            if self._page is not None:
++                self._page.show_dialog(dlg)
++        except Exception:
++            pass  # 冒烟/无窗口环境：不真实挂载
++
++    @staticmethod
++    def _close_confirm(dlg):
++        try:
++            dlg.open = False
++            dlg.update()
++        except (RuntimeError, AttributeError):
++            pass
++
++    def _confirmed_start(self, dlg):
++        self._close_confirm(dlg)
++        self._start_extraction()
++
++    def _start_extraction(self):
++        """真正启动子进程提取（"直接开始"与"确认后开始"共用同一条路径）。"""
+         import multiprocessing as mp
+         self._busy = True
+         self._btn_run.disabled = True
+         self._btn_run.content = "提取中…"
+         self._btn_pick.disabled = True  # 运行中锁定文件选择，防状态错乱
+-        self._stop.clear()
++        # 每一轮 run 发一个自增代号 + 一个全新的取消事件：轮询线程只认自己那一轮，
++        # 关闭对话框后快速重开再点提取，旧线程不会误杀新进程、不会串改新 UI 状态。
++        self._run_id += 1
++        run_id = self._run_id
++        stop_event = threading.Event()
++        self._stop = stop_event
+         self._t0 = time.monotonic()
+         backend = self._dd_backend.value
+         budget = self._budget_for(backend)
+@@ -1882,13 +2011,15 @@ class ExtractLabDialog:
+ 
+         q = mp.Queue()
+         from extractors import _preview_job
+-        self._proc = mp.Process(target=_preview_job,
+-                                args=(q, str(self._file_path),
+-                                      None if backend == "auto" else backend),
+-                                daemon=True)
+-        self._proc.start()
+-        threading.Thread(target=self._poll, args=(q, budget), daemon=True,
+-                         name="extract-lab-poll").start()
++        proc = mp.Process(target=_preview_job,
++                          args=(q, str(self._file_path),
++                                None if backend == "auto" else backend),
++                          daemon=True)
++        self._proc = proc
++        proc.start()
++        threading.Thread(target=self._poll,
++                         args=(q, budget, run_id, proc, stop_event),
++                         daemon=True, name="extract-lab-poll").start()
+         self._safe_update(self._btn_run, self._btn_pick,
+                           self._live_row, self._chips)
+ 
+@@ -1896,8 +2027,12 @@ class ExtractLabDialog:
+         return (f"⏱ {time.monotonic() - self._t0:.0f}s 运行中"
+                 f" · 超时预算 ~{int(budget)}s")
+ 
+-    def _poll(self, q, budget):
+-        """轮询子进程结果 + 秒表心跳；超时/取消即 terminate 强杀。"""
++    def _poll(self, q, budget, run_id, proc, stop_event):
++        """轮询子进程结果 + 秒表心跳；超时/取消即 terminate 强杀。
++
++        proc / stop_event / run_id 一律走参数，绝不事后从 self.* 读取——
++        那些共享属性随时可能已被下一轮 run 覆盖（误杀新进程 + 串改新 UI 状态）。
++        """
+         import queue as _q
+         deadline = time.monotonic() + max(30.0, budget) + 15  # 宽限 15s 给下载收尾
+         payload = None
+@@ -1911,7 +2046,7 @@ class ExtractLabDialog:
+             except Exception as e:
+                 payload = {"ok": False, "error": f"queue:{e.__class__.__name__}"}
+                 break
+-            if self._stop.is_set():
++            if stop_event.is_set():
+                 outcome = "cancelled"
+                 break
+             if time.monotonic() > deadline:
+@@ -1922,16 +2057,19 @@ class ExtractLabDialog:
+                 self._live_text.update()
+             except RuntimeError:
+                 return  # 页面销毁：随 daemon 进程退出
+-        proc = getattr(self, "_proc", None)
++        # 先清理"自己那一轮"的子进程——无论这一轮是否已被新一轮取代，
++        # 这个进程都只有本线程持有引用，不清理就成孤儿。
+         if proc is not None and proc.is_alive():
+             try:
+                 proc.terminate()
+                 proc.join(timeout=5)
+             except Exception:
+                 pass
+-        if outcome != "done" and self._stop.is_set():
+-            return  # 用户主动关闭对话框：静默，_close 已复位 UI
+-        self._stop.set()
++        if run_id != self._run_id:
++            return  # 用户已开新一轮：旧线程只负责清进程，绝不碰任何共享 UI 状态
++        if outcome == "cancelled":
++            return  # 本轮被 _close 主动取消：_close 已复位 UI，无需重复
++        stop_event.set()
+         self._busy = False
+         try:
+             self._btn_run.disabled = False
+diff --git a/index.py b/index.py
+index 05fabfa..2df8e20 100644
+--- a/index.py
++++ b/index.py
+@@ -102,10 +102,22 @@ def _skipped(info):
+     return isinstance(info, dict) and bool(info.get("tbd") or info.get("xfail"))
+ 
+ 
++# 终态 reason 字面量的单一事实来源：kb_stale（判是否已收敛）与 _index_core
++# （落盘终态）必须共用同一组常量表达同一个 reason，否则两侧字符串静默失配
++# → kb_stale 永远判"未收敛"、每轮误报 stale、每轮无谓重建。
++# ⚠ 值本身是持久化数据格式（写进 meta 的 reason 字段），绝不可改动。
++REASON_UNREADABLE = "unreadable"
++REASON_EXTRACT_FAILED = "extract-failed"
++REASON_EMPTY = "empty"
++REASON_TBD = "tbd"
++REASON_SCANNED = "scanned"
++
++
+ def _terminal_entry(st, bhash, reason, xsrc=None):
+     """构造持久化终态条目（不产块，但必须留在 meta 里防重建死循环）。
+ 
+-    reason ∈ {"unreadable", "extract-failed", "empty", "tbd", "scanned"}。
++    reason ∈ {REASON_UNREADABLE, REASON_EXTRACT_FAILED, REASON_EMPTY,
++    REASON_TBD, REASON_SCANNED}。
+     xsrc：产生该终态时的 OCR 能力签名（仅二进制提取类失败携带）——
+     签名变化（用户启用后端/补配 Key）时条目自动获得重试资格。
+     chunks=0 使其不贡献任何有效块 id：该文件若曾有旧块，会在写库阶段
+@@ -126,10 +138,18 @@ def _backend_changed(entry, xsig):
+     mineru_api_key——已跳过的扫描件在下一轮索引自动重试，无需 --full。
+     """
+     return bool(entry.get("xfail")
+-                and entry.get("reason") in ("scanned", "extract-failed")
++                and entry.get("reason") in (REASON_SCANNED, REASON_EXTRACT_FAILED)
+                 and entry.get("xsrc") != xsig)
+ 
+ 
++def _entry_converged(entry, reason):
++    """既有终态条目是否已经反映了这个 reason——是则本轮已收敛，kb_stale 不必再计一次
++    changed。与 _terminal_entry 写入的 reason 必须用同一组 REASON_* 常量表达，
++    防止 kb_stale 与 _index_core 两侧的判定字符串静默失配、每轮误判 stale。
++    """
++    return bool(entry and entry.get("xfail") and entry.get("reason") == reason)
++
++
+ class LockBusyError(RuntimeError):
+     """写锁被其他存活进程持有且等待超时。"""
+ 
+@@ -1018,7 +1038,7 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
+         text, bhash = _load_text(fpath)
+         if bhash == _UNREADABLE:
+             # 终态一致即稳定（罕见：mtime 变了但仍读不了）；否则计一次待重试
+-            if entry and entry.get("xfail") and entry.get("reason") == "unreadable":
++            if _entry_converged(entry, REASON_UNREADABLE):
+                 seen.add(rel)
+                 continue
+             changed += 1
+@@ -1027,13 +1047,13 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
+         if suffix in TEXT_EXTS and text is None:
+             # 空文件落 empty 终态。历史上空正文 md 不落 meta，导致每轮重计
+             # added → 每轮判 stale（「明确不做」备案的既有隐患，随终态机制一并收敛）
+-            if entry and entry.get("xfail") and entry.get("reason") == "empty":
++            if _entry_converged(entry, REASON_EMPTY):
+                 seen.add(rel)
+                 continue
+             changed += 1
+             continue
+         if suffix in TEXT_EXTS and is_tbd_heavy(text or "", tbd_ratio):
+-            if entry and entry.get("xfail") and entry.get("reason") == "tbd":
++            if _entry_converged(entry, REASON_TBD):
+                 seen.add(rel)
+                 continue
+             changed += 1
+@@ -1295,7 +1315,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
+ 
+             # ---- 统一终态出口（封堵死循环入口）：None 判定严格先于 is_tbd_heavy ----
+             if bhash == _UNREADABLE:
+-                meta[rel] = _terminal_entry(st, bhash, "unreadable")
++                meta[rel] = _terminal_entry(st, bhash, REASON_UNREADABLE)
+                 log(f"{tag}文件不可读（锁定/权限？），记入 unreadable 终态待重试：{rel}")
+                 changed += 1
+                 update_progress(files_done=unchanged + changed, message=f"跳过不可读 {rel}")
+@@ -1305,7 +1325,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
+             if is_text and text is None:
+                 # 空文件（含仅 frontmatter 的 md）落 empty 终态。历史上空正文不落
+                 # meta，导致每轮重计 added → 每轮误判 stale（备案隐患，就此收敛）
+-                meta[rel] = _terminal_entry(st, bhash, "empty")
++                meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
+                 log(f"{tag}空文件（无正文），记入 empty 终态：{rel}")
+                 changed += 1
+                 update_progress(files_done=unchanged + changed, message=f"跳过空文件 {rel}")
+@@ -1319,7 +1339,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
+             if is_text:
+                 if is_tbd_heavy(text or "", tbd_ratio):
+                     # 占位重文件落 tbd 终态；其旧块由 chunks=0 驱动清理阶段删除
+-                    meta[rel] = _terminal_entry(st, bhash, "tbd")
++                    meta[rel] = _terminal_entry(st, bhash, REASON_TBD)
+                     log(f"{tag}跳过占位重文件（TBD 占比 ≥ {tbd_ratio:.0%}）：{rel}")
+                     changed += 1
+                     update_progress(files_done=unchanged + changed,
+@@ -1334,7 +1354,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
+                 converted += 1
+                 body, reason = extract_to_markdown(fpath)
+                 if body is None:
+-                    meta[rel] = _terminal_entry(st, bhash, reason or "extract-failed",
++                    meta[rel] = _terminal_entry(st, bhash, reason or REASON_EXTRACT_FAILED,
+                                                 xsrc=xsig)
+                     log(f"{tag}提取失败（{reason or 'extract-failed'}），记入终态待重试：{rel}")
+                     changed += 1
+@@ -1343,7 +1363,7 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
+                 body = clean_wikilinks(body)
+             # 防御分支：正常不应到达（文本空已归一为终态、提取器保证非空产出）
+             if not body.strip():
+-                meta[rel] = _terminal_entry(st, bhash, "empty")
++                meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
+                 changed += 1
+                 update_progress(files_done=unchanged + changed, message=f"跳过空内容 {rel}")
+                 continue
+diff --git a/tests/audit_regression_test.py b/tests/audit_regression_test.py
+index eee8f03..ed8861b 100644
+--- a/tests/audit_regression_test.py
++++ b/tests/audit_regression_test.py
+@@ -317,6 +317,46 @@ def test_confidence_matches_display_order():
+     assert "_top1_confidence" not in dir(retriever), "HyDE 不应再靠多跑一轮检索取置信度"
+ 
+ 
++def test_terminal_reason_constants_single_source_of_truth():
++    """新增终态 reason 类型时，kb_stale 与 _index_core 必须共用同一组 REASON_* 常量与
++    _entry_converged 谓词，禁止走回各自手写字面量字符串对比的老路——否则两侧字符串
++    静默失配会导致 kb_stale 永远判定未收敛，每轮误报 stale、无谓重建。
++    """
++    src_stale = inspect.getsource(index.kb_stale)
++    src_core = inspect.getsource(index._index_core)
++    for name in ("REASON_UNREADABLE", "REASON_EXTRACT_FAILED", "REASON_EMPTY",
++                 "REASON_TBD", "REASON_SCANNED"):
++        assert hasattr(index, name), f"缺少常量 {name}"
++    # 常量值即持久化数据格式，改值等于毁掉既有 meta 的终态判定
++    assert index.REASON_UNREADABLE == "unreadable"
++    assert index.REASON_EXTRACT_FAILED == "extract-failed"
++    assert index.REASON_EMPTY == "empty"
++    assert index.REASON_TBD == "tbd"
++    assert index.REASON_SCANNED == "scanned"
++    assert "_entry_converged(" in src_stale, \
++        "kb_stale 的终态收敛判定必须走 _entry_converged 单点谓词"
++    # kb_stale 侧不应再出现三类文本终态的裸字面量对比
++    for literal in ('"unreadable"', '"empty"', '"tbd"'):
++        assert f"== {literal}" not in src_stale, \
++            f"kb_stale 不得再用裸字面量 {literal} 判定终态收敛，须走 REASON_* 常量"
++    # _index_core 落盘终态也必须用同一组常量，不得写回裸字面量
++    for literal in ('"unreadable"', '"empty"', '"tbd"', '"extract-failed"'):
++        assert f"_terminal_entry(st, bhash, {literal}" not in src_core, \
++            f"_index_core 不得用裸字面量 {literal} 落终态，须走 REASON_* 常量"
++    assert "REASON_UNREADABLE" in src_core and "REASON_EMPTY" in src_core \
++        and "REASON_TBD" in src_core, "_index_core 落盘 reason 必须引用 REASON_* 常量"
++    # _backend_changed 的重试判定同样走常量
++    src_bc = inspect.getsource(index._backend_changed)
++    assert "REASON_SCANNED" in src_bc and "REASON_EXTRACT_FAILED" in src_bc, \
++        "_backend_changed 的重试 reason 集合必须引用 REASON_* 常量"
++    # 谓词语义（与被替换掉的三处手写判断严格等价）
++    assert index._entry_converged({"xfail": True, "reason": "tbd"}, index.REASON_TBD)
++    assert not index._entry_converged({"xfail": True, "reason": "tbd"},
++                                      index.REASON_EMPTY)
++    assert not index._entry_converged({"reason": "tbd"}, index.REASON_TBD)
++    assert not index._entry_converged(None, index.REASON_TBD)
++
++
+ def _run_all():
+     fns = [v for k, v in sorted(globals().items())
+            if k.startswith("test_") and callable(v)]
+diff --git a/tests/test_extractors.py b/tests/test_extractors.py
+index e962cf0..5f4c1f6 100644
+--- a/tests/test_extractors.py
++++ b/tests/test_extractors.py
+@@ -206,6 +206,91 @@ def test_pdf_scanned_returns_scanned_reason():
+     assert md is None and reason == "scanned"
+ 
+ 
++class _BoomPage:
++    """能被打开、但页内部结构损坏：一读文字层就抛异常。"""
++
++    def get_text(self, *_a, **_kw):
++        raise RuntimeError("模拟页内部结构损坏")
++
++
++class _BoomDoc:
++    """pymupdf.open() 返回的假文档：page_count 正常，逐页扫描必炸。"""
++
++    page_count = 3
++
++    def __init__(self):
++        self.closed = False
++
++    def __iter__(self):
++        return iter([_BoomPage(), _BoomPage(), _BoomPage()])
++
++    def close(self):
++        self.closed = True
++
++
++def test_pdf_page_scan_exception_folds_to_extract_failed():
++    """能打开但逐页 get_text 抛异常的 PDF 必须折叠成 extract-failed，绝不外抛。
++
++    契约回归（AGENTS.md 架构红线 1）：异常一旦穿透 _extract_pdf 会一路冒泡到
++    index._index_core 主循环，导致本轮全部文件处理结果作废（save_meta 在循环后
++    才调用），且坏文件没落终态，下轮索引继续在它这里崩——死循环。
++    """
++    import pymupdf
++    from unittest.mock import patch
++    docs = []
++
++    def fake_open(*_a, **_kw):
++        d = _BoomDoc()
++        docs.append(d)
++        return d
++
++    with tempfile.TemporaryDirectory() as td:
++        ex.set_cache_dir(Path(td) / "cache")
++        try:
++            p = Path(td) / "boom.pdf"
++            _make_text_pdf(p)  # 真实文件：只为让 _file_md5 能算出缓存键
++            with patch.object(pymupdf, "open", fake_open):
++                md, reason = ex.extract_to_markdown(p)
++            assert md is None and reason == "extract-failed", \
++                f"逐页扫描异常应折叠为 extract-failed（实得 {md!r}, {reason!r}）"
++            assert docs and docs[0].closed, "无论走哪个分支，文档都必须被 close()"
++        finally:
++            ex.set_cache_dir(None)
++
++
++class _BoomCloseDoc(_BoomDoc):
++    """逐页扫描本身会炸，且 close() 自己也炸——模拟文档半失效后 close 再爆的极端情况。"""
++
++    def close(self):
++        raise RuntimeError("模拟 close() 自身失败（文档已处于半失效状态）")
++
++
++def test_pdf_close_exception_does_not_leak_folds_to_extract_failed():
++    """finally 里 doc.close() 自己抛异常时，不能覆盖/顶替掉已经决定的返回值外泄。
++
++    契约回归（round-diff-2 红队复审）：finally 块本身不在 try/except 保护范围内，
++    Python 语义下 finally 中的异常会覆盖 except 分支已产生的 return 并继续外抛，
++    绕开刚修好的"绝不外抛"防护，重新触发整批清零式死循环风险。
++    """
++    import pymupdf
++    from unittest.mock import patch
++
++    def fake_open(*_a, **_kw):
++        return _BoomCloseDoc()
++
++    with tempfile.TemporaryDirectory() as td:
++        ex.set_cache_dir(Path(td) / "cache")
++        try:
++            p = Path(td) / "boom_close.pdf"
++            _make_text_pdf(p)  # 真实文件：只为让 _file_md5 能算出缓存键
++            with patch.object(pymupdf, "open", fake_open):
++                md, reason = ex.extract_to_markdown(p)
++            assert md is None and reason == "extract-failed", \
++                f"close() 自爆也必须折叠为 extract-failed（实得 {md!r}, {reason!r}）"
++        finally:
++            ex.set_cache_dir(None)
++
++
+ def test_pdf_corrupt_folds_to_extract_failed():
+     with tempfile.TemporaryDirectory() as td:
+         p = Path(td) / "c.pdf"
+@@ -840,6 +925,54 @@ def test_preview_backend_override():
+             ex.set_cache_dir(None)
+ 
+ 
++def test_preview_job_uses_isolated_cache():
++    """试验台预览必须用一次性临时缓存：既不写、也不读生产缓存目录。
++
++    否则用户在试验台里手选 mineru-cloud 试一个文件，产物会落进生产缓存；
++    之后即便全局 pdf_scan_backend=none，正式索引也会在查缓存那步直接命中这份
++    云端产物、跳过 backend=none 本该走的"跳过"分支（且 --full 不清 extract_cache，
++    不可追溯、不可撤销）。
++    """
++    import queue as _q
++    orig_cloud = ex._mineru_cloud_extract
++    prod = ex.get_cache_dir()
++
++    def _snap():
++        try:
++            return sorted(p.name for p in prod.glob("*"))
++        except OSError:
++            return []
++
++    with tempfile.TemporaryDirectory() as td:
++        try:
++            p = Path(td) / "s.pdf"
++            _make_scanned_pdf(p)
++            prod_existed = prod.exists()
++            before = _snap()
++
++            ex._mineru_cloud_extract = lambda _p: ("# 预览专用云端结果\n正文\n", "")
++            q = _q.Queue()
++            ex._preview_job(q, str(p), "mineru-cloud")
++            payload = q.get_nowait()
++            assert payload["ok"], payload
++            info = payload["info"]
++            assert info["reason"] == "" and "预览专用云端结果" in info["md"], str(info)
++            assert info["route"] == "ocr:mineru-cloud"
++
++            assert _snap() == before, "预览绝不能往生产缓存目录写任何文件"
++            assert prod.exists() == prod_existed, "预览不得凭空创建生产缓存目录"
++            assert ex.get_cache_dir() == prod, "预览结束后必须还原缓存目录"
++
++            # 生产路径（全局 backend=none，默认缓存目录）不得看见预览的云端产物
++            md, reason = ex.extract_to_markdown(p)
++            assert md is None and reason == "scanned", \
++                f"正式索引不得命中预览产生的云端缓存（实得 {reason!r}）"
++            assert _snap() == before, "scanned 是失败终态，同样不写缓存"
++        finally:
++            ex._mineru_cloud_extract = orig_cloud
++            ex.set_cache_dir(None)
++
++
+ def test_preview_job_process_isolation():
+     """试验台的进程隔离根基：spawn 子进程提取成功经队列回传（GIL 解耦）。"""
+     import multiprocessing as mp
+diff --git a/tests/test_gui_store.py b/tests/test_gui_store.py
+index 2636b2e..1c35bf7 100644
+--- a/tests/test_gui_store.py
++++ b/tests/test_gui_store.py
+@@ -359,6 +359,195 @@ def test_issue_text_covers_all_terminal_reasons():
+         assert label and guide, f"reason {r} 的标签与处置指引必须齐全"
+ 
+ 
++# ---------- 云端上传二次确认 + 试验台轮询竞态（flet 控件无窗口构造，仿 smoke_gui） ----------
++
++class _RecPage:
++    """记录型假 Page：只提供确认框用到的接口（对齐 tests/smoke_gui.FakePage）。"""
++
++    def __init__(self):
++        self.dialogs = []
++        self.overlay = []
++
++    def show_dialog(self, dlg):
++        self.dialogs.append(dlg)
++
++    def close(self, dlg):
++        pass
++
++    def update(self):
++        pass
++
++
++def _click(dlg, label):
++    """触发对话框 actions 里指定文案按钮的 on_click（模拟用户点击）。"""
++    for btn in dlg.actions:
++        if getattr(btn, "content", None) == label:
++            btn.on_click(None)
++            return True
++    raise AssertionError("确认框里找不到按钮：%s（实有 %s）"
++                         % (label, [getattr(b, "content", None) for b in dlg.actions]))
++
++
++def _make_lab():
++    from gui.widgets import ExtractLabDialog
++    dlg = ExtractLabDialog()
++    dlg._build()
++    dlg._page = _RecPage()
++    dlg._file_path = "C:/tmp/x.pdf"
++    started = []
++    dlg._start_extraction = lambda: started.append(1)
++    return dlg, started
++
++
++def test_extract_lab_cloud_backend_requires_confirm():
++    """试验台选云端后端：必须先弹确认框，确认后才真正启动子进程提取。"""
++    dlg, started = _make_lab()
++    dlg._dd_backend.value = "mineru-cloud"
++    dlg._run()
++    assert not started, "云端后端不得未经确认就上传文件"
++    assert len(dlg._page.dialogs) == 1, "应弹出且只弹出一个确认框"
++    confirm = dlg._page.dialogs[0]
++    assert "MinerU" in confirm.content.value, "确认文案须点名第三方服务"
++    _click(confirm, "确认上传并提取")
++    assert started == [1], "确认后应启动提取，且只启动一次"
++
++
++def test_extract_lab_cloud_confirm_cancel_does_not_start():
++    """点取消：不启动提取，也不改动忙态/按钮（判断发生在改状态之前）。"""
++    dlg, started = _make_lab()
++    dlg._dd_backend.value = "mineru-cloud"
++    dlg._run()
++    _click(dlg._page.dialogs[0], "取消")
++    assert not started, "取消后绝不能启动提取"
++    assert dlg._busy is False and dlg._btn_run.disabled is False, \
++        "取消不得残留忙态"
++
++
++def test_extract_lab_local_backend_starts_directly():
++    """非云端后端（none）：不弹确认框，直接开跑。"""
++    dlg, started = _make_lab()
++    dlg._dd_backend.value = "none"
++    dlg._run()
++    assert started == [1], "本地直提应直接启动"
++    assert dlg._page.dialogs == [], "本地直提不该打扰用户"
++
++
++def _make_settings(cur_backend, new_backend):
++    """构造 SettingsDialog 并 stub _apply_updates（严禁真写 data/config.json）。"""
++    from gui.widgets import SettingsDialog
++    import config as cfgmod
++    dlg = SettingsDialog(on_saved=lambda *_: None)
++    dlg._page = _RecPage()
++    applied = []
++    dlg._apply_updates = lambda updates: applied.append(updates)
++    dlg._fields["pdf_scan_backend"][0].value = new_backend
++    saved = cfgmod.CFG.get("pdf_scan_backend")
++    cfgmod.CFG["pdf_scan_backend"] = cur_backend
++    return dlg, applied, cfgmod, saved
++
++
++def test_settings_cloud_backend_switch_requires_confirm():
++    """设置页 none → mineru-cloud：必须先确认（存量扫描件会被批量外传）。"""
++    dlg, applied, cfgmod, saved = _make_settings("none", "mineru-cloud")
++    try:
++        dlg._save(None)
++        assert not applied, "切云端后端不得未经确认就落盘"
++        assert len(dlg._page.dialogs) == 1
++        confirm = dlg._page.dialogs[0]
++        assert "MinerU" in confirm.content.value
++        _click(confirm, "确认启用")
++        assert len(applied) == 1, "确认后才真正 apply_updates"
++        assert applied[0]["pdf_scan_backend"][1] == "mineru-cloud"
++    finally:
++        if saved is None:
++            cfgmod.CFG.pop("pdf_scan_backend", None)
++        else:
++            cfgmod.CFG["pdf_scan_backend"] = saved
++
++
++def test_settings_same_backend_no_confirm():
++    """本来就是 mineru-cloud：改别的字段保存不再打扰用户，直接落盘。"""
++    dlg, applied, cfgmod, saved = _make_settings("mineru-cloud", "mineru-cloud")
++    try:
++        dlg._save(None)
++        assert len(applied) == 1, "无后端切换应直接 apply"
++        assert dlg._page.dialogs == [], "无变化不该弹确认框"
++    finally:
++        if saved is None:
++            cfgmod.CFG.pop("pdf_scan_backend", None)
++        else:
++            cfgmod.CFG["pdf_scan_backend"] = saved
++
++
++class _FakeProc:
++    """duck-type 子进程：只需 is_alive/terminate/join，记录是否被强杀。"""
++
++    def __init__(self, alive=True):
++        self.alive = alive
++        self.terminated = False
++        self.joined = False
++
++    def is_alive(self):
++        return self.alive
++
++    def terminate(self):
++        self.terminated = True
++        self.alive = False
++
++    def join(self, timeout=None):
++        self.joined = True
++
++
++class _Stub:
++    """轻量控件桩：_safe_update 捕获全部异常，属性读写够用即可。"""
++
++    def __init__(self, **kw):
++        self.__dict__.update(kw)
++
++
++def test_extract_lab_poll_stale_run_only_cleans_up():
++    """旧轮次的轮询线程：只清理自己的子进程，绝不碰已属于新一轮的共享 UI 状态。
++
++    竞态复现（修复前）：关对话框 → _close 提前把 _busy 清空 → 用户秒开再点提取
++    （run2）→ 旧线程 T1 读 self._proc 读到 proc2，误杀刚启动的新进程，
++    真正该杀的 proc1 成孤儿，且 T1 继续复位按钮/渲染假失败覆盖新一轮 UI。
++    """
++    import queue as _q
++    import threading as _th
++    from gui.widgets import ExtractLabDialog
++    dlg = ExtractLabDialog()           # 不 _build/_open：__init__ 只有普通赋值
++    dlg._busy = True
++    dlg._run_id = 2                    # 已经有更新的一轮在跑
++    proc1 = _FakeProc(alive=True)
++    ev = _th.Event()
++    ev.set()                           # 让 _poll 立刻走 cancelled 分支跳出循环
++    dlg._poll(_q.Queue(), 30, 1, proc1, ev)
++    assert proc1.terminated, "旧轮次的子进程必须被清理，不得成孤儿"
++    assert dlg._busy is True, "run_id 失配时不得改动共享忙态（会污染新一轮）"
++
++
++def test_extract_lab_poll_current_run_finishes():
++    """当前轮次：正常走到底，复位忙态并渲染结果。"""
++    import queue as _q
++    import threading as _th
++    from gui.widgets import ExtractLabDialog
++    dlg = ExtractLabDialog()
++    dlg._busy = True
++    dlg._run_id = 1
++    for name in ("_btn_run", "_btn_pick", "_progress", "_live_row",
++                 "_md_view", "_src_view"):
++        setattr(dlg, name, _Stub(disabled=False, visible=True, value="",
++                                 content=""))
++    dlg._chips = _Stub(controls=[])
++    q = _q.Queue()
++    q.put({"ok": True, "info": {"md": "# 结果\n正文", "reason": "",
++                                "route": "local", "cached": False,
++                                "elapsed": 0.1, "chars": 6}})
++    dlg._poll(q, 30, 1, _FakeProc(alive=False), _th.Event())
++    assert dlg._busy is False, "当前轮次结束必须复位忙态"
++    assert dlg._btn_run.disabled is False and dlg._progress.visible is False
++
++
+ if __name__ == "__main__":
+     failures = 0
+     for name, fn in sorted(globals().items()):
