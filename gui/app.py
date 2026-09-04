@@ -354,6 +354,9 @@ class App:
         try:
             os.startfile(path)
             self._log_line('── 打开 %s' % path)
+        except FileNotFoundError:
+            self._snack('文件已不在原位置（可能被移动/删除，下轮索引会自动清理'
+                        '这条旧记录）：%s' % path, is_error=True)
         except OSError as ex:
             self._snack('无法打开：%s' % ex, is_error=True)
 

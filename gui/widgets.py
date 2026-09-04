@@ -2078,13 +2078,17 @@ class FileStatusDialog:
              ("%d 页向量" % wemm["total_pages"]) if wemm["exists"] else "尚未建页索引"))
         controls = [self._section_header("文字索引（哪些文件没进来、为什么）",
                                          ft.Icons.FACT_CHECK_OUTLINED)]
-        if n_fail:
-            for rel, reason, will in text["rows"]:
-                controls.append(self._row(
-                    icon=ft.Icons.ERROR_OUTLINE, icon_color=colors["warning"],
-                    title=rel,
-                    sub=self._REASON_TEXT.get(reason, reason) +
-                        ("　✅ 下轮索引将自动重试" if will else "")))
+        for rel, reason, will in text["rows"]:
+            missing = not (Path(cfg["path"]) / rel).exists()
+            note = "" if not missing else                 "｜⚠ 文件已不在原位置（被移动/删除，下轮索引自动清理这条记录）"
+            controls.append(self._row(
+                icon=ft.Icons.ERROR_OUTLINE if not missing
+                else ft.Icons.REMOVE_CIRCLE_OUTLINE,
+                icon_color=colors["warning"] if not missing else colors["t3"],
+                title=rel,
+                sub=self._REASON_TEXT.get(reason, reason) +
+                    ("　✅ 下轮索引将自动重试" if will else "") + note,
+                missing=missing))
         else:
             controls.append(self._plain("✔ 全部文件正常入索引，没有失败或跳过。",
                                         colors["success"]))
@@ -2108,15 +2112,26 @@ class FileStatusDialog:
                     % lib_name, colors["t2"]))
             else:
                 for rel, pages, failed, reason in wemm["rows"]:
+                    missing = not (Path(cfg["path"]) / rel).exists()
+                    note = "" if not missing else                         "｜⚠ 文件已不在原位置（下轮页索引自动清理这条记录）"
                     if failed:
                         controls.append(self._row(
-                            icon=ft.Icons.ERROR_OUTLINE, icon_color=colors["danger"],
+                            icon=ft.Icons.ERROR_OUTLINE if not missing
+                            else ft.Icons.REMOVE_CIRCLE_OUTLINE,
+                            icon_color=colors["danger"] if not missing
+                            else colors["t3"],
                             title=rel,
-                            sub="渲染失败：%s（下一轮页索引自动重试）" % reason))
+                            sub="渲染失败：%s（下一轮页索引自动重试）%s" % (reason, note),
+                            missing=missing))
                     else:
                         controls.append(self._row(
-                            icon=ft.Icons.CHECK_CIRCLE, icon_color=colors["success"],
-                            title=rel, sub="已建 %d 页向量" % pages))
+                            icon=ft.Icons.CHECK_CIRCLE if not missing
+                            else ft.Icons.REMOVE_CIRCLE_OUTLINE,
+                            icon_color=colors["success"] if not missing
+                            else colors["t3"],
+                            title=rel,
+                            sub="已建 %d 页向量%s" % (pages, note),
+                            missing=missing))
                 if not wemm["rows"]:
                     controls.append(self._plain("页索引 meta 为空。", colors["t2"]))
                 controls.append(self._plain(
@@ -2157,8 +2172,11 @@ class FileStatusDialog:
             content=ft.Text(text, size=12, color=color, font_family=FONT_UI),
             padding=ft.Padding(left=24, right=24, top=2, bottom=2))
 
-    def _row(self, icon, icon_color, title, sub):
-        """单文件行：✔/✗ 图标 + 文件名 + 人话状态；点击打开源文件（手动确认）。"""
+    def _row(self, icon, icon_color, title, sub, missing=False):
+        """单文件行：✔/✗ 图标 + 文件名 + 人话状态；点击打开源文件（手动确认）。
+
+        missing=True：源文件已不在原位置（旧记录）——不可点击，行内直接说明。
+        """
         colors = self._cols
         abs_path = self._rel_path(title)
 
@@ -2178,11 +2196,13 @@ class FileStatusDialog:
                     ft.Text(sub, size=11, color=colors["t2"], font_family=FONT_UI,
                             max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                 ], spacing=1, expand=True),
-                ft.Icon(ft.Icons.OPEN_IN_NEW, size=13, color=colors["t3"]),
+                ft.Icon(ft.Icons.OPEN_IN_NEW, size=13, color=colors["t3"])
+                if not missing else ft.Container(width=13),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             bgcolor=colors["surface"], border_radius=SIZE["radius_control"],
             padding=ft.Padding(left=10, right=10, top=6, bottom=6),
-            on_click=_click, on_hover=_on_hover,
+            on_click=None if missing else _click,
+            on_hover=_on_hover,
             tooltip=abs_path,
         )
 
