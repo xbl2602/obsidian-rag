@@ -505,6 +505,37 @@ def test_wemm_auto_phase_needs_import_guard():
     ok("guard: index._wemm_auto_phase 存在", hasattr(index, "_wemm_auto_phase"))
 
 
+def test_index_library_wemm_sync_off_skips_phase():
+    """wemm_sync=False（首跑同步路径）必须完全跳过页级导航阶段——
+    页库建库可能数十分钟，绝不能阻塞一次搜索（问题41 附记）。"""
+    import config as cfgmod
+    calls = []
+
+    def fake_wemm(cfg, **kw):
+        calls.append(cfg.get("name"))
+        return {}
+
+    saved = (cfgmod.CFG.get("wemm_backend"), wi.index_wemm_library)
+    cfgmod.CFG["wemm_backend"] = "on"
+    wi.index_wemm_library = fake_wemm
+    try:
+        with patch.object(index, "_index_core", lambda *a, **k: {"chunks": 0}):
+            lib = {"name": "L", "path": "X", "collection": "kb_L",
+                   "exclude_dirs": [], "exclude_files": set(),
+                   "exclude_patterns": (), "extensions": ["md"],
+                   "chunk_char_limit": 1500, "short_doc_char_limit": 200}
+            index.index_library(lib, wemm_sync=False)
+            ok("sync-off: 页级导航阶段被跳过", not calls, str(calls))
+            index.index_library(lib, wemm_sync=True)
+            ok("sync-on: 显式 True 仍触发", calls == ["L"], str(calls))
+    finally:
+        wi.index_wemm_library = saved[1]
+        if saved[0] is None:
+            cfgmod.CFG.pop("wemm_backend", None)
+        else:
+            cfgmod.CFG["wemm_backend"] = saved[0]
+
+
 # ---------- 运行器 ----------
 
 def _run_all():

@@ -1822,6 +1822,29 @@ bug：**父进程日志句柄泄漏**（with 修复）与**遗留旧实例**（�
   无变更轮次零拉起零开销（替代 main() 的预检，CLI/自动两路共用同一逻辑）；拉不起时
   该文件记 extract-failed 终态（带 wemm 签名，下轮自动重试）。
 - 文案同步：wemm_status / GUI 明细面板的建库指引改为「跑一次索引自动建页库」。
+
+### 附记（同轮）：「功能有但没接上」专项审计——4 实锤修复
+按用户要求做接线完整性审计（config 键读写对照、TODO/占位标记、公开函数引用、高危路径核查）。
+结论：config 全部键有读者；源码占位标记全部是有文档背书的刻意设计（mineru-local 本地部署
+入口）。实锤并修复：
+1. **串行路径 Token 永久锁死（P1）**：`mineru_token_reset()` 只在并行云端段调用——
+   `mineru_concurrency=1` 的串行路径在长驻 server 进程里一旦置位 Token 失效标志就永远
+   快速失败，用户补好 Key 也要重启进程。改为**按索引轮次复位**（_index_core 开头）：
+   轮内首次 Token 错误后其余文件仍快速失败（不烧频控配额），下一轮自动恢复。
+2. **配额记账串/并不对称（P2）**：`mineru_quota_add` 只在并行调度方统一入账——串行路径
+   真实提交从未计入每日配额，800 页预检提示对串行用户失效。改为**提交点记账**：
+   `_mineru_cloud_extract` 在每次真实提交（_pending_add 之后）调 `mineru_quota_add(1, pages)`，
+   页数由 _extract_pdf（两分支）与并行 worker（cloud_jobs 已带）透传；续接与缓存命中
+   天然不计（不走提交行）。
+3. **首跑同步误触发页库全量建库（回归自堵）**：接线审查发现 server.ensure_fresh 的空库
+   首跑分支同步调 index_library——若不设防，一次搜索会同步阻塞在数十分钟的页库建库上。
+   `index_library` 增 `wemm_sync=True` 参数，首跑分支传 False（页库交下一轮常规索引）。
+4. **AI_GUIDE 文档断链**：补 §9——WEMM 自动化行为、GPU 仲裁、诊断顺序、新 MCP 工具速查。
+5. 小清理：`gpu_arbiter.WEMM_MIN_VRAM_GB` 成为 wemm_server `--min-vram` 默认值（单一事实
+   来源）；index.py 移除已无调用的 `mineru_quota_add` 导入。
+测试：extractors 73/73（+1 配额记账三段式：提交计 1 / 续接不计 / 缓存不计）、
+wemm_indexer 49/49（+1 wemm_sync=False 跳过接线）；既有 6 个用例的假函数签名随
+pages 参数同步更新。
 - 测试 +4（wemm_indexer 47）：接线三态（on/off/异常吞并）+ 懒拉起（首轮恰好 1 次、
   无变更零拉起、拉起失败落可重试终态）。**测试纪律新增一条教训**：懒拉起接线后，未打桩
   的既有用例曾尝试真 spawn wemm_server（_wait_health 干等 120s 表现为套件挂死）——

@@ -1372,7 +1372,7 @@ def test_pdf_text_backend_mineru_cloud_routes_with_is_ocr_false():
         orig_cloud = ex._mineru_cloud_extract
         calls = []
 
-        def fake_cloud(path, is_ocr):
+        def fake_cloud(path, is_ocr, **_kw):
             calls.append((Path(path).name, is_ocr))
             return "# 云端结构识别结果\n正文由 MinerU 返回\n", ""
 
@@ -1425,7 +1425,7 @@ def test_pdf_text_backend_cache_route_isolation():
             # 第二步：切到 mineru-cloud，必须重新提取（不得命中上一步的 local 缓存）
             calls = []
 
-            def fake_cloud(path, is_ocr):
+            def fake_cloud(path, is_ocr, **_kw):
                 calls.append(is_ocr)
                 return "# 云端版\n与本地直提内容不同的标记文字\n", ""
 
@@ -1473,7 +1473,7 @@ def test_extract_preview_backend_override_reaches_text_layer_branch():
         _make_text_pdf(p)
         orig_cloud = ex._mineru_cloud_extract
         calls = []
-        ex._mineru_cloud_extract = lambda path, is_ocr: (
+        ex._mineru_cloud_extract = lambda path, is_ocr, **_kw: (
             calls.append(is_ocr) or ("# 云端版结构识别专属标记\n", ""))
         saved = cfgmod.CFG.get("pdf_text_backend")
         assert saved in (None, "local"), \
@@ -2192,6 +2192,62 @@ def test_mineru_pending_record_resume_after_interrupt():
             ex.set_cache_dir(None)
 
 
+def test_mineru_quota_counted_per_submission_not_resume():
+    """配额记账统一到提交点（问题41 附记）：真实提交计 1 次（含页数）；
+    断点续接与缓存命中不计——串行/并行路径在同一处对称入账。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+        fake = _ScriptedSubmitRequests([])
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        saved_poll = ex._mineru_poll_result
+        saved_sleep = ex._sleep
+        ex._sleep = fake.sleeps.append
+        p = Path(td) / "s.pdf"
+        _make_scanned_pdf(p)  # 1 页 → pages=1
+        import hashlib as _h
+        key = _h.md5(p.read_bytes()).hexdigest()
+
+        def _crash(*_a, **_k):
+            raise RuntimeError("模拟进程在轮询途中被杀")
+
+        try:
+            q0 = ex.mineru_quota_today()
+            f0 = int(q0.get("files", 0))
+            pg0 = int(q0.get("pages", 0))
+
+            # 第一轮：提交+上传成功、轮询"被杀"→ 恰好计 1 次提交（1 文件 1 页）
+            ex._mineru_poll_result = _crash
+            md, reason = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert md is None, (md, reason)
+            q1 = ex.mineru_quota_today()
+            assert int(q1.get("files", 0)) == f0 + 1, (q0, q1)
+            assert int(q1.get("pages", 0)) == pg0 + 1, (q0, q1)
+
+            # 第二轮：断点续接拿结果 → 不再计数（没有真实提交）
+            ex._mineru_poll_result = saved_poll
+            md2, reason2 = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert reason2 == "" and md2, (reason2, md2)
+            q2 = ex.mineru_quota_today()
+            assert (int(q2.get("files", 0)), int(q2.get("pages", 0))) == \
+                (f0 + 1, pg0 + 1), (q1, q2)
+
+            # 第三轮：缓存命中 → 不计
+            md3, _ = _with_ocr_cfg(lambda: ex.extract_to_markdown(p))
+            assert md3 == md2
+            q3 = ex.mineru_quota_today()
+            assert (int(q3.get("files", 0)), int(q3.get("pages", 0))) == \
+                (f0 + 1, pg0 + 1), (q2, q3)
+        finally:
+            ex._mineru_poll_result = saved_poll
+            ex._sleep = saved_sleep
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+
+
 def test_mineru_pending_prune_orphans():
     """簿记孤儿清理：文件不在本轮集合 / 字节已变化的条目被移除，匹配项保留。"""
     with tempfile.TemporaryDirectory() as td:
@@ -2295,7 +2351,7 @@ def test_index_cloud_parallel_dispatch_and_chunking():
         state = {"parallel": False}
         real_extract = ex._mineru_cloud_extract
 
-        def fake_extract(path, is_ocr=True, key=None):
+        def fake_extract(path, is_ocr=True, key=None, pages=None):
             try:
                 barrier.wait()          # 3 个任务必须同时在飞（串行则超时破碎）
                 state["parallel"] = True
@@ -2345,7 +2401,7 @@ def test_index_token_abort_skips_remaining():
         lock = threading.Lock()
         real_extract = ex._mineru_cloud_extract
 
-        def fake_extract(path, is_ocr=True, key=None):
+        def fake_extract(path, is_ocr=True, key=None, pages=None):
             time.sleep(0.05)  # 让并发 worker 先都启动，制造"取消 vs 快速失败"竞争
             with lock:
                 if ex.mineru_token_invalid():
@@ -2469,7 +2525,7 @@ def test_index_max_mode_all_jobs_in_flight():
         state = {"all_in_flight": False}
         real_extract = ex._mineru_cloud_extract
 
-        def fake_extract(path, is_ocr=True, key=None):
+        def fake_extract(path, is_ocr=True, key=None, pages=None):
             try:
                 barrier.wait()  # 5 个任务必须全部同时在飞
                 state["all_in_flight"] = True

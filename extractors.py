@@ -479,7 +479,7 @@ def _extract_pdf(path, backend=None):
                            "PDF 含图片页（无文字层），当前未启用云端 OCR 后端，已整本跳过"
                            "（可在设置中把 pdf_scan_backend 设为 mineru-cloud）")
                 return None, "scanned", f"ocr:{scan_backend}"
-            md, reason = _mineru_cloud_extract(path, is_ocr=True)
+            md, reason = _mineru_cloud_extract(path, is_ocr=True, pages=doc.page_count)
             return md, reason, "ocr:mineru-cloud"
 
         # 整本每一页都有文字层：默认本地直提；可选送 MinerU 只买版面/结构识别
@@ -495,7 +495,7 @@ def _extract_pdf(path, backend=None):
                        "pdf_text_backend=mineru-local 尚未实现，已退化为本地直提"
                        "（pymupdf4llm）。如需云端结构识别，请改用 mineru-cloud。")
         elif text_backend == "mineru-cloud":
-            md, reason = _mineru_cloud_extract(path, is_ocr=False)
+            md, reason = _mineru_cloud_extract(path, is_ocr=False, pages=doc.page_count)
             return md, reason, "mineru-text"
         try:
             out = pymupdf4llm.to_markdown(doc)
@@ -840,15 +840,16 @@ def classify_extraction(path, backend=None, md5=None):
             pass
 
 
-def mineru_cloud_extract_for_parallel(path, is_ocr, key=None):
+def mineru_cloud_extract_for_parallel(path, is_ocr, key=None, pages=None):
     """云端并行 worker 入口（问题35）＝ _mineru_cloud_extract 的显式公开面。
 
     路由与 is_ocr 已由主线程 classify_extraction 判定；worker 只做纯网络 I/O
     （提交/上传/轮询/下载），缓存与断点簿记在 _mineru_cloud_extract 内部完成。
-    key：主线程已持有的文件字节指纹（免重复读盘）。失败折叠 (None, reason)，
-    与 extract_to_markdown 同一契约。
+    key：主线程已持有的文件字节指纹（免重复读盘）。pages：页数（问题41 附记，
+    供提交点配额记账；续接不计数）。失败折叠 (None, reason)，与
+    extract_to_markdown 同一契约。
     """
-    return _mineru_cloud_extract(path, is_ocr=is_ocr, key=key)
+    return _mineru_cloud_extract(path, is_ocr=is_ocr, key=key, pages=pages)
 
 
 def _mineru_resume(job, headers, budget):
@@ -978,7 +979,7 @@ def _mineru_submit(path, is_ocr, headers):
         raise last
     raise RuntimeError("任务提交失败")
 
-def _mineru_cloud_extract(path, is_ocr, key=None):
+def _mineru_cloud_extract(path, is_ocr, key=None, pages=None):
     """MinerU 云端 API：申请批任务 → 预签名 PUT 上传 → 轮询 → 下载 zip 取正文 .md。
 
     key：调用方已持有的文件字节 md5（并行 worker 传入，免重复读盘）；None 现算。
@@ -993,6 +994,8 @@ def _mineru_cloud_extract(path, is_ocr, key=None):
     scanned/extract-failed 终态，从未真正 OCR 成功过一次；详见 TASK_LOG 问题30。）
     is_ocr：调用方显式传入，不设默认值——扫描件分支传 True；文字层 PDF 分支传
     False（只买版面/表格结构识别，不为已有文字重复付 OCR 的钱）。
+    pages：文件页数（问题41 附记），仅供提交点的每日配额记账（mineru_quota_add）；
+    None 时按 0 页计——续接/缓存命中不会走到记账行，天然不重复计。
     model_version（问题33，2026-09-02）：请求体新增 config.mineru_model_version
     （get_model_version()，默认 vlm）。此前从未传这个字段，服务端会用未声明时的
     默认版本（较弱的 pipeline 模式）——这不是"选择了 pipeline"，是压根没做选择；
@@ -1059,6 +1062,10 @@ def _mineru_cloud_extract(path, is_ocr, key=None):
         # batch_id 续接服务器端结果；成功取回正文后移除。
         route = "ocr:mineru-cloud" if is_ocr else "mineru-text"
         _pending_add(batch_id, str(path), route, key)
+        # 配额记账统一到提交点（问题41 附记）：串行/并行两条路径在同一处计数，
+        # 缓存命中与断点续接天然不计（没有真实提交）。此前只有并行路径在调度方
+        # 统一入账，串行（mineru_concurrency=1）路径的每日配额永远少记。
+        mineru_quota_add(1, int(pages or 0))
         md, why = _mineru_poll_result(batch_id, headers,
                                       time.monotonic() + max(30.0, budget), requests)
         if md is not None:

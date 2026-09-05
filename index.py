@@ -15,7 +15,7 @@ from config import CFG
 from extractors import (BINARY_EXTS, TEXT_EXTS, classify_extraction,
                         current_backend_sig, extract_to_markdown,
                         mineru_cloud_extract_for_parallel, mineru_pending_prune,
-                        mineru_quota_add, mineru_quota_today, mineru_token_invalid,
+                        mineru_quota_today, mineru_token_invalid,
                         mineru_token_reset)
 from library import effective_config, load_registry, meta_path, resolve_entries
 
@@ -1512,12 +1512,15 @@ def _wemm_auto_phase(lib, full=False, agent_allowed=None):
         return {}
 
 
-def index_library(lib, incremental=True, full=False, agent_allowed=None):
+def index_library(lib, incremental=True, full=False, agent_allowed=None,
+                  wemm_sync=True):
     """按注册表库索引：独立 collection / 指纹文件 / 排除规则 / 切块粒度。lib = effective_config()。
 
     agent_allowed：Agent 门禁（人机分权）。None = 无限制（GUI/CLI 人类路径）；
     传后缀集合 = 仅处理这些格式的文件冻结（见 _index_core）。
     文字索引完成后自动接 WEMM 页级导航同步（问题41；失败只记日志不回传）。
+    wemm_sync=False 跳过页级导航阶段——仅用于检索路径上的首跑同步重建
+    （server.ensure_fresh 的空库分支）：页库可能耗时数十分钟，绝不能阻塞一次搜索。
     """
     result = _index_core(lib["path"], lib["collection"], meta_path(lib["name"]),
                          lib["exclude_dirs"], lib["exclude_files"], lib["exclude_patterns"],
@@ -1526,7 +1529,8 @@ def index_library(lib, incremental=True, full=False, agent_allowed=None):
                          incremental=incremental, full=full,
                          tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0),
                          agent_allowed=agent_allowed)
-    _wemm_auto_phase(lib, full=full, agent_allowed=agent_allowed)
+    if wemm_sync:
+        _wemm_auto_phase(lib, full=full, agent_allowed=agent_allowed)
     return result
 
 
@@ -1538,6 +1542,11 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
     if not Path(vault).is_dir():
         log(f"{tag}库路径不存在，跳过索引（保留现有索引）：{vault}")
         return
+    # Token 失效标志按索引轮次复位（问题41 附记）：每轮开始清一次，轮内首次
+    # Token 错误后其余文件仍快速失败（不烧频控配额），但用户补好 Key 后下一轮
+    # 即恢复——此前复位只在并行云端段，串行路径（并发=1）在长驻 server 进程里
+    # 一旦置位就永久锁死到进程重启。
+    mineru_token_reset()
     files = collect_md_files(vault, exclude_dirs, exclude_files, exclude_patterns, extensions)
     progress_start(phase="scanning", files_total=len(files), message="扫描文件...",
                    library=library_label)
@@ -1813,10 +1822,12 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 workers = min(len(cloud_jobs), _MINERU_MAX_POOL)
             else:
                 workers = min(c, len(cloud_jobs))
-            mineru_token_reset()
             # 断点簿记清理：文件不在本轮集合 / 字节已变化的条目（续接结果无归宿）
             mineru_pending_prune({str(fp): bh
                                   for _r, fp, _s, bh, _io, _rt, _pg in cloud_jobs})
+            # 配额记账已统一到提交点（问题41 附记）：mineru_quota_add 由
+            # _mineru_cloud_extract 在每次真实提交后调用（串/并路径对称，
+            # 续接与缓存命中不计）。此处只做预检提示。
             total_pages = sum(pg for *_x, pg in cloud_jobs)
             quota = mineru_quota_today()
             projected = int(quota.get("pages", 0)) + total_pages
@@ -1824,7 +1835,6 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 log(f"{tag}⚠ 本轮约 {total_pages} 页送云端，今日累计将达 {projected} 页"
                     f"（>800）：接近每日 1000 页最高优先级额度，后续任务可能被降"
                     f"优先级、处理变慢（仍会被处理，不会失败）。")
-            mineru_quota_add(len(cloud_jobs), total_pages)
             log(f"{tag}并行送 MinerU 云端 {len(cloud_jobs)} 个文件"
                 f"（并发 {workers}，约 {total_pages} 页）...")
             update_progress(phase="converting",
@@ -1834,7 +1844,8 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
             cloud_done = 0
             with ThreadPoolExecutor(max_workers=workers,
                                     thread_name_prefix="mineru-cloud") as pool:
-                futs = {pool.submit(mineru_cloud_extract_for_parallel, fp, is_ocr, bh):
+                # pages 透传给提交点记账（问题41 附记：串/并路径在同一处入账配额）
+                futs = {pool.submit(mineru_cloud_extract_for_parallel, fp, is_ocr, bh, _pg):
                         (rel, fp, st, bh)
                         for rel, fp, st, bh, is_ocr, _rt, _pg in cloud_jobs}
                 for fut in as_completed(futs):

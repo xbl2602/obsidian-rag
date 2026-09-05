@@ -408,7 +408,8 @@ def main():
     ap.add_argument("--dim", type=int, default=_CFG["wemm_dim"])
     ap.add_argument("--unload-after", type=int, default=300)
     ap.add_argument("--idle-exit", type=int, default=1800)
-    ap.add_argument("--min-vram", type=float, default=5.5)
+    import gpu_arbiter
+    ap.add_argument("--min-vram", type=float, default=gpu_arbiter.WEMM_MIN_VRAM_GB)
     ap.add_argument("--vram-wait", type=float, default=900.0)
     ap.add_argument("--threads", type=int, default=4)
     args = ap.parse_args()

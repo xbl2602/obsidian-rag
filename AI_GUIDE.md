@@ -160,3 +160,22 @@ C:\Users\xbl26\projects\obsidian-rag\.venv\Scripts\python.exe gui\stop.py
 原因：flet 桌面应用是**三层进程**（pythonw 主 → pythonw 子 → flet.exe 渲染窗口）。
 单杀 python 会让 flet.exe 成孤儿残留；stop.py 按命令行匹配 python*+flet.exe 全清，
 并清理 PID 文件。
+
+## 9. WEMM 页级视觉导航与 GPU 显存仲裁（问题37/39/41，2026-09-04 起）
+
+- 页级视觉导航默认开启（`wemm_backend=on`）：**建页库跟随索引自动跑**（增量/全量重建
+  后自动同步，`index_library → _wemm_auto_phase`），无需手动命令行；`python wemm_indexer.py
+  --backend on` 仅作为"立即建库"的手动入口。
+- 看图服务 `wemm_server.py` **全自动管理，不要手动常驻**：导航/页索引需要时由
+  `gpu_arbiter.ensure_server` 按需拉起（用全局 Python，配置键 `wemm_python`）；
+  空闲 5 分钟卸显存、再空闲 30 分钟进程自退出。日志：`data/wemm_server.log`，
+  PID：`data/wemm_server.pid`。
+- **GPU 显存互斥（gpu_arbiter.py）**：同一时刻只允许一个模型驻留显存——WEMM 加载前等
+  空闲显存 ≥5.5GB；bge-m3 加载前显存不足会先请求 WEMM 卸载（`POST /evict`，检索优先；
+  被抢占的页索引批次落失败终态、下轮自动重试）；MCP server 空闲 10 分钟自动卸载
+  bge-m3/reranker。**fail-open 铁律**：显存探测失败绝不阻塞任何路径——若探测异常导致
+  行为退化，先查 `nvidia-smi` 是否可用，不要拆掉仲裁逻辑。
+- 诊断顺序：`wemm_status()`（服务/页库状态）→ `index_failures()`（文字索引失败溯源）→
+  GUI「文件生效明细」逐文件核对 → `data/wemm_server.log` 看服务侧。
+- 新增 MCP 工具速查：`navigate_knowledge`（页级导航）、`read_document`（只读缓存取全文，
+  绝不触发提取）、`find_duplicates`（近似去重，只读）、`index_failures`、`wemm_status`。

@@ -241,9 +241,12 @@ def ensure_fresh():
 
         if _chroma_is_empty():
             log("索引库为空，同步重建（首跑场景）...")
+            # wemm_sync=False：首跑同步发生在一次搜索调用里，页级导航建库可能
+            # 数十分钟——绝不能阻塞搜索；页库交给下一轮常规索引自动补
             for lib in stale_libs:
                 index_library(lib, incremental=True,
-                              agent_allowed=lib.get("_agent_allowed"))
+                              agent_allowed=lib.get("_agent_allowed"),
+                              wemm_sync=False)
             reset_bm25_index()
             return f"（检测到{summary}，索引已更新）\n\n"
 
