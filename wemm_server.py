@@ -15,7 +15,11 @@ WeMM-Embedding 是「看图」的多模态嵌入模型：把 PDF 的一整页图
   --port          监听端口（默认从 config 的 wemm_url 读，缺省 9101）
   --model         WeMM 模型标识（默认读 config wemm_model）
   --dim           输出向量维度（默认读 config wemm_dim）
-  --unload-after  空闲 N 秒后释放 GPU 显存（0=不自动卸载；用于给 bge-m3 让路）
+  --unload-after  空闲 N 秒后释放 GPU 显存（默认 300；0=不自动卸载）
+  --idle-exit     显存已卸载后再空闲 N 秒进程自退出（默认 1800；0=常驻）
+                  ——问题41：用完即关，下次被 navigate/页索引按需再拉起
+  --min-vram      加载前要求的最低空闲显存 GB（默认 5.5；不足则等待其他模型让路）
+  --vram-wait     等显存的最长时间秒（默认 900；超时本条请求报错而非死等）
   --threads       CPU 线程数（torch.set_num_threads，默认 4）
 
 显存策略（2026-09-04 检查轮）：**懒加载 + 空闲卸载**。启动只绑端口不进显存；
@@ -40,6 +44,9 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path as _Path
+
+sys.path.insert(0, str(_Path(__file__).resolve().parent))  # cwd 无关地 import 项目模块
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -70,6 +77,12 @@ def _read_config_defaults():
 
 
 _CFG = _read_config_defaults()
+
+# 模块级开关（main() 按 CLI 覆盖）
+_MIN_VRAM_GB = 5.5
+_VRAM_WAIT_S = 900.0
+_IDLE_EXIT_S = 1800
+_active_requests = 0  # 在编/在途请求数：空闲自退出的安全判据
 
 # ------------- 模型管理（单例加载，串行编码） -------------
 _engine = None  # dict(model=, processor=, lock=, device=, loaded_at=)
@@ -112,6 +125,13 @@ def _load_engine(model_id: str, dim: int):
         # 释放旧的再加载新的 / 首次加载
         if _engine is not None:
             _unload_engine_locked()
+        # 显存互斥（问题41）：bge-m3 等其他模型在线时不硬抢——等它让路
+        #（检索侧空闲自动卸载 / evict 抢占），等不到就报错本条请求，绝不溢出
+        import gpu_arbiter
+        if not gpu_arbiter.wait_for_vram(_MIN_VRAM_GB, timeout_s=_VRAM_WAIT_S,
+                                         log=lambda m: print(f"[wemm] {m}", file=sys.stderr)):
+            raise RuntimeError(
+                f"等待空闲显存 >= {_MIN_VRAM_GB}GB 超时（其他模型占用中），本条请求未执行")
         path = _resolve_model_path(model_id)
         t0 = time.time()
         processor = AutoProcessor.from_pretrained(path, trust_remote_code=True)
@@ -151,6 +171,24 @@ def _unload_engine_locked():
             torch.cuda.empty_cache()
         _engine = None
         print("[wemm] engine unloaded; gpu_mem released", file=sys.stderr)
+
+
+def _idle_exit_daemon():
+    """进程自退出守护（问题41）：显存已卸载（_engine is None）且再空闲
+    _IDLE_EXIT_S 秒、无在途请求 → 进程自己退出。下次需要时由 gpu_arbiter.
+    ensure_server 按需再拉起——"用完直接自动关闭"。"""
+    interval = min(30, max(1, _IDLE_EXIT_S))
+    while True:
+        time.sleep(interval)
+        if _IDLE_EXIT_S <= 0 or _engine is not None:
+            continue
+        if _active_requests > 0:
+            continue
+        if time.time() - _last_use > _IDLE_EXIT_S:
+            print(f"[wemm] idle {_IDLE_EXIT_S}s after unload -> process exit "
+                  "(下次需要时会被按需拉起)", file=sys.stderr)
+            import os
+            os._exit(0)
 
 
 def _idle_unload_daemon():
@@ -276,10 +314,19 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"ok": False, "error": "invalid json"})
             return
         path = self.path.split("?")[0].rstrip("/")
+        if path == "/evict":
+            # 检索优先抢占（问题41）：立即卸载模型释放显存。正在编码时本调用
+            # 会等当前一条编完（拿锁）再卸；其后批次由页索引失败终态记账下轮重试。
+            with _ENGINE_LOCK:
+                _unload_engine_locked()
+            self._send(200, {"ok": True, "evicted": True})
+            return
         if path != "/embed":
             self.close_connection = True
             self._send(404, {"ok": False, "error": "not found"})
             return
+        global _active_requests
+        _active_requests += 1
         try:
             kind = body.get("type")
             content = body.get("content")
@@ -295,6 +342,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"ok": False, "error": "bad request: %s" % str(e)[:200]})
         except Exception as e:
             self._send(500, {"ok": False, "error": "server error: %s" % type(e).__name__})
+        finally:
+            _active_requests -= 1
 
     def _do_embed_image(self, b64, dim):
         """base64 页图 → 临时文件 → 编码 → 返回向量。图只在内存/临时文件，绝不出网。"""
@@ -357,13 +406,20 @@ def main():
     ap.add_argument("--port", type=int, default=default_port)
     ap.add_argument("--model", default=_CFG["wemm_model"])
     ap.add_argument("--dim", type=int, default=_CFG["wemm_dim"])
-    ap.add_argument("--unload-after", type=int, default=0)
+    ap.add_argument("--unload-after", type=int, default=300)
+    ap.add_argument("--idle-exit", type=int, default=1800)
+    ap.add_argument("--min-vram", type=float, default=5.5)
+    ap.add_argument("--vram-wait", type=float, default=900.0)
     ap.add_argument("--threads", type=int, default=4)
     args = ap.parse_args()
 
+    global _MIN_VRAM_GB, _VRAM_WAIT_S, _IDLE_EXIT_S
     _CFG["wemm_model"] = args.model
     _CFG["wemm_dim"] = args.dim
     _IDLE_UNLOAD_SECONDS = args.unload_after
+    _MIN_VRAM_GB = args.min_vram
+    _VRAM_WAIT_S = args.vram_wait
+    _IDLE_EXIT_S = args.idle_exit
 
     # 懒加载：启动只绑端口不进显存，第一个 /embed 才加载模型（需要才拿去）
     try:
@@ -373,11 +429,15 @@ def main():
     if _IDLE_UNLOAD_SECONDS > 0:
         threading.Thread(target=_idle_unload_daemon, daemon=True,
                          name="idle-unload").start()
+    if _IDLE_EXIT_S > 0:
+        threading.Thread(target=_idle_exit_daemon, daemon=True,
+                         name="idle-exit").start()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), _Handler)
     srv.daemon_threads = True
     print(f"[wemm] server listening on http://127.0.0.1:{args.port} "
           f"(model={args.model}, dim={args.dim}, lazy_load=True, "
-          f"unload_after={_IDLE_UNLOAD_SECONDS}s, threads={args.threads})",
+          f"unload_after={_IDLE_UNLOAD_SECONDS}s, idle_exit={_IDLE_EXIT_S}s, "
+          f"min_vram={_MIN_VRAM_GB}GB, threads={args.threads})",
           file=sys.stderr)
     try:
         srv.serve_forever()

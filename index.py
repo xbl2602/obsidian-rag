@@ -656,6 +656,29 @@ def _try_switch_back_cuda():
         log(f"切回 CUDA 失败，保持 CPU：{e}")
 
 
+def _vram_maybe_evict_wemm():
+    """加载 CUDA 模型前，若空闲显存不足且 WEMM 在线，请求其立即卸载让路（问题41）。
+
+    显存仲裁 fail-open：探测失败 / 服务不在 / 请求失败一律静默放行，绝不阻塞
+    正常加载路径——WEMM 侧被抢占的编码批次由页索引失败终态记账下轮重试。
+    """
+    try:
+        import gpu_arbiter
+        from config import CFG as _CFG
+        free = gpu_arbiter.vram_free_gb()
+        if free is None or free >= gpu_arbiter.BGE_MIN_VRAM_GB:
+            return
+        url = _CFG.get("wemm_url")
+        if not url or not gpu_arbiter.server_alive(url):
+            return
+        log(f"空闲显存 {free:.1f}GB 不足（需 >= {gpu_arbiter.BGE_MIN_VRAM_GB}GB），"
+            f"请求 WEMM 看图服务让路…")
+        gpu_arbiter.evict_wemm(url)
+        time.sleep(2.0)
+    except Exception:
+        pass  # 仲裁失败绝不阻塞模型加载（fail-open 铁律）
+
+
 def get_model():
     """懒加载 embedding 模型。CUDA 失败自动降级 CPU（含 import torch 失败）。
 
@@ -669,6 +692,7 @@ def get_model():
         return _model
     if _cuda_ready():
         try:
+            _vram_maybe_evict_wemm()
             log("加载 embedding 模型（device=cuda）...")
             # 埋点①cuda（问题 32）：冷加载全程在宽限内。必须在缓存未命中的
             # 实际加载分支里、_load_model 调用之前写——放函数入口会随每次

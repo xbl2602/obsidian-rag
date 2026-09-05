@@ -1764,3 +1764,50 @@ on_change/on_exit/padding 三个 API 错位全是这个用例先抓出来的）�
 灰色图标 + 行内注明"文件已不在原位置（下轮索引自动清理）"且**不可点击**；即便点了
 （如窗口刷新间隙），`_open_any_file` 也把 FileNotFoundError 折叠成人话提示而非裸错误。
 旧记录本就会在下轮索引裁剪（meta 裁剪纪律），GUI 只是把它说破。
+
+---
+
+## 问题41：GPU 显存仲裁——单模型在线、按需拉起、用完即关（2026-09-04）
+
+### 背景
+用户拍板：WEMM 是核心功能，应默认开启且全自动——"有需要的时候再自动拉起，用完了直接
+自动关闭，确保不和其他模型同时在线"。此前 WEMM 三件套（开关/服务/页库）全部手动，且
+9月3日 冒烟遗留的旧 wemm_server 进程一直占着 5.09GB 显存（旧代码启动即加载、无卸载）。
+
+### 交付：gpu_arbiter.py（显存仲裁，纯标准库，.venv 与全局 Python 共用）
+1. **服务生命周期**：`ensure_server()` 幂等按需拉起 wemm_server（分离进程、日志
+   `data/wemm_server.log`、PID `data/wemm_server.pid`；已有实例只等不重拉；拉起失败折叠
+   为 (False, 人话提示) 指向 `wemm_python` 配置）。navigate_knowledge 与 wemm_indexer
+   CLI 在需要时调用。**旧实例已清理**（PID 43276，冒烟遗留）。
+2. **用完即关**：wemm_server 默认 `--unload-after 300`（空闲 5 分钟卸显存，原为不卸）+
+   新增 `--idle-exit 1800`（卸载后再空闲 30 分钟、无在途请求 → 进程自退出，下次按需再拉起）。
+3. **显存互斥（单模型在线）**：
+   - WEMM 加载前 `wait_for_vram(≥5.5GB)`：bge-m3 在线时不硬抢，等它让路（检索侧空闲
+     自动卸载），超时（900s）报错本条请求而非溢出；
+   - bge-m3 加载前（index.get_model）`_vram_maybe_evict_wemm()`：空闲显存 <3.5GB 且
+     WEMM 在线 → 发 `POST /evict` 抢占（检索优先），WEMM 被抢占的编码批次由问题39 的
+     失败终态记账下轮自动重试；
+   - MCP server 新增 GPU 空闲卸载守护：600 秒无检索/索引活动 → `release_model()+
+     release_reranker()`（复用问题40 接口），"完工直接卸载"；
+   - navigate_knowledge 开始前主动释放本进程的 bge-m3/reranker（页级导航用不到它们），
+     给 WEMM 让位。
+4. **fail-open 铁律**：显存探测（torch → nvidia-smi 兜底）失败返回 None，所有仲裁路径
+   视作"无法判断 → 不阻塞不抢占"——仲裁机制自身故障绝不影响检索/索引可用性。
+
+### 配置
+- `wemm_backend` 默认 off → **on**（DEFAULTS/模板/GUI）；用户 config.json 本就已是 local（等价开）。
+- 新增 `wemm_python`（默认 "python"）：拉起 wemm_server 用的全局 Python（须已装 torch），
+  GUI「视觉导航」组同步。
+- GUI wemm_status/明细面板文案更新：服务未启动 → "下次导航自动拉起"。
+
+### 测试（新增 test_gpu_arbiter.py：28 例；全套件变十件套）
+探测 fail-open / wait 分支 / evict 折叠 / ensure_server 四分支（已运行不重拉、冷启动
+拉起+PID 落盘、存活实例只等、拉起失败折叠）/ 端口与 PID 边界。测试先红后绿抓出两个真
+bug：**父进程日志句柄泄漏**（with 修复）与**遗留旧实例**（本机 9101 真有旧服务在跑）。
+九件套全绿 + gpu_arbiter 28/28。
+
+### 备注（显存时间线，用户视角）
+- 全静默：0 模型在线（server 10 分钟自动卸、WEMM 5 分钟卸 + 30 分钟退）。
+- 检索：bge-m3 上（~2GB），完走自动下。
+- 导航/页索引：WEMM 上（5.1GB），检索若同时发生会先抢占 WEMM（页索引失败批下轮续）。
+- 任何时刻最多一个模型驻留显存；加载都走懒加载，磁盘加载代价按用户决策不值一提。

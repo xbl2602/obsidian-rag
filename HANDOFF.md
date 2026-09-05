@@ -16,9 +16,9 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 - **META_VERSION**: 9（多格式 + 统一终态 + 原始字节指纹）
 - **EXTRACT_VERSION**: 4（PDF 分拣规则 + MinerU model_version 参数）
 - **WEMM_VERSION**: 1（页级视觉导航独立版本号，独立自愈，互不影响文字索引）
-- **回归九件套**: 全绿（extractors 72/72, audit 38/38, registry 15/15, singleton 5/5,
+- **回归十件套**: 全绿（extractors 72/72, audit 38/38, registry 15/15, singleton 5/5,
   config_editor 0, gui_store 55, wemm_indexer 36/36, wemm_retriever 13/13, dedup 23/23,
-  verify_export_import 39/39）
+  gpu_arbiter 28/28, verify_export_import 39/39）
 
 ---
 
@@ -56,6 +56,12 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
    死代码清理。
 
 **接手注意**：既有 WEMM 页库 meta 无 `xsrc` 字段，本轮后首轮增量会整体重渲染一次（一次性）。
+
+**问题41（GPU 显存仲裁，gpu_arbiter.py）**：同一时刻只让一个模型驻留显存。WEMM 默认开
+（`wemm_backend=on`）：导航/页索引按需自动拉起 wemm_server（`wemm_python` 指定全局
+Python），空闲 5 分钟卸显存、30 分钟自退出；WEMM 加载前等显存 ≥5.5GB，bge-m3 加载前
+不足则 `/evict` 抢占（检索优先，WEMM 被抢占批次下轮自动重试）；server 空闲 10 分钟
+自动卸 bge-m3。**fail-open：探测失败绝不阻塞路径。** 旧 wemm_server 遗留实例已清理。
 
 **问题40（GUI 文件生效明细）**：主界面工具栏「文件生效明细」对话框——逐文件看文字索引
 失败原因（含下轮是否自动重试）与 WEMM 每 PDF 页向量数/渲染失败，点行直接打开源文件人工
@@ -100,9 +106,10 @@ padding 用 ft.Padding。
 | `mineru_timeout_seconds` | `600` | 单文件提交+轮询+下载总超时 |
 | `mineru_model_version` | `vlm` | 云端解析模型（pipeline 更省配额，vlm 精度更高） |
 | `extensions` | `md,pdf,docx` | 多格式默认开启 |
-| `wemm_backend` | `off` | 页级视觉导航开关（off / on-local）；默认关，隐私/显存优先 |
+| `wemm_backend` | `on` | 页级视觉导航开关；默认开——服务按需自动拉起/用完自动退出 |
 | `wemm_url` | `http://127.0.0.1:9101` | 本地 WEMM 看图服务地址 |
 | `wemm_dim` | `512` | 页向量维度（WeMM-Embedding-2B matryoshka） |
+| `wemm_python` | `python` | 拉起 wemm_server 的全局 Python（须装 torch，别填 .venv） |
 | `wemm_render_dpi` | `60` | 页图渲染档位（40/60/90/120；改后自动重渲染，无需 --full） |
 
 ---
@@ -114,9 +121,10 @@ padding 用 ft.Padding。
    **WEMM 同理——终态条目必须可重试，"待重试"不能是死寂**
 3. API Key 不进日志
 4. GUI 是零侵入观察者：不直写 Chroma，只读进度/meta 文件
-5. 测试先于修改：九件套全绿才能提交
+5. 测试先于修改：十件套全绿才能提交
 6. **查询路径零写副作用**（retriever 用 get_collection，不建空库）
 7. **长驻进程配置现读**：任务边界调 `config.reload_config()`，不读 import 快照
+8. **GPU 显存仲裁 fail-open**：探测失败绝不阻塞路径；同一时刻只让一个模型驻留显存
 
 ---
 
@@ -148,4 +156,4 @@ $env:PYTHONIOENCODING = "utf-8"
 
 ---
 
-> 下次接手时：先读本 HANDOFF + AGENTS.md，核对九件套是否仍全绿，再决定从 Backlog 哪个条目继续。
+> 下次接手时：先读本 HANDOFF + AGENTS.md，核对十件套是否仍全绿，再决定从 Backlog 哪个条目继续。

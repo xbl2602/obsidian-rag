@@ -49,11 +49,11 @@ GROUPS = [
                 ("confidence_drop_threshold", "float")]},
 
     {"title": "视觉导航（WEMM）", "level": "basic", "icon": "IMAGE_OUTLINED",
-     "desc": "可选：把 PDF 每页渲染成图，用本机 GPU 的 WeMM 模型做成「每页一向量」"
-             "导航库，告诉 AI 内容在哪个 PDF 哪页。默认关；开需要先手动启动"
-             "看图服务（全局 python wemm_server.py）。",
+     "desc": "把 PDF 每页渲染成图，用本机 GPU 的 WeMM 模型做成「每页一向量」"
+             "导航库，告诉 AI 内容在哪个 PDF 哪页。默认开：看图服务按需自动拉起、"
+             "空闲自动卸显存并自退出，与 bge-m3 显存互斥（问题41），无需手动管理。",
      "fields": [("wemm_backend", "str"), ("wemm_url", "str"),
-                ("wemm_model", "str"), ("wemm_dim", "int"),
+                ("wemm_python", "str"), ("wemm_model", "str"), ("wemm_dim", "int"),
                 ("wemm_render_dpi", "int")]},
 
     {"title": "融合与排序调优", "level": "advanced", "icon": "TUNE_OUTLINED",
@@ -155,11 +155,16 @@ FIELD_META = {
     # ---- 视觉导航（WEMM）----
     "wemm_backend": {"label": "视觉导航开关",
                      "choices": [
-                         ("off", "关闭（默认，不建视觉库不占显存）"),
-                         ("local", "本机 GPU 看图服务（页图不出电脑）"),
+                         ("on", "开启（默认：服务按需自动拉起、用完自动退出）"),
+                         ("local", "开启（同 on，兼容旧取值）"),
+                         ("off", "关闭（不建视觉库不占显存）"),
                      ],
-                     "hint": "WEMM 页级视觉导航后端；开=把 PDF 每页编码成向量，"
-                             "改后需跑建库命令（python wemm_indexer.py）"},
+                     "hint": "WEMM 页级视觉导航后端；开着时导航/页索引会自动拉起"
+                             "看图服务，显存与 bge-m3 互斥自动错峰；建页库命令："
+                             "python wemm_indexer.py --backend on"},
+    "wemm_python": {"label": "全局 Python 路径",
+                    "hint": "拉起 wemm_server.py 用的解释器（须已装 torch/"
+                            "transformers），别填 .venv——项目虚拟环境不装 torch"},
     "wemm_url": {"label": "看图服务地址",
                  "hint": "wemm_server.py 本机 HTTP 服务地址（全局 Python 启动，"
                          "默认 127.0.0.1:9101）；空闲可手动停释放显存"},

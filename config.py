@@ -89,8 +89,9 @@ DEFAULTS = {
                                        # pipeline 更快更省配额，兜底用；非法值回退 vlm）
 
     # ---- 视觉导航（WEMM：PDF 每页一个向量，本地 transformers 看图服务，默认关）----
-    "wemm_backend": "off",        # off | local（WEMM 页级视觉导航后端；off=不建库/不检索，零开销）
+    "wemm_backend": "on",         # off | local（WEMM 页级视觉导航；on=按需自动拉起服务/用完自动退出，问题41）
     "wemm_url": "http://127.0.0.1:9101",   # 本机 WEMM 看图服务地址（wemm_server.py 用全局 Python 起）
+    "wemm_python": "python",      # 全局 Python（装 torch/transformers）；wemm_server.py 由它拉起，别填 .venv
     "wemm_model": "tencent/WeMM-Embedding-2B",  # WEMM 页级多模态嵌入模型（本地，图不出本机）
     "wemm_dim": 512,              # WEMM 输出向量维度（matryoshka 截断；512 质量近满、显存/存储适中）
     "wemm_render_dpi": 60,        # 页图渲染 DPI（编码耗时几乎随 DPI 平方暴涨：120≈25s/页、90≈13s、60≈2.5s、
@@ -374,18 +375,20 @@ CONFIG_TEMPLATE = """\
   // 检索时告诉 AI 想要的内容在「哪份 PDF 的哪一页」，配合 read_document 读取
   // MD 全文，或让有视觉能力的模型直读原 PDF。
   //
-  // 默认 off：不开就不建库、不渲染任何页图、不占显存，对现有索引零影响。
-  // 开启需先用「全局 Python」启动看图服务（python wemm_server.py），再改这里
-  // 为 local，然后跑建库命令（python wemm_indexer.py）。
-
-  // 视觉导航后端。off=关闭；local=通过本机 WEMM 看图服务（wemm_server.py）编码。
+  // 视觉导航后端。on/local=启用（默认开）；off=关闭（不建库不占显存）。
+  // 问题41 起全自动化：导航/页索引需要时自动拉起看图服务（不用手动启动），
+  // 空闲 5 分钟自动卸显存、再空闲 30 分钟进程自退出；与 bge-m3 显存互斥
+  //（同一时刻只让一个模型驻留，检索优先、WEMM 让路）。
   // 走本地 GPU = 页面图像不出你的电脑（隐私上比云端 MinerU 只发文字更可控）。
-  "wemm_backend": "off",
+  // 建页库仍是显式动作：python wemm_indexer.py --backend on
+  "wemm_backend": "on",
 
-  // WEMM 看图服务地址。wemm_server.py 用全局 Python 启动（复用已装的
-  // torch+transformers+WeMM-2B），加载模型占本机 GPU 显存（实测 ~5.1GB），
-  // 与本项目进程互不干扰；空闲时可手动停止服务释放显存。
+  // WEMM 看图服务地址（本机回环）。
   "wemm_url": "http://127.0.0.1:9101",
+
+  // 拉起 wemm_server.py 用的「全局 Python」（须已装 torch/transformers，
+  // 复用已下载的 WeMM-2B 模型缓存）。别填 .venv 的解释器——项目 .venv 不装 torch。
+  "wemm_python": "python",
 
   // WEMM 页级嵌入模型标识（传给 wemm_server 的模型名，默认官方 WeMM-2B）。
   "wemm_model": "tencent/WeMM-Embedding-2B",

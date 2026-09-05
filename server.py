@@ -26,7 +26,8 @@ from config import reload_config
 from dedup import (DEFAULT_THRESHOLD as DEDUP_THRESHOLD, find_duplicates as dedup_find,
                    format_report as dedup_format_report)
 from extractors import BINARY_EXTS, TEXT_EXTS, current_backend_sig
-from index import _backend_changed
+from index import _backend_changed, release_model
+from retriever import release_reranker
 
 from index import (HEARTBEAT_TIMEOUT, LockBusyError, collect_md_files,
                    index_library, kb_stale, load_meta, log, progress_text,
@@ -36,11 +37,41 @@ from library import (effective_config, list_summary, load_registry, meta_path,
 from retriever import hybrid_search_hyde, reset_bm25_index
 from singleton import acquire_singleton
 from wemm_retriever import wemm_search
+import gpu_arbiter
 
 server = MCPServer("obsidian-rag", title="Obsidian RAG", version="0.2.1")
 
 # 进程内后台索引状态（防重复启动；进度详情在 index_progress.json）
 _background = {"thread": None, "pid": None}
+
+# GPU 活动时间戳与空闲卸载（问题41：bge-m3 "完工即卸"——10 分钟无检索/索引
+# 活动就释放常驻模型给 WEMM/其他用途让路；下次检索 get_model 懒加载回来）
+_GPU_IDLE_UNLOAD_S = 600.0
+_gpu_activity = {"ts": time.time()}
+
+
+def _touch_gpu_activity():
+    _gpu_activity["ts"] = time.time()
+
+
+def _gpu_idle_unload_daemon():
+    while True:
+        time.sleep(60)
+        try:
+            if time.time() - _gpu_activity["ts"] < _GPU_IDLE_UNLOAD_S:
+                continue
+            import index as _idx
+            from retriever import _reranker as _rr  # noqa: 惰性快照判定是否有货
+            has_model = _idx._model is not None
+            has_rr = _rr is not None
+            if not has_model and not has_rr:
+                continue
+            release_reranker()
+            release_model()
+            log("GPU 空闲 %.0f 秒，已释放 bge-m3/reranker 常驻显存（下次检索自动懒加载）"
+                % _GPU_IDLE_UNLOAD_S)
+        except Exception as e:
+            log(f"GPU 空闲卸载检查失败（忽略）：{type(e).__name__}: {e}")
 
 
 def _agent_allowed(cfg):
@@ -106,6 +137,7 @@ def _start_background_index(libs, incremental=True):
 
 def _run_index(libs, incremental):
     """后台线程体：逐库跑索引 + 重建 BM25 缓存；单库失败不阻断其他库。"""
+    _touch_gpu_activity()
     for lib in libs:
         try:
             index_library(lib, incremental=incremental,
@@ -146,6 +178,7 @@ def ensure_fresh():
     任何一步失败都降级为"用旧索引检索 + 提示"，绝不让检索整体失败。
     """
     try:
+        _touch_gpu_activity()
         reload_config()  # 长驻进程的 CFG 是 import 快照；任务边界现读，让中途改的配置生效
         stale_libs = []
         parts = []
@@ -281,6 +314,7 @@ def search_knowledge(query: str, top_k: int = None, libraries: str = "", exclude
                      folder: str = "", include_body: bool = True) -> str:
     """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 默认库（配置 default_libraries，本机为 Obsidian Vault 单库，test/agents/skills 等非笔记库不参与）；"all" = 全部库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 默认库) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径]、[块 k/N] 与 [置信度 x.xx] 位置标记；置信度低于阈值时标注（低置信度，仅供参考）或直接过滤（低于下限不输出，防止噪音被当真引用）。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
     try:
+        _touch_gpu_activity()
         note = ensure_fresh()
         # hybrid_search_hyde：hyde_enabled=false（默认）时就是普通 hybrid_search，
         # 零额外开销。2026-08-14 接线——此前 HyDE 整个特性没有任何调用方。
@@ -305,6 +339,7 @@ def reindex_knowledge(library: str = "", allow_new_formats: bool = False) -> str
     须先向用户确认，用户同意后携带 allow_new_formats=true 再次调用即完成
     一次性长期授权（持久化到注册表，之后无需再确认；用户可随时在 GUI 取消）。"""
     try:
+        _touch_gpu_activity()
         reload_config()  # 现读配置：用户中途补的 OCR Key / 切的后端必须被本轮索引看到
         libs = []
         approved = {}
@@ -377,9 +412,19 @@ def navigate_knowledge(query: str, top_k: int = 5, libraries: str = "",
         cfg_backend, wemm_url, _ = _wemm_cfg()
         if cfg_backend == "off":
             return ("（WEMM 视觉导航未开启：Config→视觉导航（WEMM）将 wemm_backend"
-                    " 设为 on/local，启动 wemm_server.py 看图服务后，在命令行运行"
-                    " python wemm_indexer.py --backend on 建页库。注意："
+                    " 设为 on/local，然后重新调用本工具——看图服务会按需自动拉起，"
+                    "页索引请跑 python wemm_indexer.py --backend on。注意："
                     "reindex_knowledge 只重建文字索引，不建 WEMM 页库。）")
+        # 问题41 显存互斥：本进程的 bge-m3/reranker 对页级导航毫无用处，先释放
+        # 给 WEMM 让路（下次文字检索懒加载回来），再按需拉起看图服务
+        try:
+            release_reranker()
+            release_model()
+            ok, detail = gpu_arbiter.ensure_server()
+            if not ok:
+                return f"（看图服务拉起失败：{detail}）"
+        except Exception as e:
+            log(f"navigate 前的 GPU 让路/拉起失败（忽略，按原路径继续）：{e}")
         entries = resolve_entries(libraries, exclude,
                                   defaults=CFG.get("default_libraries", []))
         names = [e["name"] for e in entries]
@@ -676,4 +721,6 @@ def wemm_status() -> str:
 
 if __name__ == "__main__":
     acquire_singleton()
+    threading.Thread(target=_gpu_idle_unload_daemon, daemon=True,
+                     name="gpu-idle-unload").start()
     server.run("stdio")

@@ -292,7 +292,8 @@ def wemm_service_probe(url):
             return True, "模型已进显存（%s · %s）" % (h.get("model", "?"), h.get("device", "?"))
         return True, "服务存活，待首次请求时自动加载模型"
     except Exception as e:
-        return False, "未启动或不可达（%s）——命令行运行 python wemm_server.py" % type(e).__name__
+        return False, ("未启动或不可达（%s）——下次页级导航会按需自动拉起，"
+                       "也可手动运行 python wemm_server.py" % type(e).__name__)
 
 
 def note_relations_for(cfg, target):

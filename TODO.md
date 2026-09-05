@@ -108,6 +108,14 @@
 > （get_collection）+ 逐库错误汇总不再静默；⑩ wemm_server HTTP keep-alive 请求体消费修复。
 > 新增 5 用例（wemm 36、dedup 23、extractors 72），九件套全绿。详见 TASK_LOG.md 问题39。
 >
+> ✅ **2026-09-04 已完成（问题41）：GPU 显存仲裁**（用户拍板「WEMM 默认开、按需拉起、
+> 用完自动关、与其他模型互斥在线」）。新增 `gpu_arbiter.py`：WEMM 服务按需自动拉起
+> （幂等、PID/日志落盘）+ 空闲 5 分钟卸显存、30 分钟自退出 + 显存互斥（WEMM 加载前等
+> ≥5.5GB；bge-m3 加载前不足则 evict WEMM；server 空闲 10 分钟自动卸模型）；检索优先、
+> fail-open（探测失败绝不阻塞）。`wemm_backend` 默认 on，新增 `wemm_python` 配置。
+> 冒烟遗留的旧 wemm_server（占 5.09GB 显存两天）已清理。test_gpu_arbiter 28 例，
+> 十件套全绿。详见 TASK_LOG.md 问题41。
+>
 > ✅ **2026-09-04 已完成（问题40）：GUI「文件生效明细」面板**（用户要求：确认 WEMM/MinerU
 > 生效要能逐文件看，不能只给数字）。主界面工具栏新增入口，对话框按库展示两区：文字索引区
 > 逐文件列失败/跳过原因与下轮自动重试标注（判定与 index._backend_changed 同谓词）；

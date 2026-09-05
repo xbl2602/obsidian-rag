@@ -367,6 +367,16 @@ def main():
     if backend_cfg == "local":
         backend_cfg = "on"
 
+    # 问题41：看图服务按需自动拉起（幂等）；拉不起就退出，别让整库文件
+    # 全部落失败终态白烧一轮渲染
+    import gpu_arbiter
+    ok, detail = gpu_arbiter.ensure_server(log=log)
+    if not ok:
+        log(f"WEMM 看图服务不可用（{detail}），本轮页索引取消。"
+            f"修复后重跑即可，已索引内容不受影响。")
+        sys.exit(1)
+    log(f"WEMM 看图服务就绪：{detail}")
+
     try:
         if args.library in ("", "all"):
             entries = load_registry()

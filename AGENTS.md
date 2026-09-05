@@ -25,8 +25,8 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   未授权二进制文件被冻结（保留条目与块）；批准一次长期有效、可撤销
 - 笔记双链关系查询（出链/入链）：GUI 语义检索卡结果可内联展开"关联笔记"，
   另有 MCP 工具 `note_relations`
-- **WEMM 页级视觉导航（问题37/38，默认关闭 `wemm_backend=off`）**：`wemm_server.py`（全局
-  Python 跑，懒加载 + 可选空闲卸载显存）+ `wemm_indexer.py`（页向量独立 collection
+- **WEMM 页级视觉导航（问题37/38，默认开启 `wemm_backend=on`）**：`wemm_server.py`（全局
+  Python 跑，懒加载 + 空闲卸载显存 + 空闲自退出；由 gpu_arbiter.ensure_server 按需拉起）+ `wemm_indexer.py`（页向量独立 collection
   `<collection>.wemm` / 独立 meta / 独立 WEMM_VERSION；终态与成功条目带
   `xsrc=wemm:<模型>:<维度>:<DPI>` 签名，失败每轮真重试、改档自动重渲染；upsert 分批、
   写库成功才落成功 meta）+ `wemm_retriever.py`（查询零写副作用）。MCP：`navigate_knowledge`、
@@ -34,6 +34,10 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   `index_failures`、`wemm_status`。GUI「文件生效明细」面板（问题40）：逐文件展示
   索引/页库状态与失败原因、点行打开源文件，数据全走 gui/store 零侵入只读函数。长驻 MCP
   进程配置一律经 `config.reload_config()` 现读（问题39），不要再读 import 快照
+- **GPU 显存仲裁（问题41，`gpu_arbiter.py`）**：同一时刻只让一个模型驻留显存——WEMM 加载
+  前等空闲显存 ≥5.5GB；bge-m3 加载前显存不足则 evict WEMM（检索优先，被抢占批次由页索引
+  终态下轮重试）；server 空闲 600s 自动卸载 bge-m3/reranker；WEMM 空闲 5min 卸显存 +
+  30min 自退出、按需自动拉起。**fail-open 铁律：显存探测失败绝不阻塞任何路径**
 - 详细机制：`AI_GUIDE.md`（部署/使用）、Vault 内 `20-Projects/Obsidian RAG/` 文档组、
   开发史 `TASK_LOG.md`（问题 1–39）、路线 `TODO.md`
 
@@ -43,7 +47,7 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 # Python 3.14 + .venv；跑任何 python 前建议：
 $env:PYTHONIOENCODING = "utf-8"
 
-# 回归测试九件套（改动后必须全绿才算完成）
+# 回归测试十件套（改动后必须全绿才算完成）
 .venv\Scripts\python tests\audit_regression_test.py      # 38 用例
 .venv\Scripts\python tests\library_registry_test.py      # 15 用例
 .venv\Scripts\python tests\server_singleton_test.py      # 5 用例
@@ -54,6 +58,7 @@ $env:PYTHONIOENCODING = "utf-8"
 .venv\Scripts\python tests\test_wemm_indexer.py          # 36 用例（WEMM 页级索引）
 .venv\Scripts\python tests\test_wemm_retriever.py        # 13 用例（页级检索）
 .venv\Scripts\python tests\test_dedup.py                 # 23 用例（近似去重）
+.venv\Scripts\python tests\test_gpu_arbiter.py           # 28 用例（GPU 显存仲裁）
 ```
 
 - 管道环境跑测试必须带 `$env:PYTHONIOENCODING='utf-8'`（交互控制台可省）
