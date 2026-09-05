@@ -62,6 +62,7 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 Python），空闲 5 分钟卸显存、30 分钟自退出；WEMM 加载前等显存 ≥5.5GB，bge-m3 加载前
 不足则 `/evict` 抢占（检索优先，WEMM 被抢占批次下轮自动重试）；server 空闲 10 分钟
 自动卸 bge-m3。**fail-open：探测失败绝不阻塞路径。** 旧 wemm_server 遗留实例已清理。
+建页库已接入索引管线：增量/全量重建后自动同步页库（_wemm_auto_phase），服务懒拉起——无变更轮次零拉起；CLI wemm_indexer.py 保留为手动入口。
 
 **问题40（GUI 文件生效明细）**：主界面工具栏「文件生效明细」对话框——逐文件看文字索引
 失败原因（含下轮是否自动重试）与 WEMM 每 PDF 页向量数/渲染失败，点行直接打开源文件人工

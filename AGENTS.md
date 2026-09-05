@@ -26,7 +26,7 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 - 笔记双链关系查询（出链/入链）：GUI 语义检索卡结果可内联展开"关联笔记"，
   另有 MCP 工具 `note_relations`
 - **WEMM 页级视觉导航（问题37/38，默认开启 `wemm_backend=on`）**：`wemm_server.py`（全局
-  Python 跑，懒加载 + 空闲卸载显存 + 空闲自退出；由 gpu_arbiter.ensure_server 按需拉起）+ `wemm_indexer.py`（页向量独立 collection
+  Python 跑，懒加载 + 空闲卸载显存 + 空闲自退出；由 gpu_arbiter.ensure_server 懒拉起——且建页库已接入索引管线：index_library 文字索引完成后自动同步页库（问题41 附记），异常只记日志绝不波及文字索引）+ `wemm_indexer.py`（页向量独立 collection
   `<collection>.wemm` / 独立 meta / 独立 WEMM_VERSION；终态与成功条目带
   `xsrc=wemm:<模型>:<维度>:<DPI>` 签名，失败每轮真重试、改档自动重渲染；upsert 分批、
   写库成功才落成功 meta）+ `wemm_retriever.py`（查询零写副作用）。MCP：`navigate_knowledge`、

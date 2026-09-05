@@ -114,7 +114,11 @@
 > ≥5.5GB；bge-m3 加载前不足则 evict WEMM；server 空闲 10 分钟自动卸模型）；检索优先、
 > fail-open（探测失败绝不阻塞）。`wemm_backend` 默认 on，新增 `wemm_python` 配置。
 > 冒烟遗留的旧 wemm_server（占 5.09GB 显存两天）已清理。test_gpu_arbiter 28 例，
-> 十件套全绿。详见 TASK_LOG.md 问题41。
+> 十件套全绿。详见 TASK_LOG.md 问题41。>
+> ✅ **同轮追加：建页库接入索引管线**——增量/全量重建完成后自动同步 WEMM 页库
+> （`index_library` → `_wemm_auto_phase`：off 零开销跳过、先释放本进程 bge-m3 让路、
+> 服务懒拉起——无变更轮次零拉起；异常只记日志绝不波及文字索引）。命令行
+> `wemm_indexer.py` 保留为手动立即建库入口。wemm_indexer 47 例。
 >
 > ✅ **2026-09-04 已完成（问题40）：GUI「文件生效明细」面板**（用户要求：确认 WEMM/MinerU
 > 生效要能逐文件看，不能只给数字）。主界面工具栏新增入口，对话框按库展示两区：文字索引区

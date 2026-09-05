@@ -2107,7 +2107,8 @@ class FileStatusDialog:
             self._probe_async(probe_row, url)
             if not wemm["exists"]:
                 controls.append(self._plain(
-                    "本库还没建页索引：命令行运行 python wemm_indexer.py --library %s "
+                    "本库还没建页索引：跑一次索引（增量/全量）会自动建页库；"
+                    "也可立即命令行运行 python wemm_indexer.py --library %s "
                     "--backend on（每页渲染成图编码入库，耗时随页数与 DPI 增长）。"
                     % lib_name, colors["t2"]))
             else:

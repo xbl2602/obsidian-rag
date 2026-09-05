@@ -220,6 +220,20 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
     page_batches = []  # (rel, page_idx, vec)
     pending_ok = {}    # rel -> 成功条目（写库成功后才并入 meta，防「meta 记了页数、库没写上」的假账）
 
+    # 看图服务懒拉起（问题41）：首个真正需要渲染的文件才拉；全部命中快速路径
+    # （无变更）时零拉起零开销。拉不起时该文件记失败终态，下轮自动重试。
+    server_state = {"ready": False}
+
+    def _ensure_server_lazy():
+        if server_state["ready"]:
+            return True
+        import gpu_arbiter
+        ok, detail = gpu_arbiter.ensure_server(log=log)
+        server_state["ready"] = ok
+        if not ok:
+            log(f"WEMM 看图服务不可用（{detail}）——相关文件记失败终态，下轮自动重试")
+        return ok
+
     def _progress(msg):
         if progress:
             progress(msg)
@@ -252,6 +266,9 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
             continue
 
         # ---- 页面渲染 + 编码（视觉导航：扫描件/文字层 PDF 均可）----
+        if not _ensure_server_lazy():
+            meta[rel] = _terminal_entry(st, bhash, REASON_EXTRACT_FAILED, xsrc=wsig)
+            continue
         import pymupdf
         try:
             doc = pymupdf.open(str(fpath))
@@ -367,15 +384,8 @@ def main():
     if backend_cfg == "local":
         backend_cfg = "on"
 
-    # 问题41：看图服务按需自动拉起（幂等）；拉不起就退出，别让整库文件
-    # 全部落失败终态白烧一轮渲染
-    import gpu_arbiter
-    ok, detail = gpu_arbiter.ensure_server(log=log)
-    if not ok:
-        log(f"WEMM 看图服务不可用（{detail}），本轮页索引取消。"
-            f"修复后重跑即可，已索引内容不受影响。")
-        sys.exit(1)
-    log(f"WEMM 看图服务就绪：{detail}")
+    # 问题41：看图服务不再预检——index_wemm_library 内部懒拉起（有页要渲染
+    # 才拉），全部命中快速路径时零拉起零开销
 
     try:
         if args.library in ("", "all"):

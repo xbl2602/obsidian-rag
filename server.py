@@ -676,8 +676,8 @@ def wemm_status() -> str:
         lines = [f"WEMM 页级视觉导航状态（wemm_backend={cfg_backend}{dpi_txt}）："]
         if cfg_backend not in ("on", "local"):
             lines.append("  ⚠ 后端未开启（off）——navigate_knowledge 不可用。"
-                         "Config→视觉导航（WEMM）设为 on/local，启动 wemm_server.py，"
-                         "再跑 wemm_indexer.py 建页库后才会生效。")
+                         "Config→视觉导航（WEMM）设为 on/local 后重新查询即可"
+                         "（服务按需自动拉起）；跑一次索引会自动建页库。")
             return "\n".join(lines)
         # 服务存活
         try:
@@ -685,7 +685,8 @@ def wemm_status() -> str:
             lines.append(f"  ✔ 看图服务存活：{wemm_url}（{h.get('model', '?')}，"
                          f"设备 {h.get('device', '?')}）")
         except Exception as e:
-            lines.append(f"  ✘ 看图服务不可用：{type(e).__name__}（先启动 python wemm_server.py）")
+            lines.append(f"  ✘ 看图服务未运行：{type(e).__name__}"
+                         f"（下次 navigate_knowledge 会自动拉起，或手动 python wemm_server.py）")
         # 每库页索引情况
         any_index = False
         for e in load_registry():
@@ -695,7 +696,8 @@ def wemm_status() -> str:
             files = {k: v for k, v in meta.items()
                      if k != "_version" and isinstance(v, dict)}
             if not files:
-                lines.append(f"  · 库「{cfg['name']}」：尚未建 WEMM 页索引（无 wemm_meta）")
+                lines.append(f"  · 库「{cfg['name']}」：尚未建 WEMM 页索引"
+                             f"（下次索引自动建；或立即跑 python wemm_indexer.py）")
                 continue
             any_index = True
             pages = sum(v.get("pages", 0) for v in files.values()

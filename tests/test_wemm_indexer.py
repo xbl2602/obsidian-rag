@@ -26,6 +26,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -33,6 +34,12 @@ import numpy as np  # noqa: E402
 
 import index  # noqa: E402
 import wemm_indexer as wi  # noqa: E402
+import gpu_arbiter  # noqa: E402
+
+# 套件级保险：本文件默认把「按需拉起看图服务」替换为假实现——任何用例都绝不
+# 真正 spawn wemm_server（曾发生：懒拉起接线后未打桩的用例尝试真拉起，
+# _wait_health 干等 120s 表现为套件挂死）。需要测拉起行为的用例自行临时替换。
+gpu_arbiter.ensure_server = lambda log=None: (True, "ok(test-fake)")
 
 for _s in (sys.stdout, sys.stderr):
     _r = getattr(_s, "reconfigure", None)
@@ -384,6 +391,118 @@ def test_collection_name_separated():
     """wemm 库名 = <col>.wemm，绝不与文字库混名。"""
     ok("sep: 命名函数", wi.wemm_collection("kb_lib") == "kb_lib.wemm")
     ok("sep: 版本=1", wi.WEMM_VERSION == 1)
+
+
+def test_auto_phase_follows_index_library():
+    """index_library 文字索引完成后自动接 WEMM 同步（问题41 接线）。
+
+    _index_core 打桩（本轮只测接线，不真跑文字索引）：
+    - backend on → index_wemm_library 被调用、full 标志透传、bge-m3 被释放让路；
+    - backend off → 完全跳过（连释放都不做）；
+    - WEMM 阶段炸了 → 吞异常，绝不波及文字索引返回。
+    """
+    import config as cfgmod
+    calls = []
+    releases = []
+
+    def fake_wemm(cfg, backend=True, full=False, agent_allowed=None, **kw):
+        calls.append({"name": cfg.get("name"), "full": full,
+                      "agent_allowed": agent_allowed})
+        return {"pages": 1}
+
+    saved = (cfgmod.CFG.get("wemm_backend"), wi.index_wemm_library,
+             index.release_model)
+    cfgmod.CFG["wemm_backend"] = "on"
+    wi.index_wemm_library = fake_wemm
+    index.release_model = lambda: releases.append("m")
+    try:
+        with patch.object(index, "_index_core", lambda *a, **k: {"chunks": 0}), \
+             patch("retriever.release_reranker", lambda: releases.append("r")):
+            lib = {"name": "L", "path": "X", "collection": "kb_L",
+                   "exclude_dirs": [], "exclude_files": set(),
+                   "exclude_patterns": (), "extensions": ["md"],
+                   "chunk_char_limit": 1500, "short_doc_char_limit": 200}
+            index.index_library(lib, full=True, agent_allowed={"pdf"})
+            ok("auto: backend on 调用一次", len(calls) == 1, str(calls))
+            ok("auto: full 透传", bool(calls) and calls[0]["full"] is True)
+            ok("auto: 门禁透传", bool(calls) and calls[0]["agent_allowed"] == {"pdf"})
+            ok("auto: bge-m3 已释放让路", releases == ["r", "m"], str(releases))
+
+            calls.clear()
+            releases.clear()
+            cfgmod.CFG["wemm_backend"] = "off"
+            index.index_library(lib, full=False)
+            ok("auto: off 完全跳过", not calls and not releases,
+               f"{calls}/{releases}")
+
+            def boom(*a, **k):
+                raise RuntimeError("wemm down")
+
+            cfgmod.CFG["wemm_backend"] = "on"
+            wi.index_wemm_library = boom
+            index.index_library(lib)
+            ok("auto: WEMM 阶段炸了不波及文字索引", True)
+    finally:
+        wi.index_wemm_library = saved[1]
+        index.release_model = saved[2]
+        if saved[0] is None:
+            cfgmod.CFG.pop("wemm_backend", None)
+        else:
+            cfgmod.CFG["wemm_backend"] = saved[0]
+
+
+def test_lazy_ensure_server_zero_cost_when_unchanged():
+    """服务懒拉起：首轮（有页要渲染）恰好拉 1 次；二轮全命中快速路径零拉起。"""
+    import gpu_arbiter
+    calls = {"n": 0}
+    orig = gpu_arbiter.ensure_server
+
+    def fake_ensure(log=None):
+        calls["n"] += 1
+        return True, "ok"
+
+    gpu_arbiter.ensure_server = fake_ensure
+    try:
+        with _IsoEnv() as iso:
+            p = iso.vault / "doc.pdf"
+            _make_text_pdf(p, pages=2)
+            cfg = _default_cfg(iso.vault)
+            enc = _FakeImageEncoder()
+            _run(iso, cfg, enc)
+            ok("lazy: 首轮恰好拉起 1 次", calls["n"] == 1, str(calls))
+            _run(iso, cfg, enc)
+            ok("lazy: 二轮无变更零拉起", calls["n"] == 1, str(calls))
+            iso.cleanup()
+    finally:
+        gpu_arbiter.ensure_server = orig
+
+
+def test_lazy_ensure_failure_records_retryable_terminal():
+    """服务拉不起 → 该文件记 extract-failed 终态（带签名，下轮自动重试）。"""
+    import gpu_arbiter
+    orig = gpu_arbiter.ensure_server
+    gpu_arbiter.ensure_server = lambda log=None: (False, "no way")
+    try:
+        with _IsoEnv() as iso:
+            p = iso.vault / "doc.pdf"
+            _make_text_pdf(p, pages=2)
+            cfg = _default_cfg(iso.vault)
+            enc = _FakeImageEncoder()
+            _run(iso, cfg, enc)
+            ok("lazy: 失败零编码", enc.calls == 0, str(enc.calls))
+            m = _meta(iso)
+            info = m.get("doc.pdf", {})
+            ok("lazy: 落可重试终态",
+               info.get("xfail") and info.get("reason") == "extract-failed"
+               and str(info.get("xsrc", "")).startswith("wemm:"), str(info))
+            iso.cleanup()
+    finally:
+        gpu_arbiter.ensure_server = orig
+
+
+def test_wemm_auto_phase_needs_import_guard():
+    """_wemm_auto_phase 引用存在（防重构断链）。"""
+    ok("guard: index._wemm_auto_phase 存在", hasattr(index, "_wemm_auto_phase"))
 
 
 # ---------- 运行器 ----------

@@ -1482,19 +1482,52 @@ def index_vault(vault, incremental=True, full=False):
                        incremental=incremental, full=full)  # 2026-08-14：此前两个参数都没往下传
 
 
+def _wemm_auto_phase(lib, full=False, agent_allowed=None):
+    """文字索引完成后的 WEMM 页级导航自动同步（问题41：跟随索引，增量/全量一致）。
+
+    门禁与降级纪律：
+    - wemm_backend off → 静默跳过（用户关闭即零开销，连服务都不拉起）；
+    - 本进程 bge-m3 的文字嵌入已全部完成，先释放给 WEMM 让路（显存互斥）；
+    - 看图服务由 wemm_indexer 懒拉起（没有页需要渲染时零拉起）；
+    - 任何异常只记日志——页级导航的问题绝不炸掉文字索引的成果。
+    """
+    name = lib.get("name", "?")
+    try:
+        backend = (CFG.get("wemm_backend") or "off")
+        if backend not in ("on", "local"):
+            return {}
+        try:
+            from retriever import release_reranker
+            release_reranker()
+            release_model()
+        except Exception:
+            pass
+        from wemm_indexer import index_wemm_library
+        log(f"[{name}] WEMM 页级导航自动同步（{'全量' if full else '增量'}）…")
+        return index_wemm_library(lib, backend=True, full=full,
+                                  agent_allowed=agent_allowed)
+    except Exception as e:
+        log(f"[{name}] WEMM 页级导航同步失败（不影响文字索引）："
+            f"{type(e).__name__}: {e}")
+        return {}
+
+
 def index_library(lib, incremental=True, full=False, agent_allowed=None):
     """按注册表库索引：独立 collection / 指纹文件 / 排除规则 / 切块粒度。lib = effective_config()。
 
     agent_allowed：Agent 门禁（人机分权）。None = 无限制（GUI/CLI 人类路径）；
-    传后缀集合 = 仅处理这些格式，其余已配置格式的文件冻结（见 _index_core）。
+    传后缀集合 = 仅处理这些格式的文件冻结（见 _index_core）。
+    文字索引完成后自动接 WEMM 页级导航同步（问题41；失败只记日志不回传）。
     """
-    return _index_core(lib["path"], lib["collection"], meta_path(lib["name"]),
-                       lib["exclude_dirs"], lib["exclude_files"], lib["exclude_patterns"],
-                       lib["extensions"], lib["chunk_char_limit"],
-                       lib["short_doc_char_limit"], library_label=lib["name"],
-                       incremental=incremental, full=full,
-                       tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0),
-                       agent_allowed=agent_allowed)
+    result = _index_core(lib["path"], lib["collection"], meta_path(lib["name"]),
+                         lib["exclude_dirs"], lib["exclude_files"], lib["exclude_patterns"],
+                         lib["extensions"], lib["chunk_char_limit"],
+                         lib["short_doc_char_limit"], library_label=lib["name"],
+                         incremental=incremental, full=full,
+                         tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0),
+                         agent_allowed=agent_allowed)
+    _wemm_auto_phase(lib, full=full, agent_allowed=agent_allowed)
+    return result
 
 
 def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
