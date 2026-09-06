@@ -318,7 +318,22 @@ class Bridge:
             sel_in, sel_out = cfg["selection_in"], cfg["selection_out"]
             default = cfg.get("selection_default", "follow")
 
-            def _state(rel, is_dir=False):
+            ex_dirs = set(cfg.get("exclude_dirs") or [])
+            ex_files = set(cfg.get("exclude_files") or [])
+            ex_pats = tuple(cfg.get("exclude_patterns") or [])
+
+            def _hard_excluded(rel, name):
+                # 与 collect_md_files 的 exclude_* 规则逐条对齐（显示=实际）
+                if any(part in ex_dirs for part in rel.split("/")):
+                    return True
+                if name in ex_files or name.startswith(ex_pats):
+                    return True
+                return False
+
+            def _state(rel, is_dir=False, name=""):
+                # exclude_* 硬排除优先于一切（与扫描漏斗同序），且不可被显式勾选穿透
+                if _hard_excluded(rel, name or rel.rsplit("/", 1)[-1]):
+                    return ("out", None, "已排除（排除名单）")
                 v = resolve_selection(sel_in, sel_out, rel)
                 explicit = None
                 if v == "in":
@@ -348,12 +363,12 @@ class Bridge:
                     continue  # 隐藏目录（.obsidian 等）不进面板
                 rel = (sub_n + "/" if sub_n else "") + it.name
                 if it.is_dir():
-                    st, ex, tx = _state(rel, is_dir=True)
+                    st, ex, tx = _state(rel, is_dir=True, name=it.name)
                     dirs.append({"name": it.name, "dir": True, "path": rel,
                                  "explicit": ex, "state": st, "state_text": tx,
                                  "n_children": sum(1 for _ in it.iterdir())})
                 else:
-                    st, ex, tx = _state(rel)
+                    st, ex, tx = _state(rel, name=it.name)
                     files.append({"name": it.name, "dir": False, "path": rel,
                                   "explicit": ex, "state": st, "state_text": tx,
                                   "ext": it.suffix.lower().lstrip(".")})

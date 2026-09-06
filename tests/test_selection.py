@@ -359,6 +359,14 @@ def test_bridge_selection():
         up2 = b.selection_update("t", [{"path": "../../x", "action": "in"}])
         _check("bridge: update 越界拒绝", not up2["ok"] and up2["error"])
         _check("bridge: 不存在的库报错", b.selection_tree("没有的库", "")["error"])
+        # exclude_* 硬排除优先于显式勾选，徽章显示与扫描漏斗一致
+        library.set_selection("t", [{"path": "笔记.md", "action": "in"}])
+        library.set_config("t", "exclude_files", "笔记.md")
+        r3 = b.selection_tree("t", "")
+        note = next(f for f in r3["files"] if f["name"] == "笔记.md")
+        _check("bridge: exclude_files 命中显示排除（不可勾选穿透）",
+               note["state"] == "out" and note["explicit"] is None and
+               note["state_text"] == "已排除（排除名单）")
         # 中性文件夹 = 跟随子内容（无扩展名不能落格式判定，否则全显示"排除"）
         kechen = next(d for d in r["dirs"] if d["name"] == "课件")
         _check("bridge: 中性文件夹 auto_in（跟随子内容）",

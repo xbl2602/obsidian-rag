@@ -2015,3 +2015,10 @@ GateError）；十件套 + test_guiweb 53 + test_selection 63 全绿，接线检
 
 **文档**：docs/design/2026-09-06-selection-gating-design.md（实施前已交用户批准）；
 AGENTS/TODO/Vault（操作手册勾选范围段、决策记录 ADR-19、Roadmap 状态）同步。
+
+**问题44 附记（真机验证发现 2 个显示层真 bug，均已修 + 回归）**：
+1. 中性文件夹显示"排除（跟随格式）"——文件夹没有扩展名，落进格式判定必 out；
+   改为中性文件夹 = 跟随子内容（auto_in）。
+2. 徽章没反映 exclude_dirs/files/patterns 硬排除（AGENTS.md 在排除名单却显示
+   "入库"）——selection_tree 的 _state 补齐 exclude_* 三条规则（与 collect_md_files
+   逐条对齐，且置于显式选择之上不可穿透），显示=实际。test_selection 65/65。
