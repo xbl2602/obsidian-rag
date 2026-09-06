@@ -359,31 +359,74 @@ function relHtml(key) {
     + '</div>';
 }
 var lastResults = null, lastQuery = '';
+var hitSel = 0;      // 当前指定的命中条目（主区详情跟随）
+var hitOpen = null;  // 右侧列表中展开的行（单开；null=全部收起）
+
+function titleOf(r) {
+  var stem = (r.rel || '').split('/').pop().replace(/\.(md|txt|docx|pdf)$/i, '');
+  return stem || r.rel || '（无标题）';
+}
+
 function renderResults() {
   if (!lastResults) return;
-  var expandAll = $('expandTgl').checked;
-  $('resultList').innerHTML = lastResults.results.map(function (r, i) {
-    var key = r.lib + '|' + r.rel;
-    var open = expandAll || bodyOpen[i];
-    var snip = open
-      ? '<div class="r-full" data-exp="' + i + '" title="点击收起">' + nl2p(hl(r.body || '', lastQuery)) + '</div>'
-      : '<div class="r-snippet" data-exp="' + i + '" title="点击展开">' + hl((r.body || '').slice(0, 220), lastQuery) + '</div>';
-    var relPart = relOpen[i]
-      ? (relCache[key] ? relHtml(key)
-        : '<div class="rel"><div class="rel-loading"><span class="mini-spin"></span>正在查询双链关系…</div></div>')
-      : '';
-    var chunkInfo = r.chunk_total ? '块 ' + (r.chunk_idx + 1) + '/' + r.chunk_total : '';
-    return '<div class="shell result"><div class="core">'
-      + '<div class="r-head"><span class="r-lib">' + esc(r.lib) + '</span><span class="r-path">' + esc(r.rel) + '</span>' + scoreBadge(r.confidence) + '</div>'
-      + (r.heading ? '<div style="padding:6px 16px 0;font-size:13px;color:var(--text);font-weight:600">' + esc(r.heading) + '</div>' : '')
-      + snip + relPart
-      + '<div class="r-actions">'
-      + '<button class="btn btn-sm btn-ghost" data-rel="' + i + '">' + (relOpen[i] ? '收起关联' : '关联笔记') + '</button>'
-      + '<button class="btn btn-sm btn-ghost" data-open="' + i + '">打开源文件</button>'
-      + '<span class="r-more mono">' + esc(chunkInfo) + '</span>'
-      + '</div></div></div>';
+  var all = lastResults.results;
+  var notices = all.filter(function (r) { return r.notice; });
+  var rows = all.filter(function (r) { return !r.notice; });
+  if (hitSel >= rows.length) hitSel = Math.max(0, rows.length - 1);
+  $('hitMeta').textContent = '共 ' + rows.length + ' 条命中 · 耗时 '
+    + (lastResults.elapsed != null ? lastResults.elapsed.toFixed(1) : '--') + 's · 范围：' + scopeLabel();
+  $('hitNotices').innerHTML = notices.map(function (n) {
+    return '<div class="notice n-warn show" style="margin-bottom:12px"><span>' + esc(n.body) + '</span></div>';
   }).join('');
-  $('resultList').style.display = 'block';
+
+  // ---- 右侧：命中标题列表（全部默认收起，单开）----
+  $('hitCount').textContent = rows.length;
+  $('hitList').innerHTML = rows.map(function (r, i) {
+    var open = hitOpen === i;
+    var chunkInfo = r.chunk_total ? '块 ' + (r.chunk_idx + 1) + '/' + r.chunk_total : '整段';
+    var body = open
+      ? '<div class="hit-b">'
+        + (r.heading ? '<div class="hit-heading">' + esc(r.heading) + '</div>' : '')
+        + '<div class="hit-chip mono">' + chunkInfo + ' · 置信度 '
+        + (r.confidence != null ? r.confidence.toFixed(2) : '--') + '</div>'
+        + '<div class="hit-clip">' + hl((r.body || '').slice(0, 200), lastQuery) + '…</div>'
+        + '<div class="r-actions" style="padding:8px 0 0">'
+        + '<button class="btn btn-sm btn-ghost" data-rel="' + i + '">' + (relOpen[i] ? '收起关联' : '关联笔记') + '</button>'
+        + '<button class="btn btn-sm btn-ghost" data-open="' + i + '">打开源文件</button>'
+        + '</div></div>'
+      : '';
+    return '<div class="hit-item' + (open ? ' open' : '') + (hitSel === i ? ' sel' : '') + '" data-hit="' + i + '">'
+      + '<div class="hit-h"><div class="hit-txt"><div class="hit-title">' + esc(titleOf(r)) + '</div>'
+      + '<div class="hit-sub mono">' + esc(r.lib) + ' · ' + chunkInfo + '</div></div>'
+      + scoreBadge(r.confidence) + '</div>' + body + '</div>';
+  }).join('');
+
+  // ---- 主区：当前指定条目的完整阅读卡 ----
+  var sel = rows[hitSel];
+  if (!sel) {
+    $('hitDetailCore').innerHTML = '<div class="empty"><div class="grotesk">没有命中</div><div>换个问法或扩大库范围</div></div>';
+    return;
+  }
+  var expandAll = $('expandTgl').checked;
+  var key = sel.lib + '|' + sel.rel;
+  var relPart = relOpen[hitSel]
+    ? (relCache[key] ? relHtml(key)
+      : '<div class="rel"><div class="rel-loading"><span class="mini-spin"></span>正在查询双链关系…</div></div>')
+    : '';
+  var bodyBlock = expandAll
+    ? '<div class="r-full" data-exp="' + hitSel + '" title="点击收起为 3 行预览">' + nl2p(hl(sel.body || '', lastQuery)) + '</div>'
+    : '<div class="r-snippet" data-exp="' + hitSel + '" title="点击展开全文">' + hl((sel.body || '').slice(0, 220), lastQuery) + '</div>';
+  $('hitDetailCore').innerHTML =
+    '<div class="r-head"><span class="r-lib">' + esc(sel.lib) + '</span><span class="r-path">' + esc(sel.rel) + '</span>' + scoreBadge(sel.confidence) + '</div>'
+    + '<div class="hit-big-title">' + esc(titleOf(sel)) + '</div>'
+    + (sel.heading ? '<div class="hit-heading" style="padding:2px 16px 0">' + esc(sel.heading) + '</div>' : '')
+    + bodyBlock + relPart
+    + '<div class="r-actions">'
+    + '<button class="btn btn-sm btn-ghost" data-rel="' + hitSel + '">' + (relOpen[hitSel] ? '收起关联' : '关联笔记') + '</button>'
+    + '<button class="btn btn-sm btn-ghost" data-open="' + hitSel + '">打开源文件</button>'
+    + (sel.chunk_total ? '<span class="r-more mono">命中块 ' + (sel.chunk_idx + 1) + '/' + sel.chunk_total + '</span>' : '<span class="r-more mono">整段命中</span>')
+    + '</div>';
+  $('searchWrap').style.display = 'block';
 }
 function doSearch() {
   var q = $('qInput').value.trim();
@@ -392,7 +435,7 @@ function doSearch() {
   searching = true; lastQuery = q;
   relOpen = {}; bodyOpen = {};
   $('searchEmpty').style.display = 'none';
-  $('resultList').style.display = 'none';
+  $('searchWrap').style.display = 'none';
   $('searchErr').classList.remove('show');
   $('searchSkeleton').style.display = 'flex';
   $('searchBtn').disabled = true;
@@ -421,11 +464,8 @@ function doSearch() {
       toast('没有命中任何片段，换个问法或扩大库范围', 'warn');
       return;
     }
+    hitSel = 0; hitOpen = null;
     renderResults();
-    var el = document.createElement('div');
-    el.className = 'r-elapsed mono';
-    el.textContent = '本次检索耗时 ' + (res.elapsed != null ? res.elapsed.toFixed(1) : '--') + 's · 范围：' + scopeLabel();
-    $('resultList').appendChild(el);
   }).catch(function (err) {
     searching = false;
     $('searchSkeleton').style.display = 'none';
@@ -438,15 +478,23 @@ function doSearch() {
 $('searchBtn').addEventListener('click', doSearch);
 $('qInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') doSearch(); });
 $('topkSel').addEventListener('change', function () {
-  if (lastResults) { lastResults.results = lastResults.results.slice(0, parseInt(this.value, 10) || 5); relOpen = {}; renderResults(); }
+  if (lastResults) { lastResults.results = lastResults.results.slice(0, parseInt(this.value, 10) || 5); hitSel = 0; hitOpen = null; renderResults(); }
 });
 $('expandTgl').addEventListener('change', function () { if (lastResults) renderResults(); });
-$('resultList').addEventListener('click', function (e) {
+$('searchWrap').addEventListener('click', function (e) {
+  var hit = e.target.closest('[data-hit]');
+  if (hit) {
+    var i = +hit.getAttribute('data-hit');
+    hitSel = i;
+    hitOpen = (hitOpen === i) ? null : i;   // 单开：点新行自动收起旧行
+    renderResults();
+    return;
+  }
   var t = e.target.closest('[data-exp],[data-rel],[data-open]');
   if (!t) return;
   if (t.hasAttribute('data-exp')) {
-    var i = t.getAttribute('data-exp');
-    bodyOpen[i] = !bodyOpen[i];
+    var ei = t.getAttribute('data-exp');
+    bodyOpen[ei] = !bodyOpen[ei];
     renderResults();
   } else if (t.hasAttribute('data-rel')) {
     var idx = t.getAttribute('data-rel');

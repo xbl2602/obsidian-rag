@@ -221,7 +221,20 @@
     </div>
 
     <div id="searchErr" class="notice n-err" style="margin-bottom:14px"><span id="searchErrMsg"></span></div>
-    <div id="resultList" style="display:none"></div>
+
+    <div id="searchWrap" style="display:none">
+      <div class="search-grid">
+        <div class="search-main">
+          <div id="hitMeta" class="r-elapsed mono" style="margin:0 0 12px"></div>
+          <div id="hitNotices"></div>
+          <div class="shell"><div class="core" id="hitDetailCore"></div></div>
+        </div>
+        <aside class="hit-rail shell"><div class="core">
+          <div class="hit-rail-head">命中列表 <span class="mono" id="hitCount">0</span><span class="hit-rail-sub">默认收起 · 点击展开该条</span></div>
+          <div id="hitList"></div>
+        </div></aside>
+      </div>
+    </div>
   </section>
 
   <!-- ===== 库 ===== -->
