@@ -56,7 +56,9 @@ def vault_file_count_for(cfg):
     try:
         return len(collect_md_files(
             cfg["path"], cfg["exclude_dirs"], cfg["exclude_files"],
-            cfg["exclude_patterns"], cfg["extensions"]))
+            cfg["exclude_patterns"], cfg["extensions"],
+            selection=(cfg.get("selection_in"), cfg.get("selection_out")),
+            selection_default=cfg.get("selection_default", "follow")))
     except Exception:
         return 0
 
@@ -78,6 +80,8 @@ def library_state(cfg):
             exclude_files=cfg["exclude_files"],
             exclude_patterns=cfg["exclude_patterns"],
             extensions=cfg["extensions"],
+            selection=(cfg.get("selection_in"), cfg.get("selection_out")),
+            selection_default=cfg.get("selection_default", "follow"),
         )
     except Exception:
         stale = True

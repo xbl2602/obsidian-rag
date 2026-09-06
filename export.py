@@ -63,7 +63,9 @@ def refresh_if_stale(cfg):
     """索引过期则自动增量刷新；刷新失败中止导出（不交付过期数据）。"""
     stale, stats = kb_stale(cfg["path"], meta_path(cfg["name"]), cfg["collection"],
                             cfg["exclude_dirs"], cfg["exclude_files"],
-                            cfg["exclude_patterns"], cfg["extensions"])
+                            cfg["exclude_patterns"], cfg["extensions"],
+                            selection=(cfg.get("selection_in"), cfg.get("selection_out")),
+                            selection_default=cfg.get("selection_default", "follow"))
     if not stale:
         return
     log("检测到索引过期，自动增量刷新...")
@@ -205,7 +207,9 @@ def export_library(cfg):
     vault_sources = [
         (str(p.relative_to(vault)).replace("\\", "/"), p)
         for p in collect_md_files(vault, cfg["exclude_dirs"], cfg["exclude_files"],
-                                  cfg["exclude_patterns"], cfg["extensions"])
+                                  cfg["exclude_patterns"], cfg["extensions"],
+                                  selection=(cfg.get("selection_in"), cfg.get("selection_out")),
+                                  selection_default=cfg.get("selection_default", "follow"))
     ]
     emb_dim = len(emb_lists[0])
     vault_files = [

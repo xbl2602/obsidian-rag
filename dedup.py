@@ -129,7 +129,9 @@ def find_duplicates(cfg, threshold=DEFAULT_THRESHOLD, k=DEFAULT_K,
     stats = {"scanned": 0, "skipped": 0, "pairs": 0, "groups": 0}
     files = collect_md_files(vault, cfg["exclude_dirs"], cfg["exclude_files"],
                              cfg["exclude_patterns"],
-                             sorted(TEXT_EXTS | BINARY_EXTS))
+                             sorted(TEXT_EXTS | BINARY_EXTS),
+                             selection=(cfg.get("selection_in"), cfg.get("selection_out")),
+                             selection_default="include")
 
     sketches = {}  # rel -> sketch
     skip_reasons = {}
