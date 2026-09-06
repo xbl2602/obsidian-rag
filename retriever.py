@@ -314,6 +314,25 @@ def _expand_parent(collection, file, chunk_idx, hp, min_len=300):
     return parent
 
 
+# ---------- 置信度语义锚（2026-09-06 问题43） ----------
+# 实测（九组查询：3 确定命中 / 3 模糊口语 / 3 库中不存在）：重排 sigmoid 绝对分的
+# 有效动态范围只有 0.50~0.73——噪音地板 0.50~0.52（logit≈0，"无法判断"而非"半相关"），
+# 确定命中的 top1 也很难破 0.73。数字差值与语义差距严重非线性错位，人和 LLM 都会
+# 按百分比直觉误读（0.73 vs 0.50 看着只差 23%，实际是"精确命中"vs"完全无关"）。
+# 因此展示层附分档词；边界取自实测分布，中/弱分界直接对齐 warn 阈值（单一事实来源）。
+# 只影响展示文本，排序与阈值过滤逻辑不变。
+CONF_TIER_STRONG = 0.65
+
+
+def _conf_tier(conf, warn_c):
+    """置信度 → 分档词（高相关/中相关/弱相关），附在 [置信度 x.xx·档位] 里。"""
+    if conf >= CONF_TIER_STRONG:
+        return "高相关"
+    if conf >= warn_c:
+        return "中相关"
+    return "弱相关"
+
+
 def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=False,
                     scores=None, small_to_big=False):
     """多库格式化：pairs = [(库名, cid)] 按最终排序；col_map = {库名: collection}。
@@ -354,10 +373,14 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
             src += f" [块 {int(k) + 1}/{n}]"
         conf = (scores or {}).get((name, cid))
         if conf is not None:
-            src += f" [置信度 {conf:.2f}]"
+            src += f" [置信度 {conf:.2f}·{_conf_tier(conf, warn_c)}]"
             if conf < drop_c:
                 # 低置信护栏（drop）：噪音命中直接不输出，宁缺毋滥——
                 # 防止 LLM 把不相关来源当真引用（实测"火箭冷却"混入 agents/test 噪音）。
+                # 注意（2026-09-06 实测）：重排 sigmoid 的噪音地板在 0.50~0.52，
+                # 默认 drop=0.40 下此护栏几乎不会触发；真正日常起作用的是下面的
+                # warn 标注 + 整体低置信提示。drop 保留作兜底（重排降级到 RRF 分
+                # 或未来换打分模型时分布会变，单路第 2 名 0.375 这类仍需要它）。
                 continue
             if conf < warn_c:
                 # 低置信护栏（warn）：照常输出但显式标注，供调用方判断

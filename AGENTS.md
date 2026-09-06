@@ -45,7 +45,7 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   终态下轮重试）；server 空闲 600s 自动卸载 bge-m3/reranker；WEMM 空闲 5min 卸显存 +
   30min 自退出、按需自动拉起。**fail-open 铁律：显存探测失败绝不阻塞任何路径**
 - 详细机制：`AI_GUIDE.md`（部署/使用）、Vault 内 `20-Projects/Obsidian RAG/` 文档组、
-  开发史 `TASK_LOG.md`（问题 1–39）、路线 `TODO.md`
+  开发史 `TASK_LOG.md`（问题 1–44）、路线 `TODO.md`
 
 ## 环境与命令（Windows / PowerShell）
 
@@ -53,15 +53,15 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 # Python 3.14 + .venv；跑任何 python 前建议：
 $env:PYTHONIOENCODING = "utf-8"
 
-# 回归测试十件套（改动后必须全绿才算完成）
-.venv\Scripts\python tests\audit_regression_test.py      # 38 用例
+# 回归测试十件套（改动后必须全绿才算完成；另有 tests/test_guiweb.py 随 guiweb 回归）
+.venv\Scripts\python tests\audit_regression_test.py      # 39 用例
 .venv\Scripts\python tests\library_registry_test.py      # 15 用例
 .venv\Scripts\python tests\server_singleton_test.py      # 5 用例
 .venv\Scripts\python tests\test_config_editor.py         # 静态契约套件
-.venv\Scripts\python tests\test_gui_store.py             # 50 用例
-.venv\Scripts\python tests\test_extractors.py            # 72 用例（含 mock HTTP）
+.venv\Scripts\python tests\test_gui_store.py             # 53 用例
+.venv\Scripts\python tests\test_extractors.py            # 73 用例（含 mock HTTP）
 .venv\Scripts\python tests\verify_export_import.py       # 39 检查项（会动真库，最后跑）
-.venv\Scripts\python tests\test_wemm_indexer.py          # 36 用例（WEMM 页级索引）
+.venv\Scripts\python tests\test_wemm_indexer.py          # 49 用例（WEMM 页级索引）
 .venv\Scripts\python tests\test_wemm_retriever.py        # 13 用例（页级检索）
 .venv\Scripts\python tests\test_dedup.py                 # 23 用例（近似去重）
 .venv\Scripts\python tests\test_gpu_arbiter.py           # 28 用例（GPU 显存仲裁）

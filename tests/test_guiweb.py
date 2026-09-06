@@ -57,6 +57,20 @@ def test_parse_full_source_line():
     _check("parse: 低置信值", r1["confidence"] == 0.42, str(r1["confidence"]))
 
 
+def test_parse_confidence_tier_suffix():
+    """问题43（2026-09-06）：retriever 来源行置信度标记升级为 [置信度 x.xx·分档词]，
+    解析必须取到数字本身且剥掉整个标记（含分档词），旧格式（无后缀）继续兼容。"""
+    text = ("[来源] 技术笔记/foo.md (## 小节) [块 1/2] [置信度 0.72·高相关]\n正文A\n---\n"
+            "[来源] 技术笔记/bar.md [置信度 0.42·弱相关]（低置信度 0.42，仅供参考）\n正文B")
+    rs = parse_search_text(text)
+    _check("tier: 两条结果", len(rs) == 2, repr(rs)[:120])
+    _check("tier: 高相关数值", rs[0]["confidence"] == 0.72, str(rs[0]["confidence"]))
+    _check("tier: 分档词不混进 rel", rs[0]["rel"] == "foo.md", rs[0]["rel"])
+    _check("tier: 弱相关数值", rs[1]["confidence"] == 0.42, str(rs[1]["confidence"]))
+    _check("tier: 旧格式兼容",
+           parse_search_text("[来源] a/b.md [置信度 0.87]\n正文")[0]["confidence"] == 0.87)
+
+
 def test_parse_no_markers_and_empty():
     rs = parse_search_text("[来源] 论文阅读/notes.md\n一些正文")
     _check("parse: 无标记行", len(rs) == 1 and rs[0]["lib"] == "论文阅读"

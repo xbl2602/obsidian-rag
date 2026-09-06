@@ -342,9 +342,11 @@ var relOpen = {};
 var bodyOpen = {};
 var searching = false;
 function scoreBadge(s) {
+  // 2026-09-06 按实测分布重校准（问题43）：重排 sigmoid 绝对分挤在 0.50~0.73，
+  // 0.65+ 即确定命中档（= retriever.CONF_TIER_STRONG），0.55 = warn 阈值。
   var pct = Math.round(s * 100);
-  if (s >= 0.75) return '<span class="badge badge-hi">' + pct + ' 高置信</span>';
-  if (s >= 0.5) return '<span class="badge badge-mid">' + pct + ' 中置信</span>';
+  if (s >= 0.65) return '<span class="badge badge-hi">' + pct + ' 高置信</span>';
+  if (s >= 0.55) return '<span class="badge badge-mid">' + pct + ' 中置信</span>';
   return '<span class="badge badge-lo">' + pct + ' 低置信</span>';
 }
 function relHtml(key) {

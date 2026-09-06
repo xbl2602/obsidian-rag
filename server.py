@@ -315,7 +315,7 @@ def note_relations(path: str, library: str = "") -> str:
 @server.tool()
 def search_knowledge(query: str, top_k: int = None, libraries: str = "", exclude: str = "",
                      folder: str = "", include_body: bool = True) -> str:
-    """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 默认库（配置 default_libraries，本机为 Obsidian Vault 单库，test/agents/skills 等非笔记库不参与）；"all" = 全部库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 默认库) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径]、[块 k/N] 与 [置信度 x.xx] 位置标记；置信度低于阈值时标注（低置信度，仅供参考）或直接过滤（低于下限不输出，防止噪音被当真引用）。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
+    """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 默认库（配置 default_libraries，本机为 Obsidian Vault 单库，test/agents/skills 等非笔记库不参与）；"all" = 全部库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 默认库) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径]、[块 k/N] 与 [置信度 x.xx·分档词] 位置标记。置信度解读（重要，勿按百分比直觉）：这是绝对相似度分，分布天然偏窄——0.50~0.52 是噪音区（语义≈"无法判断"，不是"半相关"），0.56~0.64 中相关，0.65+ 高相关（实测强命中上限约 0.73，几乎不会出现 0.9+）；分档词（高相关/中相关/弱相关）已附在分数后。优先引用排序靠前的结果；弱相关档结果对口语化 query 也可能是有效命中，但作为依据引用前应向用户核实。置信度低于 warn 阈值（默认 0.55）时标注（低置信度，仅供参考），低于 drop 阈值（默认 0.40）直接不输出。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
     try:
         _touch_gpu_activity()
         note = ensure_fresh()

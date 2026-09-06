@@ -239,7 +239,8 @@ PHASE_COLOR = {"scanning": "scan", "converting": "accent",
 def _parse_src(src):
     """从检索源行解析 (相对路径, 标题, 置信度)。
 
-    源行格式：[来源] docs/foo.md (## 小节标题) [块 1/3] [置信度 0.87]
+    源行格式：[来源] docs/foo.md (## 小节标题) [块 1/3] [置信度 0.87·高相关]
+    （置信度标记可带·分档词后缀，问题43；也可无后缀，兼容旧输出）
     - rel：Vault 内相对路径（正斜杠），用于 obsidian://open 定位；
     - heading：标题（若有），用于 # 锚点跳转；无法解析时回退整行作 rel；
     - conf：0-1 归一化置信度（无则 None）。
@@ -248,7 +249,7 @@ def _parse_src(src):
     if s.startswith("[来源] "):
         s = s[len("[来源] "):]
     conf = None
-    m = re.search(r"\[置信度 ([\d.]+)\]", s)
+    m = re.search(r"\[置信度 ([\d.]+)(?:·[^\]]*)?\]", s)
     if m:
         try:
             conf = float(m.group(1))
@@ -722,10 +723,14 @@ class SearchCard:
 
 
 def _conf_color(conf, colors):
-    """置信度标签配色：≥0.75 绿 / ≥0.5 青 / 其余橙。"""
-    if conf >= 0.75:
+    """置信度标签配色：≥0.65 绿 / ≥0.55 青 / 其余橙。
+
+    2026-09-06 按实测分布重校准（问题43）：重排 sigmoid 绝对分挤在 0.50~0.73，
+    0.65+ 即为确定命中档（与 retriever.CONF_TIER_STRONG 一致），
+    0.55 与 warn 阈值对齐；旧边界 0.75/0.5 会把大部分好命中标成中间色。"""
+    if conf >= 0.65:
         return colors["success"]
-    if conf >= 0.5:
+    if conf >= 0.55:
         return colors["accent"]
     return colors["warning"]
 

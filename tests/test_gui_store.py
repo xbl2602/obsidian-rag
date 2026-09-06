@@ -150,11 +150,32 @@ def test_parse_src_spacey_path():
 
 
 def test_conf_color_levels():
+    # 2026-09-06 按实测分布重校准（问题43）：高相关线 0.65（= retriever.CONF_TIER_STRONG），
+    # 中/弱分界 0.55（= warn 阈值）；旧边界 0.75/0.5 会把大部分好命中标成中间色。
     assert _conf_color(0.9, DARK) == DARK["success"]
     assert _conf_color(0.75, DARK) == DARK["success"]
+    assert _conf_color(0.65, DARK) == DARK["success"]
     assert _conf_color(0.6, DARK) == DARK["accent"]
-    assert _conf_color(0.5, DARK) == DARK["accent"]
+    assert _conf_color(0.55, DARK) == DARK["accent"]
+    assert _conf_color(0.5, DARK) == DARK["warning"]
     assert _conf_color(0.3, DARK) == DARK["warning"]
+
+
+def test_parse_src_confidence_with_tier():
+    """问题43：来源行置信度标记带·分档词后缀（[置信度 0.87·高相关]），
+    解析必须取到数字本身，且旧格式（无后缀）继续兼容。"""
+    rel, heading, conf = _parse_src(
+        "[来源] docs/foo.md (## 标题) [块 1/3] [置信度 0.87·高相关]")
+    assert rel == "docs/foo.md"
+    assert heading == "标题"
+    assert abs(conf - 0.87) < 1e-9
+    rel, heading, conf = _parse_src(
+        "[来源] docs/foo.md (## 标题) [置信度 0.52·弱相关]（低置信度 0.52，仅供参考）")
+    assert rel == "docs/foo.md" and heading == "标题"
+    assert abs(conf - 0.52) < 1e-9
+    rel, heading, conf = _parse_src(
+        "[来源] docs/foo.md (## 标题) [块 1/3] [置信度 0.87]")
+    assert abs(conf - 0.87) < 1e-9
 
 
 def test_conf_label():

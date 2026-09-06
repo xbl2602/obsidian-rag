@@ -343,6 +343,38 @@ def test_confidence_matches_display_order():
     assert "_top1_confidence" not in dir(retriever), "HyDE 不应再靠多跑一轮检索取置信度"
 
 
+def test_confidence_tier_semantic_anchor():
+    """问题43（2026-09-06）：重排 sigmoid 绝对分实测挤在 0.50~0.73（噪音地板 0.50~0.52，
+    强命中上限 ~0.73），数字差值与语义差距非线性错位，人和 LLM 都会按百分比直觉误读。
+    展示层必须附分档词（[置信度 x.xx·高相关/中相关/弱相关]）：
+    - retriever._format_results 输出带 _conf_tier 档位；
+    - 高相关线 0.65 与两套 GUI 配色档位一致（flet _conf_color / guiweb scoreBadge）；
+    - 两套 GUI 解析正则兼容带档位与不带档位两种格式。
+    分档只改展示文本，排序与阈值过滤不得受影响。"""
+    import retriever
+    assert retriever.CONF_TIER_STRONG == 0.65, "高相关分档线实测标定值 0.65，改前先重测分布"
+    assert retriever._conf_tier(0.65, 0.55) == "高相关"
+    assert retriever._conf_tier(0.61, 0.55) == "中相关"
+    assert retriever._conf_tier(0.55, 0.55) == "中相关"
+    assert retriever._conf_tier(0.51, 0.55) == "弱相关"
+    fmt_src = inspect.getsource(retriever._format_results)
+    assert "_conf_tier" in fmt_src, "来源行置信度必须附分档词"
+    # 分档词只进展示文本：_rrf_combine / 排序路径不得引用分档
+    assert "_conf_tier" not in inspect.getsource(retriever._rrf_combine)
+    # flet GUI：解析兼容带档位格式 + 配色档位与 retriever 一致
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui"))
+    import gui.widgets as widgets
+    assert r"\[置信度 ([\d.]+)(?:·[^\]]*)?\]" in inspect.getsource(widgets._parse_src), \
+        "flet 解析正则必须兼容·分档词后缀"
+    color_src = inspect.getsource(widgets._conf_color)
+    assert "0.65" in color_src and "0.55" in color_src, \
+        "flet 配色档位应与实测标定（0.65/0.55）一致"
+    # guiweb 桥：解析兼容带档位格式
+    import guiweb.bridge as bridge
+    assert r"\[置信度 ([\d.]+)(?:·[^\]]*)?\]" in inspect.getsource(bridge), \
+        "guiweb 解析正则必须兼容·分档词后缀"
+
+
 def test_terminal_reason_constants_single_source_of_truth():
     """新增终态 reason 类型时，kb_stale 与 _index_core 必须共用同一组 REASON_* 常量与
     _entry_converged 谓词，禁止走回各自手写字面量字符串对比的老路——否则两侧字符串
