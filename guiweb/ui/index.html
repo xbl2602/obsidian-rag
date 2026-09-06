@@ -455,8 +455,29 @@
 
 <!-- ============ 弹层们 ============ -->
 <!-- 添加库 -->
-<div class="overlay" id="mAdd">
-  <div class="shell modal"><div class="core modal-core">
+<!-- 勾选范围（问题44）：右侧滑出抽屉 -->
+<div class="overlay overlay-right" id="mSel">
+  <div class="sel-drawer shell"><div class="core sel-core">
+    <div class="sel-head">
+      <div style="min-width:0">
+        <div class="sel-title" id="selTitle">勾选范围</div>
+        <div class="sel-sub">勾选 = 建向量库 · 不勾 = 全流程排除 · 点文件夹名下钻（不越库根）</div>
+      </div>
+      <button class="btn btn-sm btn-ghost" id="selClose" data-close>关闭</button>
+    </div>
+    <div class="sel-crumb" id="selCrumb"></div>
+    <div class="sel-fmts" id="selFmts"></div>
+    <div class="sel-list" id="selList" role="list"></div>
+    <div class="sel-foot">
+      <span class="sel-pend" id="selPend"></span>
+      <span style="flex:1"></span>
+      <button class="btn btn-sm btn-ghost" id="selGiveup">放弃</button>
+      <button class="btn btn-sm btn-primary" id="selSave" disabled>保存更改</button>
+    </div>
+  </div></div>
+</div>
+
+<div class="overlay" id="mAdd">  <div class="shell modal"><div class="core modal-core">
     <h3>添加知识库</h3>
     <p class="m-desc">指向一个本地文件夹，保存后立即纳入扫描与索引。</p>
     <div class="field">

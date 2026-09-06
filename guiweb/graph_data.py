@@ -109,7 +109,9 @@ def build_graph_for_lib(cfg):
     try:
         for p in collect_md_files(cfg["path"], cfg["exclude_dirs"],
                                   cfg["exclude_files"], cfg["exclude_patterns"],
-                                  extensions=["pdf"]):
+                                  extensions=["pdf"],
+                                  selection=(cfg.get("selection_in"), cfg.get("selection_out")),
+                                  selection_default=cfg.get("selection_default", "follow")):
             rel = str(Path(p).relative_to(cfg["path"]))
             if rel.lower() in indexed:
                 continue

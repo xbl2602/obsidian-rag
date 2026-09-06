@@ -13,7 +13,10 @@
 - 索引过程中搜索不阻塞：用现有索引返回结果并附提示（首跑索引为空时例外，同步等待）；
 - 写锁 60s 超时 + 持有者 PID 定位，杜绝"残留实例持锁 → 新实例无限死等"。
 """
+import hashlib
+import json
 import os
+import secrets
 import threading
 import time
 from datetime import datetime
@@ -21,7 +24,7 @@ from pathlib import Path
 
 from mcp.server import MCPServer
 
-from config import CFG
+from config import CFG, DATA_DIR
 from config import reload_config
 from dedup import (DEFAULT_THRESHOLD as DEDUP_THRESHOLD, find_duplicates as dedup_find,
                    format_report as dedup_format_report)
@@ -33,8 +36,10 @@ from index import (HEARTBEAT_TIMEOUT, LockBusyError, collect_md_files,
                    index_library, kb_stale, load_meta, log, progress_text,
                    read_progress, resolve_note_relations)
 from library import (effective_config, list_summary, load_registry, meta_path,
-                     resolve_entries, set_config)
+                     norm_sel_path, resolve_entries, resolve_selection,
+                     set_config, set_selection)
 from retriever import hybrid_search_hyde, reset_bm25_index
+import selection_gate
 from singleton import acquire_singleton
 from wemm_retriever import wemm_search
 import gpu_arbiter
@@ -93,7 +98,9 @@ def _pending_formats(cfg):
         try:
             n = len(collect_md_files(cfg["path"], cfg["exclude_dirs"],
                                      cfg["exclude_files"], cfg["exclude_patterns"],
-                                     [fmt]))
+                                     [fmt],
+                                     selection=(cfg.get("selection_in"), cfg.get("selection_out")),
+                                     selection_default=cfg.get("selection_default", "follow")))
         except Exception:
             n = 0
         if n:
@@ -197,7 +204,9 @@ def ensure_fresh():
                                         cfg["exclude_files"], cfg["exclude_patterns"],
                                         cfg["extensions"],
                                         tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0),
-                                        agent_allowed=allowed)
+                                        agent_allowed=allowed,
+                                        selection=(cfg.get("selection_in"), cfg.get("selection_out")),
+                                        selection_default=cfg.get("selection_default", "follow"))
             except Exception as e:
                 log(f"指纹检查失败（{cfg['name']}）：{e}")
                 stale, stats = True, {}
@@ -284,6 +293,88 @@ def list_libraries() -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# 库内路径级勾选（问题44）：Agent 经 MCP 提议，硬编码两段式确认门禁。
+# 门禁数据面在 selection_gate.py（可独立单测），此处只是 MCP 薄封装。
+# ---------------------------------------------------------------------------
+SELECTION_TTL_S = selection_gate.TTL_S
+
+
+@server.tool()
+def get_selection(library: str) -> str:
+    """查看某库的路径级勾选状态（只读）：显式勾选/排除清单 + 各自数量。
+    用于提议变更前了解现状。library 为确切库名（见 list_libraries）。"""
+    try:
+        e = resolve_entries(library, "")[0]
+        cfg = effective_config(e)
+        sin, sout = cfg.get("selection_in") or [], cfg.get("selection_out") or []
+        lines = [f"库「{e['name']}」勾选状态（未列出的文件 = 中性，按格式开关与"
+                 f"默认归属 {cfg.get('selection_default', 'follow')} 判定）："]
+        lines.append(f"显式勾选 {len(sin)} 项：")
+        lines += [f"  + {p}" for p in sin] or ["  （无）"]
+        lines.append(f"显式排除 {len(sout)} 项：")
+        lines += [f"  - {p}" for p in sout] or ["  （无）"]
+        return '\n'.join(lines)
+    except ValueError as err:
+        return f"（{err}）"
+    except Exception as err:
+        log(f"get_selection 失败：{err}")
+        return f"（查询失败：{err}）"
+
+
+@server.tool()
+def propose_selection_changes(library: str, changes: list) -> str:
+    """提议库内文件/文件夹级勾选变更（in=纳入建库 / out=排除 / neutral=恢复跟随格式）。
+    被排除的文件将从整个知识库流程中消失：不扫描、不嵌入、不 OCR、不建页级导航。
+
+    ⚠ 硬性确认门禁：本工具绝不直接生效。它只生成一份待确认提案并返回变更清单
+    与 6 位确认码；你必须把变更清单完整展示给用户、得到用户明确同意后，才能
+    携带 proposal_id 与确认码调用 apply_selection_changes。未经用户同意就调用
+    apply 是严重违规。提案 10 分钟后过期。"""
+    try:
+        reload_config()
+        e = resolve_entries(library, "")[0]
+        cfg = effective_config(e)
+        try:
+            proposal_id, code, diff = selection_gate.make_proposal(e["name"], cfg, changes)
+        except selection_gate.GateError as err:
+            return f"（{err}）"
+        log(f"勾选变更提案已生成（库={library}，提案={proposal_id}，"
+            f"{len(changes or [])} 项）——等待用户确认")
+        return diff
+    except ValueError as err:
+        return f"（{err}）"
+    except Exception as err:
+        log(f"propose_selection_changes 失败：{err}")
+        return f"（提案失败：{err}）"
+
+
+@server.tool()
+def apply_selection_changes(library: str, proposal_id: str, confirmation_code: str) -> str:
+    """应用已获用户确认的勾选变更提案。只有 propose_selection_changes 返回的
+    提案号 + 用户看到的确认码二者匹配、且未过期时才会生效——这是硬编码门禁，
+    无任何配置可绕过。生效后下一轮索引自动应用（新排除文件的旧块与页向量会被清理）。"""
+    try:
+        try:
+            changes = selection_gate.consume_proposal(library, proposal_id,
+                                                      confirmation_code)
+        except selection_gate.GateError as err:
+            log(f"AUDIT 勾选提案被拒（库={library}，提案={proposal_id}）：{err}")
+            return f"（{err}）"
+        entry = set_selection(library, changes)
+        ch_text = "；".join(f"{c['path']}→{c['action']}" for c in changes)
+        log(f"AUDIT 勾选变更已生效（库={library}，提案={proposal_id}）：{ch_text}")
+        n_in, n_out = len(entry.get("selection_in") or []), len(entry.get("selection_out") or [])
+        return (f"✅ 勾选变更已生效（经用户确认）：{ch_text}。"
+                f"当前显式勾选 {n_in} 项、显式排除 {n_out} 项。"
+                f"下一轮索引自动应用；可调用 reindex_knowledge 立即执行。")
+    except ValueError as err:
+        return f"（{err}）"
+    except Exception as err:
+        log(f"apply_selection_changes 失败：{err}")
+        return f"（应用失败：{err}）"
+
+
 @server.tool()
 def note_relations(path: str, library: str = "") -> str:
     """查询某篇笔记的双链关系（出链=本文链接到谁、入链=谁链接到本文），基于 Obsidian
@@ -315,7 +406,7 @@ def note_relations(path: str, library: str = "") -> str:
 @server.tool()
 def search_knowledge(query: str, top_k: int = None, libraries: str = "", exclude: str = "",
                      folder: str = "", include_body: bool = True) -> str:
-    """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 默认库（配置 default_libraries，本机为 Obsidian Vault 单库，test/agents/skills 等非笔记库不参与）；"all" = 全部库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 默认库) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径]、[块 k/N] 与 [置信度 x.xx·分档词] 位置标记。置信度解读（重要，勿按百分比直觉）：这是绝对相似度分，分布天然偏窄——0.50~0.52 是噪音区（语义≈"无法判断"，不是"半相关"），0.56~0.64 中相关，0.65+ 高相关（实测强命中上限约 0.73，几乎不会出现 0.9+）；分档词（高相关/中相关/弱相关）已附在分数后。优先引用排序靠前的结果；弱相关档结果对口语化 query 也可能是有效命中，但作为依据引用前应向用户核实。置信度低于 warn 阈值（默认 0.55）时标注（低置信度，仅供参考），低于 drop 阈值（默认 0.40）直接不输出。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
+    """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 默认库（配置 default_libraries，本机为 Obsidian Vault 单库，test/agents/skills 等非笔记库不参与）；"all" = 全部库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 默认库) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径]、[块 k/N] 与 [置信度 x.xx·分档词] 位置标记。置信度解读（重要）：显示的是经零点重标定的相关度分（2026-09-06 问题45）——0.00≈无关噪音（重排器"无法判断"已归零，不再是旧版的 0.50），0.20 以下弱相关，0.20~0.85 中相关，0.85+ 高相关，1.00=实测最强命中档；同一次查询内分数越高越相关且排序越靠前，但跨查询比较分数没有意义。优先引用排序靠前的结果；弱相关档结果对口语化 query 也可能是有效命中，作为依据引用前应向用户核实。命中低于内部 warn 阈值（对应展示分 0.20）时标注（低置信度，仅供参考）。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
     try:
         _touch_gpu_activity()
         note = ensure_fresh()
@@ -514,6 +605,11 @@ def read_document(library: str, path: str) -> str:
     if rel is None:
         return (f"（在库「{cfg['name']}」中找不到 \"{path}\"。先用 search_knowledge 或"
                 f" navigate_knowledge 找到源文件，再看库内的相对路径。）")
+    # 问题44：被用户显式排除的文件对 RAG 系统完全不存在——read_document 也拒绝
+    # （只拦显式取消；中性但格式未启用的文件不作拦，那只是过滤默认而非排除决定）
+    if resolve_selection(cfg.get("selection_in"), cfg.get("selection_out"), rel) == "out":
+        return (f"（「{cfg['name']}/{rel}」已被用户排除出知识库（勾选范围），"
+                f"RAG 流程不可访问。如确需读取请让用户在 GUI 库管理→勾选范围中恢复。）")
     abs_path = os.path.normpath(os.path.join(cfg["path"], rel))
     text, route = _read_source_text(cfg, rel, abs_path)
     if text is None:

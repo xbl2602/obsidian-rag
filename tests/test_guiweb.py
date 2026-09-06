@@ -186,7 +186,8 @@ def _patch_gd(ctx):
         load_meta=lambda name: dict(ctx.meta),
         load_wemm_meta=lambda name: dict(ctx.wemm),
         wemm_meta_path=lambda name: "unused",
-        collect_md_files=lambda vault, dirs, files, pats, extensions=None: (
+        collect_md_files=lambda vault, dirs, files, pats, extensions=None,
+                            **_: (
             [ctx.vault / "扫描新.pdf"] if extensions == ["pdf"] else []),
         current_backend_sig=lambda: "sig-1",
     )

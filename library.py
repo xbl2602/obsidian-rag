@@ -37,13 +37,167 @@ LIST_KEYS = ("exclude_dirs", "exclude_files", "exclude_patterns", "extensions",
 INT_KEYS = ("chunk_char_limit", "short_doc_char_limit")
 INVALID_NAME_CHARS = set('/\\:*?"<>|')
 
+# ---------------------------------------------------------------------------
+# 库内路径级勾选（问题44）：selection_in / selection_out 存注册表条目，
+# 不进 OVERRIDE_KEYS（不走 set_config 的逗号分割——路径可能含逗号），
+# 专用 set_selection / format_selection_bulk 增删，读侧经 effective_config 规范化。
+# 语义：最近显式赢（文件 > 父文件夹 > … > 库根），显式 > 格式开关 > 中性默认。
+# ---------------------------------------------------------------------------
+SELECTION_ACTIONS = ("in", "out", "neutral")
+
+
+def norm_sel_path(p):
+    """勾选路径规范化：反斜杠→/、剥首尾 / 与空白；拒绝绝对路径与 .. 逃逸。
+
+    返回不带尾斜杠的相对路径（文件夹与文件同形——解析靠前缀匹配，无需区分）。
+    只接受 str（int/dict 等一律拒绝——读侧防御手改，写侧拒绝 agent 手滑）。
+    """
+    if not isinstance(p, str):
+        raise ValueError(f"勾选路径必须是字符串：{p!r}")
+    raw = p
+    s = raw.strip().replace("\\", "/")
+    if s.startswith("/") or s.startswith("//") or re.match(r"^[A-Za-z]:", s) \
+            or s.startswith("~"):
+        raise ValueError(f"必须是库内相对路径（不含盘符/UNC/~/正斜杠根）：{p!r}")
+    s = s.strip("/")
+    if not s:
+        raise ValueError("勾选路径不能为空")
+    parts = s.split("/")
+    if any(part.strip() in ("", ".", "..") for part in parts):
+        raise ValueError(f"路径非法（不得含空段/./..）：{p!r}")
+    return "/".join(part.strip() for part in parts)
+
+
+def resolve_selection(sel_in, sel_out, rel):
+    """最近显式赢：从 rel 自身逐级向上找第一个出现在任一列表的祖先（含自身）。
+
+    返回 "in" | "out" | None（中性 = 无任何显式选择覆盖）。同一层级同时命中
+    两表属于非法状态（set_selection 已防止），此处 out 优先（宁可少索引）。
+    """
+    sin = set(sel_in or ())
+    sout = set(sel_out or ())
+    parts = str(rel).replace("\\", "/").strip("/").split("/")
+    for i in range(len(parts), 0, -1):
+        pre = "/".join(parts[:i])
+        if pre in sout:
+            return "out"
+        if pre in sin:
+            return "in"
+    return None
+
+
+def _sel_entry_lists(entry):
+    """条目的勾选两表（读侧防御：非列表/非法路径元素静默丢弃，防手改逃逸）。"""
+    out = []
+    for key in ("selection_in", "selection_out"):
+        vals = entry.get(key)
+        cleaned = []
+        if isinstance(vals, list):
+            for v in vals:
+                try:
+                    cleaned.append(norm_sel_path(v))
+                except ValueError:
+                    continue
+        out.append(cleaned)
+    return out[0], out[1]
+
+
+def set_selection(name, changes):
+    """应用勾选变更并落盘。changes = [{"path": rel, "action": "in"|"out"|"neutral"}]。
+
+    校验：库存在、路径合法且确实位于库内磁盘目录下（防 MCP 提案逃逸到库外）。
+    同一路径多条变更按顺序生效（后写覆盖先写）。返回更新后的条目 dict。
+    """
+    entries = load_registry()
+    entry = next((e for e in entries if e["name"] == name), None)
+    if entry is None:
+        raise ValueError(f"库不存在：{name}")
+    root = Path(entry["path"]).resolve()
+    if not root.is_dir():
+        raise ValueError(f"库路径不存在：{root}")
+    sin, sout = _sel_entry_lists(entry)
+    sin_set, sout_set = set(sin), set(sout)
+    for ch in changes or []:
+        rel = norm_sel_path((ch or {}).get("path"))
+        action = (ch or {}).get("action")
+        if action not in SELECTION_ACTIONS:
+            raise ValueError(f"非法 action：{action!r}（合法：{'/'.join(SELECTION_ACTIONS)}）")
+        target = (root / rel).resolve()
+        if root != target and root not in target.parents:
+            raise ValueError(f"路径越出库范围：{rel}")
+        sin_set.discard(rel)
+        sout_set.discard(rel)
+        if action == "in":
+            sin_set.add(rel)
+        elif action == "out":
+            sout_set.add(rel)
+        # neutral：已在上面的 discard 中移除显式记录
+    entry["selection_in"] = sorted(sin_set)
+    entry["selection_out"] = sorted(sout_set)
+    save_registry(entries)
+    return entry
+
+
+def format_selection_bulk(name, ext, include):
+    """格式批量语义（问题44 用户拍板③：全局开关 = 对该格式文件的批量勾/取消）。
+
+    include=False：selection_in 中扩展名为 ext 的**文件级**条目移入 selection_out
+    （用户显式勾选的该格式文件跟着取消）；include=True：selection_out 中该格式的
+    文件级条目移除。文件夹级条目永不被批量操作触碰。
+    返回受影响的条目数。ext 大小写不敏感（内部小写归一）。
+    """
+    entries = load_registry()
+    entry = next((e for e in entries if e["name"] == name), None)
+    if entry is None:
+        raise ValueError(f"库不存在：{name}")
+    ext_l = str(ext or "").lower().lstrip(".")
+
+    def _file_fmt(p):
+        # 文件级判定按扩展名（子目录里的文件同样含斜杠，不能以 "/" 有无区分；
+        # 文件夹条目极少以 .ext 结尾，误伤面可忽略）
+        return p.lower().endswith("." + ext_l)
+
+    sin, sout = _sel_entry_lists(entry)
+    if include:
+        kept_out = [p for p in sout if not _file_fmt(p)]
+        if len(kept_out) == len(sout):
+            return 0
+        entry["selection_out"] = sorted(kept_out)
+        save_registry(entries)
+        return len(sout) - len(kept_out)
+    moved = [p for p in sin if _file_fmt(p)]
+    if not moved:
+        return 0
+    entry["selection_in"] = sorted(p for p in sin if not _file_fmt(p))
+    entry["selection_out"] = sorted(set(sout) | set(moved))
+    save_registry(entries)
+    return len(moved)
+
+
+def bulk_for_extensions(name, old_exts, new_exts):
+    """extensions 变更 → 批量勾选语义收口（单一漏斗：GUI/CLI/MCP 都经 set_config）。
+
+    被移除的格式：显式勾选的文件跟着取消（移入 selection_out，用户拍板③）；
+    新增的格式：selection_out 中的该格式文件条目移除（恢复跟随=纳入）。
+    """
+    old = {e.lower().lstrip(".") for e in (old_exts or [])}
+    new = {e.lower().lstrip(".") for e in (new_exts or [])}
+    n = 0
+    for fmt in sorted(old - new):
+        n += format_selection_bulk(name, fmt, include=False)
+    for fmt in sorted(new - old):
+        n += format_selection_bulk(name, fmt, include=True)
+    return n
+
+
 
 def log(*args):
     print(*args, file=sys.stderr)
 
 
 def _blank_entry(name, path):
-    return {k: None for k in OVERRIDE_KEYS} | {"name": name, "path": path}
+    return {k: None for k in OVERRIDE_KEYS} | {
+        "name": name, "path": path, "selection_in": [], "selection_out": []}
 
 
 def validate_name(name):
@@ -172,6 +326,11 @@ def effective_config(entry):
         v = entry.get(k)
         if v is not None:
             cfg[k] = v
+    # 问题44 路径级勾选：读侧规范化 + 中性默认（config.selection_new_files）
+    sel_in, sel_out = _sel_entry_lists(entry)
+    cfg["selection_in"] = sel_in
+    cfg["selection_out"] = sel_out
+    cfg["selection_default"] = CFG.get("selection_new_files", "follow")
     return cfg
 
 
@@ -255,6 +414,7 @@ def set_config(name, key, value):
             e2 = str(e).lower().lstrip(".")
             if e2 and e2 not in norm:
                 norm.append(e2)
+    old_exts = None
     if key == "extensions":
         bad = [e for e in norm if e not in SUPPORTED_EXTS]
         if bad:
@@ -264,6 +424,7 @@ def set_config(name, key, value):
         if not norm:
             raise ValueError("extensions 不能为空")
         parsed = norm
+        old_exts = list(entry.get("extensions") or DEFAULT_EXTENSIONS)
     if key == "agent_formats":
         # Agent 授权清单：仅二进制格式、且须已在当前 extensions 中启用；
         # 授权随 extensions 收窄自动失效（effective_config 取交集），此处挡手误。
@@ -288,6 +449,11 @@ def set_config(name, key, value):
                 raise ValueError(f"collection 与现有库冲突：{parsed}")
     entry[key] = parsed
     save_registry(entries)
+    if key == "extensions":
+        # 问题44 批量勾选语义收口：格式移除 → 显式勾选的该格式文件移入
+        # selection_out；格式新增 → selection_out 中该格式文件条目移除。
+        # 必须在 save 之后调（其内部重读注册表做读改写，先调会被本次 save 覆盖）。
+        bulk_for_extensions(name, old_exts, parsed)
     return entry
 
 

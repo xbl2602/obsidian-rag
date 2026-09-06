@@ -16,6 +16,13 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   契约见 `guiweb/contracts.md`，功能对齐清单 `guiweb/FEATURE_PARITY.md`，接线检查
   `guiweb/wiring_check.py`（纳入 tests/test_guiweb.py 回归）。改 store/config_editor
   等共享层时两套 GUI 都要过一遍
+- **路径级勾选建模（问题44）**：`libraries.json` 每库 `selection_in`/`selection_out`
+  （显式勾选/排除，相对路径）+ 中性默认 `selection_new_files`。判定优先级：
+  exclude_* 硬排除 > **最近显式选择**（文件>父文件夹）> 格式开关 extensions。
+  过滤在 `collect_md_files` 唯一漏斗（新增 selection 参数）——**新增文件枚举路径
+  必须穿它**，否则被排除文件会漏进管线。格式开关变更经 bulk_for_extensions 批量
+  勾/取消（文件级条目跟着迁移，文件夹级不动）。Agent 改勾选只走 MCP 两段式硬门禁
+  （selection_gate.py：提案号+确认码+TTL+一次性，无配置绕过），GUI 直改免码
 - META_VERSION **9**：多格式提取 + 统一终态 + 原始字节指纹；EXTRACT_VERSION **4**
 - 多格式默认开启（`extensions=md,pdf,docx`）；扫描件 OCR 经 MinerU 云端 API（`pdf_scan_backend`，默认 none）
 - **混合型 PDF（任一页无文字层，含"PPT 文字页+扫描图"混装课件）整本按扫描件路由**（问题34）：

@@ -150,15 +150,15 @@ def test_parse_src_spacey_path():
 
 
 def test_conf_color_levels():
-    # 2026-09-06 按实测分布重校准（问题43）：高相关线 0.65（= retriever.CONF_TIER_STRONG），
-    # 中/弱分界 0.55（= warn 阈值）；旧边界 0.75/0.5 会把大部分好命中标成中间色。
+    # 2026-09-06 问题45 起解析到的是重标定后的展示分（retriever._conf_display：
+    # 噪音归 0、强命中 1.0），配色档位随之换算：0.85 展示分 = 原始 0.65（高相关线），
+    # 0.20 展示分 = 原始 0.55（warn 阈值线）。
     assert _conf_color(0.9, DARK) == DARK["success"]
-    assert _conf_color(0.75, DARK) == DARK["success"]
-    assert _conf_color(0.65, DARK) == DARK["success"]
+    assert _conf_color(0.85, DARK) == DARK["success"]
     assert _conf_color(0.6, DARK) == DARK["accent"]
-    assert _conf_color(0.55, DARK) == DARK["accent"]
-    assert _conf_color(0.5, DARK) == DARK["warning"]
-    assert _conf_color(0.3, DARK) == DARK["warning"]
+    assert _conf_color(0.2, DARK) == DARK["accent"]
+    assert _conf_color(0.15, DARK) == DARK["warning"]
+    assert _conf_color(0.0, DARK) == DARK["warning"]
 
 
 def test_parse_src_confidence_with_tier():

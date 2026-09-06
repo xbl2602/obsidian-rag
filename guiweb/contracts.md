@@ -92,6 +92,20 @@
 
 ### pick_path(mode, start) → {path, error}（原生选择弹窗；mode: "dir"|"file"；start 为输入框现值用于定位起始目录；取消 → {path:null}）
 
+### selection_tree(lib, sub) → 该目录一层的勾选态（问题44；sub 空=库根；越界/非法 → {error}）
+```json
+{"lib":"…","sub":"…","root":"…","dirs":[{"name":"课件","dir":true,"path":"课件","explicit":null,"state":"auto_in","state_text":"入库（跟随格式）","n_children":5}],
+ "files":[{"name":"a.pdf","dir":false,"path":"课件/a.pdf","explicit":"in","state":"in","state_text":"已入库（显式勾选）","ext":"pdf"}],
+ "selection_in":["…"],"selection_out":["…"],"error":null}
+```
+state：in/out（显式）| auto_in/auto_out（中性，按格式开关与 selection_new_files 判定）。
+
+### selection_update(lib, changes:[{path, action:"in"|"out"|"neutral"}]) → {ok, error?, selection_in, selection_out}
+GUI=用户本人，直接生效（无需 MCP 那套确认码）；下一轮索引自动应用。
+
+### selection_format_bulk(lib, ext, include) → {ok, changed, error?}
+格式快捷批量：include=false 把该格式文件的显式勾选移入排除（青苹果菜单跟着取消）；true 反向。文件夹级条目不动。
+
 ### get_settings() → 设置页全量
 ```json
 {"groups":[{"title":"PDF 与云端 OCR","level":"basic|advanced","desc":"…",

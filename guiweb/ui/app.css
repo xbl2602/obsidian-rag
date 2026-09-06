@@ -993,3 +993,38 @@ body.g-mono .g-node .g-mark{background:var(--s4) !important;border-color:var(--h
   color:var(--warn,#FBBF24);border-bottom:1px solid rgba(251,191,36,0.35);
   text-align:center;padding:6px 16px;font-size:12px;pointer-events:none}
 body.mock{padding-top:30px}
+
+/* ============ 勾选范围抽屉（问题44） ============ */
+.overlay.overlay-right{justify-content:flex-end;align-items:stretch;padding:0}
+.sel-drawer{
+  position:relative;margin:0;height:100%;width:560px;max-width:92vw;border-radius:0;
+  border-right:none;border-top:none;border-bottom:none;
+  transform:translateX(100%);transition:transform .28s var(--ease);
+}
+.overlay.open .sel-drawer{transform:translateX(0)}
+.sel-core{display:flex;flex-direction:column;height:100%;padding:18px 20px;gap:12px;min-height:0}
+.sel-head{display:flex;align-items:flex-start;gap:12px}
+.sel-title{font-size:16px;font-weight:700;color:var(--text)}
+.sel-sub{font-size:12px;color:var(--sec);margin-top:2px}
+.sel-crumb{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:12.5px}
+.sel-crumb-it{background:none;border:none;color:var(--accent);cursor:pointer;padding:2px 4px;border-radius:6px;font-size:12.5px}
+.sel-crumb-it:hover{background:var(--s2)}
+.sel-crumb-sep{color:var(--sec)}
+.sel-fmts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 0;border-top:1px solid var(--s3);border-bottom:1px solid var(--s3)}
+.sel-fmts-label{font-size:12px;color:var(--sec)}
+.sel-list{flex:1;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:2px}
+.sel-loading{color:var(--sec);font-size:13px;padding:20px 0;text-align:center}
+.sel-row{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;min-height:34px}
+.sel-row:hover{background:var(--s2)}
+.sel-row .sel-ck{flex:none;margin:0}
+.sel-name{background:none;border:none;color:var(--body);font-size:13px;padding:0;text-align:left;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sel-name.sel-dir{color:var(--accent);cursor:pointer;font-weight:600}
+.sel-name.sel-dir:hover{text-decoration:underline}
+.sel-badge{margin-left:auto;flex:none;font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--s3);color:var(--sec);white-space:nowrap}
+.sel-badge.sin{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
+.sel-badge.sout{color:var(--err);border-color:transparent}
+.sel-follow{flex:none;background:none;border:1px solid var(--s3);color:var(--sec);font-size:11px;padding:1px 8px;border-radius:99px;cursor:pointer}
+.sel-follow:hover{color:var(--body);border-color:var(--sec)}
+.sel-pend-dot{color:var(--warn);font-size:12px}
+.sel-foot{display:flex;align-items:center;gap:10px;padding-top:10px;border-top:1px solid var(--s3)}
+.sel-pend{font-size:12px;color:var(--warn)}

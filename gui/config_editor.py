@@ -28,7 +28,8 @@ GROUPS = [
      "desc": "本项目是多库架构：真正的库列表与每库配置在工具栏「📚 库管理」"
              "（data/libraries.json）。以下两项是单库时代的全局默认，"
              "改动不影响任何已注册库。",
-     "fields": [("vault", "str"), ("collection_name", "str")]},
+     "fields": [("vault", "str"), ("collection_name", "str"),
+                ("selection_new_files", "str")]},
     {"title": "模型", "level": "basic", "icon": "MODEL_TRAINING_OUTLINED",
      "desc": "本机在用两个模型：bge-m3（嵌入）+ bge-reranker-v2-m3（精排）。"
              "候选芯片只是推荐清单，点选后首次使用才会从 HuggingFace 自动下载。",
@@ -101,6 +102,14 @@ FIELD_META = {
     "collection_name": {"label": "向量库名（全局默认）", "rebuild": True,
                         "hint": "每库 collection 由库名派生或按库覆盖（库管理）；"
                                 "本键只作用于旧单库路径与首库迁移"},
+    "selection_new_files": {"label": "中性文件默认归属",
+                            "choices": [
+                                ("follow", "跟随格式开关（默认：extensions 决定）"),
+                                ("include", "一律纳入（可穿透格式白名单，仅受支持格式）"),
+                                ("exclude", "一律排除（须在勾选面板逐个显式勾选）"),
+                            ],
+                            "hint": "问题44 路径级勾选：未被显式勾选/排除的文件的默认"
+                                    "判定；显式选择（库管理→勾选范围）永远优先"},
     # ---- 模型 ----
     "model_name": {"label": "嵌入模型", "rebuild": True,
                    "hint": "HuggingFace 模型标识；候选芯片仅为推荐（点选后首次使用"

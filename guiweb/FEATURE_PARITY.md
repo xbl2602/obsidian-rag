@@ -97,3 +97,9 @@
    G.searching 守卫静默吞掉；clearGLit 不清 `.g-conf` 旧角标，两轮连续检索
    显示互相污染。修复：按钮 busy 态 + toast；clearGLit 同步清角标。浏览器
    两轮连续检索实测干净。
+## 问题44 增量（2026-09-06）：路径级勾选建模（guiweb 独有，Flet 备用版不同步）
+| 功能 | 落点 | 状态 |
+|---|---|---|
+| 库管理「勾选范围」右侧抽屉（下钻/生效态徽章/跟随恢复/格式快捷批量/攒批保存） | selection_tree/selection_update/selection_format_bulk | ✅ 代码 |
+| 排除=对管线不存在（扫描漏斗唯一过滤，块与 WEMM 页自动清理） | collect_md_files selection 参数 | ✅ 代码 |
+| MCP 两段式确认门禁（提案号+确认码+TTL+一次性+审计） | selection_gate.py + server 三工具 | ✅ 代码 |

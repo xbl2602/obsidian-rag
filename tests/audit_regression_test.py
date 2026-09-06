@@ -344,31 +344,46 @@ def test_confidence_matches_display_order():
 
 
 def test_confidence_tier_semantic_anchor():
-    """问题43（2026-09-06）：重排 sigmoid 绝对分实测挤在 0.50~0.73（噪音地板 0.50~0.52，
-    强命中上限 ~0.73），数字差值与语义差距非线性错位，人和 LLM 都会按百分比直觉误读。
-    展示层必须附分档词（[置信度 x.xx·高相关/中相关/弱相关]）：
-    - retriever._format_results 输出带 _conf_tier 档位；
-    - 高相关线 0.65 与两套 GUI 配色档位一致（flet _conf_color / guiweb scoreBadge）；
-    - 两套 GUI 解析正则兼容带档位与不带档位两种格式。
-    分档只改展示文本，排序与阈值过滤不得受影响。"""
+    """问题43/45（2026-09-06）：重排 sigmoid 绝对分实测挤在 0.50~0.73（噪音地板
+    0.50~0.52，强命中上限 ~0.73），数字差值与语义差距非线性错位，人和 LLM 都会按
+    百分比直觉误读。两层修复都必须在位：
+    - 展示层附分档词（[置信度 x.xx·高相关/中相关/弱相关]），边界 0.65/warn；
+    - 展示数值经 _conf_display 零点重标定：噪音地板 0.50→0.00、强命中 0.73→1.00，
+      未命中不再显示 50%；单调保序；锚点外钳位 0~1。
+    - 两套 GUI 配色档位与展示分档一致（高 0.85 / 弱 0.20），解析正则兼容带档位格式。
+    分档/重标定只改展示文本，排序与阈值过滤不得受影响。
+    **换重排/嵌入打分模型后必须重测锚点与档位边界。**"""
     import retriever
     assert retriever.CONF_TIER_STRONG == 0.65, "高相关分档线实测标定值 0.65，改前先重测分布"
     assert retriever._conf_tier(0.65, 0.55) == "高相关"
     assert retriever._conf_tier(0.61, 0.55) == "中相关"
     assert retriever._conf_tier(0.55, 0.55) == "中相关"
     assert retriever._conf_tier(0.51, 0.55) == "弱相关"
+    # 零点重标定：无关归零、强命中满档、单调保序、钳位
+    assert retriever._conf_display(0.50) == 0.0, "噪音地板必须归零（问题45 的核心）"
+    assert retriever._conf_display(0.49) == 0.0
+    assert retriever._conf_display(0.73) == 1.0, "实测强命中上限应映射为满档"
+    assert retriever._conf_display(0.80) == 1.0, "锚点之上钳位 1.0"
+    raws = [0.30, 0.50, 0.52, 0.55, 0.58, 0.61, 0.65, 0.70, 0.73]
+    disp = [retriever._conf_display(x) for x in raws]
+    assert disp == sorted(disp), "重标定必须单调保序"
+    assert all(0.0 <= d <= 1.0 for d in disp)
+    assert abs(retriever._conf_display(0.55) - 0.20) < 1e-9, "warn 线锚点应落在展示分 0.20"
+    assert abs(retriever._conf_display(0.65) - 0.85) < 1e-9, "高相关线锚点应落在展示分 0.85"
     fmt_src = inspect.getsource(retriever._format_results)
     assert "_conf_tier" in fmt_src, "来源行置信度必须附分档词"
-    # 分档词只进展示文本：_rrf_combine / 排序路径不得引用分档
-    assert "_conf_tier" not in inspect.getsource(retriever._rrf_combine)
-    # flet GUI：解析兼容带档位格式 + 配色档位与 retriever 一致
+    assert "_conf_display" in fmt_src, "来源行数值必须经零点重标定"
+    # 分档/重标定只进展示：_rrf_combine / 排序路径不得引用
+    rrf_src = inspect.getsource(retriever._rrf_combine)
+    assert "_conf_tier" not in rrf_src and "_conf_display" not in rrf_src
+    # flet GUI：解析兼容带档位格式 + 配色档位与展示分尺度一致
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui"))
     import gui.widgets as widgets
     assert r"\[置信度 ([\d.]+)(?:·[^\]]*)?\]" in inspect.getsource(widgets._parse_src), \
         "flet 解析正则必须兼容·分档词后缀"
     color_src = inspect.getsource(widgets._conf_color)
-    assert "0.65" in color_src and "0.55" in color_src, \
-        "flet 配色档位应与实测标定（0.65/0.55）一致"
+    assert "0.85" in color_src and "0.2" in color_src, \
+        "flet 配色档位应与展示分尺度（0.85/0.20）一致"
     # guiweb 桥：解析兼容带档位格式
     import guiweb.bridge as bridge
     assert r"\[置信度 ([\d.]+)(?:·[^\]]*)?\]" in inspect.getsource(bridge), \

@@ -289,6 +289,109 @@ class Bridge:
             self._log("更新库配置：%s（%s）" % (name, ", ".join(updates or {})))
         return {"ok": not errors, "errors": errors}
 
+    # ---------- 勾选范围（问题44：库内文件/文件夹级勾选建模） ----------
+    def selection_tree(self, name, sub=""):
+        """列某目录下一层的文件/文件夹 + 勾选态（懒加载：一次只列一层）。
+
+        每项：{name, dir, explicit: "in"|"out"|null, state, state_text}。
+        state ∈ in(入库) / out(排除) / auto_in(中性·格式判定入库) / auto_out(中性·排除)。
+        sub 越出库根或非法 → error。零模型加载。
+        """
+        try:
+            from library import (effective_config, load_registry, norm_sel_path,
+                                 resolve_selection)
+            entry = next((e for e in load_registry() if e["name"] == name), None)
+            if entry is None:
+                return {"error": "库不存在：%s" % name}
+            root = Path(entry["path"]).resolve()
+            if not root.is_dir():
+                return {"error": "库路径不存在：%s" % root}
+            sub_n = ""
+            if sub:
+                sub_n = norm_sel_path(sub)
+            cur = (root / sub_n).resolve() if sub_n else root
+            if root != cur and root not in cur.parents:
+                return {"error": "路径越出库范围"}
+            if not cur.is_dir():
+                return {"error": "目录不存在：%s" % sub_n}
+            cfg = effective_config(entry)
+            sel_in, sel_out = cfg["selection_in"], cfg["selection_out"]
+            default = cfg.get("selection_default", "follow")
+
+            def _state(rel):
+                v = resolve_selection(sel_in, sel_out, rel)
+                explicit = None
+                if v == "in":
+                    explicit = "in"
+                elif v == "out":
+                    explicit = "out"
+                if v is None:
+                    if default == "exclude":
+                        v = "out"
+                    elif default == "include":
+                        v = "in"
+                    else:
+                        v = "in" if rel.rsplit(".", 1)[-1].lower() in cfg["extensions"]                             else "out"
+                state = v if explicit else ("auto_" + v)
+                text = {"in": "已入库（显式勾选）", "out": "已排除（显式取消）",
+                        "auto_in": "入库（跟随格式）", "auto_out": "排除（跟随格式）"}[state]
+                return state, explicit, text
+
+            dirs, files = [], []
+            for it in sorted(cur.iterdir(), key=lambda x: x.name.lower()):
+                if it.name.startswith(".") and it.is_dir():
+                    continue  # 隐藏目录（.obsidian 等）不进面板
+                rel = (sub_n + "/" if sub_n else "") + it.name
+                if it.is_dir():
+                    st, ex, tx = _state(rel)
+                    dirs.append({"name": it.name, "dir": True, "path": rel,
+                                 "explicit": ex, "state": st, "state_text": tx,
+                                 "n_children": sum(1 for _ in it.iterdir())})
+                else:
+                    st, ex, tx = _state(rel)
+                    files.append({"name": it.name, "dir": False, "path": rel,
+                                  "explicit": ex, "state": st, "state_text": tx,
+                                  "ext": it.suffix.lower().lstrip(".")})
+            return {"lib": name, "sub": sub_n, "root": str(root), "dirs": dirs,
+                    "files": files, "selection_in": sel_in, "selection_out": sel_out,
+                    "extensions": cfg["extensions"], "default": default,
+                    "error": None}
+        except ValueError as e:  # noqa: BLE001
+            return {"error": str(e)}
+        except Exception as e:  # noqa: BLE001
+            return {"error": "列目录失败：%s" % e}
+
+    def selection_format_bulk(self, name, ext, include):
+        """格式快捷批量：include=false 把 selection_in 中该格式文件条目移入
+        selection_out（显式勾选跟着取消）；include=true 反向移除。文件夹级不动。
+        （GUI 侧调用前应有"将清除该格式单独勾选"的确认提示。）"""
+        try:
+            from library import format_selection_bulk
+            n = format_selection_bulk(name, ext, bool(include))
+            self._log("勾选格式批量（%s）：%s %s，影响 %d 项"
+                      % (name, ext, "纳入" if include else "排除", n))
+            return {"ok": True, "changed": n, "error": None}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "changed": 0, "error": str(e)}
+
+    def selection_update(self, name, changes):
+        """GUI 直接应用勾选变更（GUI 操作=用户本人，无需确认码）。
+
+        changes = [{path, action: "in"|"out"|"neutral"}]，语义与 MCP 提案一致。
+        """
+        try:
+            from library import set_selection
+            entry = set_selection(name, changes or [])
+            ch_text = "；".join("%s→%s" % (c.get("path"), c.get("action"))
+                                for c in (changes or []))
+            self._log("勾选范围更新（%s）：%s" % (name, ch_text))
+            return {"ok": True, "error": None,
+                    "selection_in": entry.get("selection_in") or [],
+                    "selection_out": entry.get("selection_out") or []}
+        except Exception as e:  # noqa: BLE001
+            self._log("勾选范围更新失败（%s）：%s" % (name, e), is_error=True)
+            return {"ok": False, "error": str(e)}
+
     def unset_library_config(self, name, keys):
         from library import unset_config
         for key in keys or []:

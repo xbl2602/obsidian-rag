@@ -22,6 +22,7 @@ DEFAULTS = {
     "exclude_files": ["目录.md", "AGENTS.md", "LOG.md", "README.md"],
     "exclude_patterns": ["session-", "会话", ".tmp"],
     "tbd_exclude_ratio": 0.1,  # 正文含 [TBD] 占位的行占比 ≥ 此值的文件跳过索引（0=关闭）
+    "selection_new_files": "follow",  # 中性文件默认归属：follow/include/exclude（问题44）
     "model_name": "BAAI/bge-m3",
     "collection_name": "obsidian_kb",
 
@@ -69,10 +70,12 @@ DEFAULTS = {
     "default_top_k": 5,
     "default_libraries": [],  # libraries 为空时的默认库列表；空 = 全部注册库
 
-    # ---- 置信度阈值（检索输出护栏）----
-    # 标定参考（2026-09-06 九组查询实测，问题43）：重排 sigmoid 绝对分挤在
+    # ---- 置信度阈值（检索输出护栏；均为**原始分**尺度）----
+    # 标定参考（2026-09-06 九组查询实测，问题43/45）：重排 sigmoid 绝对分挤在
     # 0.50~0.73——噪音地板 0.50~0.52（logit≈0 = "无法判断"），确定命中 top1
-    # 约 0.65~0.73（retriever.CONF_TIER_STRONG=0.65 为高相关分档线）。
+    # 约 0.65~0.73。展示数值经 retriever._conf_display 零点重标定（0.50→0.00、
+    # 0.73→1.00），对外看到的分数与这里的阈值不同尺度：warn=0.55 原始分 ≈
+    # 展示分 0.20，高相关线 0.65 原始分 ≈ 展示分 0.85。改阈值时按此换算。
     "confidence_warn_threshold": 0.55,  # 命中置信度低于此值 → 来源行标注（低置信度，仅供参考）
     "confidence_drop_threshold": 0.40,  # 命中置信度低于此值 → 该来源不输出（宁缺毋滥；
                                         # sigmoid 地板 0.50 下基本不触发，留作降级路径兜底）
@@ -148,6 +151,14 @@ CONFIG_TEMPLATE = """\
   // 文件补全后（占比回落）自动恢复索引，无需手动操作。
   // 修改后需 --full 重建该库（影响索引内容）。
   "tbd_exclude_ratio": 0.1,
+
+  // 库内路径级勾选（问题44）：中性文件（未被用户显式勾选/排除，也没有显式选择的
+  // 祖先文件夹）的默认归属。follow = 按该库 extensions 格式开关判定（默认，语义：
+  // 格式开关就是"这类文件要不要"的长期意志）；include = 中性的受支持格式文件
+  // 一律纳入（可穿透 extensions 白名单）；exclude = 中性文件一律排除。
+  // 用户显式勾选/排除（libraries.json 的 selection_in/selection_out）永远优先于此项。
+  // 修改只影响中性文件的判定，不需要 --full（下轮增量自动应用）。
+  "selection_new_files": "follow",
 
   // 嵌入模型名（sentence-transformers 标识）。换模型 = 换向量空间：
   // 旧向量与新向量不可混用，必须 python index.py --full 全量重嵌。
@@ -305,8 +316,10 @@ CONFIG_TEMPLATE = """\
   // 白话/模糊输入的查询天然置信度偏低——此时只标注不隐藏：若全部结果
   // 的最高置信度仍 < warn，结果头部整体提示"置信度偏低，仅供参考"。
   // 标定参考（2026-09-06 实测）：重排 sigmoid 绝对分天然挤在 0.50~0.73——
-  // 噪音地板 0.50~0.52（logit≈0 = "无法判断"，不是"一半相关"），强命中上限约 0.73；
-  // 展示层已附分档词（[置信度 x.xx·高相关/中相关/弱相关]，高相关线 0.65）。
+  // 噪音地板 0.50~0.52（logit≈0 = "无法判断"），强命中上限约 0.73。
+  // 两个阈值都是**原始分**尺度；对外展示的分数经零点重标定（0.50→0.00、
+  // 0.73→1.00，retriever._conf_display），并附分档词：展示分 <0.20 弱相关
+  // （=原始 0.55 warn 线）、0.20~0.85 中相关、≥0.85 高相关（=原始 0.65）。
   // warn 设在 0.55：调高 = 更多提醒。drop=0.40 在 sigmoid 地板下基本不触发，
   // 留作重排降级（RRF 分）等分布变化场景的兜底，调高会误杀模糊查询的真命中。
   "confidence_warn_threshold": 0.55,

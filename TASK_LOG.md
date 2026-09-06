@@ -1921,7 +1921,11 @@ test_config_editor.py 基线零回归；接线检查全绿；pywebview 真机冒
 全绿（pick_path 三向对齐）；浏览器实测两轮连续检索角标不残留、保存链路 toast
 正常、busy 态往返正确。
 
-## 问题44：检索置信度语义锚——实测分布重标定 + 分档词 + 工具说明写明读法（2026-09-06）
+## 问题45：检索置信度语义锚与展示分零点重标定——分数终于"0=无关、1=强命中"（2026-09-06）
+
+> 编号备注：本条最初以"问题44"提交（commit 230f358）,但同日另一会话已把
+> "库内路径级勾选"占用问题44（commit d5538e5 及其代码 docstring）,故整体改挂
+> 问题45。本条覆盖两轮:前半=语义锚（已随 230f358 入库）,后半=零点重标定。
 
 **动机**：用户质疑"检索分数最低只见 0.50、最高只见 0.70,0.73 和 0.50 看着只差
 23%,实际却是'精确命中'vs'完全无关'的差别——这么小的数值差会不会误导 AI agent"。
@@ -1935,21 +1939,79 @@ test_config_editor.py 基线零回归；接线检查全绿；pywebview 真机冒
   不触发**（地板 0.50 > 0.40）,形同虚设;warn=0.55 才是日常真正起作用的护栏。
   drop 保留作降级路径兜底（RRF 分场景单路第 2 名 0.375 仍需要它）,注释如实改写。
 
-**修复（只改展示与说明,排序/过滤逻辑零改动）**：
+**前半轮修复——语义锚（只改展示与说明,排序/过滤逻辑零改动）**：
 1. **语义锚**：`retriever._format_results` 来源行升级为
    `[置信度 0.73·高相关]`。分档边界取自实测分布：高相关 ≥0.65
    （`CONF_TIER_STRONG`,与实测强命中带 0.65~0.73 对齐）、中相关 ≥warn(0.55)、
    其余弱相关——中/弱分界直接引用 warn 阈值,单一事实来源。
 2. **两套 GUI 同步**：flet `_parse_src` 与 guiweb `_RE_CONF` 正则兼容带档位
-   后缀（旧格式继续兼容）;配色档位按实测重校准 flet `_conf_color`
-   0.75/0.5 → 0.65/0.55、guiweb `scoreBadge` 同步。
-3. **工具说明写明读法**：`server.search_knowledge` docstring 增加置信度解读段
-   （绝对相似度、区间天然偏窄、噪音区语义、优先按排序引用、弱相关引用前核实）,
+   后缀（旧格式继续兼容）;配色档位按实测重校准、guiweb `scoreBadge` 同步。
+3. **工具说明写明读法**：`server.search_knowledge` docstring 增加置信度解读段,
    供 LLM 破除百分比直觉;config 模板与 GUI 配置编辑器的阈值注释同步如实。
 4. **评估后不做**：sigmoid 温度拉伸——单调变换不改变排序,对 agent 的解读错位
-   无实质帮助,只会移动错位位置;真正的解法是语义锚 + 说明。
+   无实质帮助,只会移动错位位置。
 
-**测试**：audit 新增 `test_confidence_tier_semantic_anchor`（分档函数边界、
-展示层接线、GUI 正则/配色一致性、分档不进排序路径）;test_gui_store 增
-`test_parse_src_confidence_with_tier` + 配色档位断言更新;test_guiweb 增
-`test_parse_confidence_tier_suffix`。十件套全绿 + verify_export_import。
+**后半轮修复——展示分零点重标定（用户追问"未命中怎么还有 50%"后拍板）**：
+语义锚只是"翻译数字",数值本身的零点错位仍在——sigmoid 把"证据=0"（完全无关）
+映射到 0.50。落地 `retriever._conf_display()` 分段线性重映射,锚点取自实测分布：
+`0.50(噪音地板)→0.00`、`0.55(warn 线)→0.20`、`0.65(高相关线)→0.85`、
+`0.73(强命中上限)→1.00`,锚点外钳位 0~1。效果：红烧肉类无关查询显示 0.00~0.08,
+确定命中显示 0.85+——**未命中归零,数字直觉与语义一致**。三处输出（来源行分数、
+低置信标注数值、整体低置信头部"最高 x.xx"）全部换用展示分;排序、drop/warn 阈值
+过滤、HyDE 触发判断**仍用原始分**（阈值是原始分尺度,注释写明换算关系：
+warn=0.55 原始 ≈ 展示 0.20,高相关线 0.65 原始 ≈ 展示 0.85）;两套 GUI 配色
+档位换到展示分尺度（绿 ≥0.85 / 青 ≥0.20）。
+**约束：锚点基于当前重排模型（bge-reranker-v2-m3）实测,换打分模型必须重测**——
+已写进 retriever 注释、audit 守卫用例与 AI_GUIDE/使用指南。
+
+**测试**：audit `test_confidence_tier_semantic_anchor` 扩展（分档边界 + 重标定
+锚点/单调性/钳位 + 展示层接线 + GUI 一致性 + 分档重标定不进排序路径）;
+test_gui_store 配色档位断言换展示分尺度 + `test_parse_src_confidence_with_tier`;
+test_guiweb 增 `test_parse_confidence_tier_suffix`。相关套件全绿 + 真检索端到端
+确认新数值。
+
+## 问题44：库内文件/文件夹级勾选建模——路径级排除全流程生效 + MCP 硬门禁（2026-09-06）
+
+**动机**：用户要求库内按文件/文件夹粒度决定建不建向量库；被排除的文件**全流程
+彻底不碰**（BGE/WEMM/MinerU/pymupdf 一律不触达）；AI Agent 经 MCP 提议变更必须
+经用户确认（硬编码，无配置绕过）；GUI 在库管理每库出「勾选范围」右侧抽屉。
+设计经用户逐项拍板（docs/design/2026-09-06-selection-gating-design.md）：
+①嵌套冲突=离文件近的显式选择赢；②新文件默认=跟随全局格式；③**无保护概念**——
+全局格式开关=对该格式文件的批量勾/取消（显式勾选的"青苹果菜单"也跟着取消），
+文件夹级选择不被批量触碰；④MCP 确认走对话流（agent 展示 diff + 确认码），用户
+不一定开着 GUI。
+
+**实现**：
+- 数据面（library.py）：`selection_in`/`selection_out` 存注册表条目（相对路径，
+  不进 OVERRIDE_KEYS——路径可能含逗号，专用 set_selection 增删）；resolve_selection
+  最近显式赢；format_selection_bulk 格式批量语义（文件级按扩展名判定——子目录
+  文件也有斜杠，不能以"/"有无区分文件/文件夹）；bulk_for_extensions 在 set_config
+  的 extensions 变更上收口（GUI/CLI/MCP 单一漏斗；**必须在 save_registry 之后调**，
+  其内部重读注册表读改写，先调会被本次 save 覆盖——实测踩过）；effective_config
+  输出规范化两表 + selection_default（config 新键 selection_new_files，默认 follow，
+  DEFAULTS/模板/config_editor 三处同步）
+- 扫描漏斗（index.py collect_md_files）：新增 selection/selection_default 参数，
+  过滤优先级 exclude_* 硬排除 > 显式勾选（显式 in 可穿透扩展名白名单）> 中性默认；
+  全部 11 处调用点穿线（index/export/dedup/wemm_indexer/server/gui-store/graph_data）。
+  **排除的语义 = 对管线不存在**：条目按既有 removed/幽灵路径裁剪、块清理、WEMM
+  页向量裁剪，全部复用现有机制，零新终态类型（kb_stale 全排除稳态不误报，实测）
+- MCP 硬门禁（selection_gate.py + server.py 薄封装）：propose 生成提案（提案号 +
+  6 位确认码，盘上只存哈希，10 分钟 TTL）→ apply 校验码+TTL+一次性消费；确认码
+  错误/过期/重放全拒绝并写审计日志。诚实边界：agent 理论可不真问用户直接带码
+  apply——MCP 通道信任边界，两段式+过期+审计把风险压到最低。read_document 对
+  显式排除的文件直接拒绝（中性但格式未启用不拦——那是过滤默认非排除决定）
+- GUI（guiweb）：库卡新按钮「勾选范围」→ 右侧滑出抽屉：面包屑下钻/上钻（不越
+  库根，bridge 强制校验）、文件夹/文件勾选框 + 生效态徽章（显式 in/out /
+  auto_in/auto_out）、显式选择带「跟随」恢复按钮、格式快捷批量行（确认提示
+  "将清除该格式单独勾选"）、目录懒加载、改动攒批+保存（GUI=用户本人，免确认码）。
+  契约 3 新方法（selection_tree/selection_update/selection_format_bulk），接线全绿
+
+**测试**：tests/test_selection.py 63/63（norm/resolve/set/bulk/ext 收口/eff/
+collect 过滤 7 态/gate 11 态/bridge 9 态/kb_stale 收敛联动）；修 4 个测试期望错误
+（中性 pdf 漏算、crumb 排序、根斜杠现属绝对路径拒绝、gate 捕 ValueError 而非仅
+GateError）；十件套 + test_guiweb 53 + test_selection 63 全绿，接线检查全绿。
+修真 bug 2 个：set_config 先 bulk 后 save 的读改写覆盖；collect 的文件级判定
+"/"有无→按扩展名。
+
+**文档**：docs/design/2026-09-06-selection-gating-design.md（实施前已交用户批准）；
+AGENTS/TODO/Vault（操作手册勾选范围段、决策记录 ADR-19、Roadmap 状态）同步。

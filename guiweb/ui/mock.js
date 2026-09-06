@@ -486,6 +486,47 @@
       });
     },
 
+    selection_tree: function (lib, sub) {
+      return delay(250).then(function () {
+        sub = sub || '';
+        var mk = function (name, dir) {
+          var rel = sub ? sub + '/' + name : name;
+          var ext = dir ? '' : name.split('.').pop().toLowerCase();
+          var inFmt = ['md', 'pdf', 'docx'].indexOf(ext) >= 0 || dir;
+          return { name: name, dir: dir, path: rel, explicit: null,
+                   state: inFmt ? 'auto_in' : 'auto_out',
+                   state_text: inFmt ? '入库（跟随格式）' : '排除（跟随格式）',
+                   ext: ext, n_children: dir ? 3 : undefined };
+        };
+        var dirs = sub ? [] : [
+          mk('20-Projects', true), mk('10-Areas', true), mk('私人', true)
+        ];
+        var files = sub === '私人'
+          ? [Object.assign(mk('账单.pdf', false), { explicit: 'out', state: 'out', state_text: '已排除（显式取消）' }),
+             mk('日记.md', false)]
+          : sub ? [mk('青苹果菜单.pdf', false), mk('锅包肉配方.pdf', false), mk('小明账单.pdf', false)]
+          : [mk('主页.md', false), mk('读书笔记.md', false)];
+        return { lib: lib, sub: sub, root: 'C:\\demo\\' + lib, dirs: dirs, files: files,
+                 selection_in: ['20-Projects/课件/青苹果菜单.pdf'], selection_out: ['私人/账单.pdf'],
+                 extensions: ['md', 'pdf', 'docx'], default: 'follow',
+                 error: null };
+      });
+    },
+
+    selection_update: function (lib, changes) {
+      return delay(300).then(function () {
+        pushLog('勾选范围更新（' + lib + '）· ' + (changes || []).length + ' 项');
+        return { ok: true, error: null, selection_in: [], selection_out: [] };
+      });
+    },
+
+    selection_format_bulk: function (lib, ext, include) {
+      return delay(300).then(function () {
+        pushLog('勾选格式批量（' + lib + '）· ' + ext + ' → ' + (include ? '纳入' : '排除'));
+        return { ok: true, changed: 2, error: null };
+      });
+    },
+
     get_settings: function () { return Promise.resolve(settingsPayload()); },
 
     save_settings: function (updates) {

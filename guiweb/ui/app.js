@@ -342,11 +342,12 @@ var relOpen = {};
 var bodyOpen = {};
 var searching = false;
 function scoreBadge(s) {
-  // 2026-09-06 按实测分布重校准（问题43）：重排 sigmoid 绝对分挤在 0.50~0.73，
-  // 0.65+ 即确定命中档（= retriever.CONF_TIER_STRONG），0.55 = warn 阈值。
+  // 2026-09-06 问题45 起解析到的是重标定后的展示分（retriever._conf_display：
+  // 噪音归 0、强命中 1.0），档位随之换算——0.85 = 原始 0.65（高相关线），
+  // 0.20 = 原始 0.55（warn 线）。
   var pct = Math.round(s * 100);
-  if (s >= 0.65) return '<span class="badge badge-hi">' + pct + ' 高置信</span>';
-  if (s >= 0.55) return '<span class="badge badge-mid">' + pct + ' 中置信</span>';
+  if (s >= 0.85) return '<span class="badge badge-hi">' + pct + ' 高置信</span>';
+  if (s >= 0.2) return '<span class="badge badge-mid">' + pct + ' 中置信</span>';
   return '<span class="badge badge-lo">' + pct + ' 低置信</span>';
 }
 function relHtml(key) {
@@ -551,6 +552,7 @@ function renderLibs() {
       + '<div class="fmt-row">' + fmts + issues + '</div>'
       + '<div class="lib-ops">'
       + '<button class="btn btn-sm" data-act="cfg">配置</button>'
+      + '<button class="btn btn-sm" data-act="sel">勾选范围</button>'
       + '<button class="btn btn-sm btn-ghost" data-act="open">打开文件夹</button>'
       + '<span style="flex:1"></span>'
       + '<button class="btn btn-sm btn-ghost" data-act="rm" style="color:var(--err)">移除</button>'
@@ -566,8 +568,135 @@ $('libGrid').addEventListener('click', function (e) {
   if (act === 'open') {
     API.open_path(lib.path).then(function () { toast('已打开「' + lib.name + '」所在文件夹'); });
   } else if (act === 'cfg') { openCfg(lib); }
+  else if (act === 'sel') { openSel(lib); }
   else if (act === 'rm') { openRm(lib); }
 });
+
+/* ============ 勾选范围（问题44：库内文件/文件夹级勾选建模） ============ */
+var SEL = { lib: null, sub: '', changes: {} };  // changes[path] = 'in'|'out'|'neutral'
+function openSel(lib) {
+  SEL.lib = lib.name; SEL.sub = ''; SEL.changes = {};
+  $('selTitle').textContent = '勾选范围 · ' + lib.name;
+  openModal('mSel');
+  loadSelTree();
+}
+function selPendingCount() { return Object.keys(SEL.changes).length; }
+function selMark(path, action) {
+  if (action == null) delete SEL.changes[path];
+  else SEL.changes[path] = action;
+  $('selSave').disabled = !selPendingCount();
+  $('selPend').textContent = selPendingCount() ? ('待保存 ' + selPendingCount() + ' 项') : '';
+}
+function loadSelTree() {
+  $('selList').innerHTML = '<div class="sel-loading">读取中…</div>';
+  $('selCrumb').innerHTML = ''; $('selFmts').innerHTML = '';
+  API.selection_tree(SEL.lib, SEL.sub).then(function (r) {
+    if (r.error) { $('selList').innerHTML = '<div class="sel-loading">' + esc(r.error) + '</div>'; return; }
+    renderSelCrumb(r);
+    renderSelFmts(r);
+    renderSelList(r);
+  }).catch(function () { $('selList').innerHTML = '<div class="sel-loading">加载失败</div>'; });
+}
+function renderSelCrumb(r) {
+  var parts = r.sub ? r.sub.split('/') : [];
+  var h = '<button class="sel-crumb-it" data-sub="">' + esc(r.lib) + '</button>';
+  var acc = [];
+  parts.forEach(function (p) {
+    acc.push(p);
+    h += '<span class="sel-crumb-sep">/</span><button class="sel-crumb-it" data-sub="' + esc(acc.join('/')) + '">' + esc(p) + '</button>';
+  });
+  $('selCrumb').innerHTML = h;
+  Array.prototype.forEach.call($('selCrumb').querySelectorAll('.sel-crumb-it'), function (b) {
+    b.addEventListener('click', function () {
+      SEL.sub = b.getAttribute('data-sub');
+      loadSelTree();
+    });
+  });
+}
+function renderSelFmts(r) {
+  var exts = ['md', 'txt', 'pdf', 'docx'];
+  var h = '<span class="sel-fmts-label">格式快捷：</span>';
+  h += exts.map(function (x) {
+    var on = (r.extensions || []).indexOf(x) >= 0;
+    return '<button class="chip sug-chip' + (on ? ' on' : '') + '" data-ext="' + x + '" data-on="' + (on ? '1' : '') + '">'
+      + (on ? '✓ ' : '') + x.toUpperCase() + (on ? ' · 收' : ' · 不收') + '</button>';
+  }).join('');
+  $('selFmts').innerHTML = h;
+  Array.prototype.forEach.call($('selFmts').querySelectorAll('.sug-chip'), function (b) {
+    b.addEventListener('click', function () {
+      var ext = b.getAttribute('data-ext'), on = !!b.getAttribute('data-on');
+      askConfirm('格式快捷切换：' + ext.toUpperCase() + ' → ' + (on ? '不收' : '收'),
+        '全局格式开关是批量操作：' + (on
+          ? '该格式被显式排除的文件将恢复纳入。'
+          : '该格式所有文件的单独勾选会被清除并跟随取消（含你显式勾选过的）；文件夹级选择不受影响。'),
+        null, on ? '取消该格式' : '收入该格式').then(function (yes) {
+          if (!yes) return;
+          API.selection_format_bulk(SEL.lib, ext, !on).then(function (res) {
+            if (!res.ok) { toast(res.error || '操作失败', 'err'); return; }
+            SEL.changes = {}; selMark(null);
+            toast('已影响 ' + res.changed + ' 个显式条目');
+            loadSelTree();
+          });
+        });
+    });
+  });
+}
+function selRowHTML(it) {
+  var effIn = it.state === 'in' || it.state === 'auto_in';
+  var pend = SEL.changes[it.path];
+  var pendTxt = pend ? '<span class="sel-pend-dot" title="待保存：' + pend + '">✎</span>' : '';
+  var badgeCls = effIn ? 'sin' : 'sout';
+  var nameHTML = it.dir
+    ? '<button class="sel-name sel-dir" data-drill="' + esc(it.path) + '">' + esc(it.name) + '/</button>'
+    : '<span class="sel-name">' + esc(it.name) + '</span>';
+  var follow = it.explicit
+    ? '<button class="sel-follow" data-follow="' + esc(it.path) + '" title="清除显式选择，恢复跟随格式">跟随</button>'
+    : '';
+  return '<div class="sel-row" data-path="' + esc(it.path) + '">'
+    + '<label class="switch sel-ck"><input type="checkbox" data-selck="' + esc(it.path) + '"' + (effIn ? ' checked' : '') + '><i></i></label>'
+    + nameHTML + pendTxt
+    + '<span class="sel-badge ' + badgeCls + '">' + esc(it.state_text) + '</span>'
+    + follow + '</div>';
+}
+function renderSelList(r) {
+  var rows = r.dirs.map(selRowHTML).concat(r.files.map(selRowHTML));
+  $('selList').innerHTML = rows.join('')
+    || '<div class="sel-loading">（空目录）</div>';
+  Array.prototype.forEach.call($('selList').querySelectorAll('[data-drill]'), function (b) {
+    b.addEventListener('click', function () {
+      SEL.sub = b.getAttribute('data-drill');
+      loadSelTree();
+    });
+  });
+  Array.prototype.forEach.call($('selList').querySelectorAll('[data-selck]'), function (ck) {
+    ck.addEventListener('change', function () {
+      var path = ck.getAttribute('data-selck');
+      // 勾 = 显式纳入；取消 = 显式排除（基准是当前生效态）
+      selMark(path, ck.checked ? 'in' : 'out');
+    });
+  });
+  Array.prototype.forEach.call($('selList').querySelectorAll('[data-follow]'), function (b) {
+    b.addEventListener('click', function () {
+      selMark(b.getAttribute('data-follow'), 'neutral');
+      loadSelTree();
+    });
+  });
+}
+$('selSave').addEventListener('click', function () {
+  if (!selPendingCount()) return;
+  var changes = Object.keys(SEL.changes).map(function (p) {
+    return { path: p, action: SEL.changes[p] };
+  });
+  API.selection_update(SEL.lib, changes).then(function (res) {
+    if (!res.ok) { toast(res.error || '保存失败', 'err'); return; }
+    SEL.changes = {}; selMark(null);
+    toast('勾选已保存，下一轮索引自动应用');
+    loadSelTree();
+    if (libLoaded) loadLibs();
+  }).catch(function () { toast('保存失败', 'err'); });
+});
+$('selGiveup').addEventListener('click', function () { SEL.changes = {}; selMark(null); loadSelTree(); });
+$('selClose').addEventListener('click', function () { hideOverlay($('mSel')); });
 
 /* 添加库 */
 $('addLibBtn').addEventListener('click', function () {

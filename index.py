@@ -12,12 +12,13 @@ from pathlib import Path
 import chromadb
 
 from config import CFG
-from extractors import (BINARY_EXTS, TEXT_EXTS, classify_extraction,
-                        current_backend_sig, extract_to_markdown,
-                        mineru_cloud_extract_for_parallel, mineru_pending_prune,
-                        mineru_quota_today, mineru_token_invalid,
-                        mineru_token_reset)
-from library import effective_config, load_registry, meta_path, resolve_entries
+from extractors import (BINARY_EXTS, SUPPORTED_EXTS, TEXT_EXTS,
+                        classify_extraction, current_backend_sig,
+                        extract_to_markdown, mineru_cloud_extract_for_parallel,
+                        mineru_pending_prune, mineru_quota_today,
+                        mineru_token_invalid, mineru_token_reset)
+from library import (effective_config, load_registry, meta_path,
+                     resolve_entries, resolve_selection)
 
 # 跨平台文件锁：Windows 用 msvcrt（字节范围锁），Linux/macOS 用 fcntl（flock）。
 # 按平台函数内局部导入：Linux 上 import index 不触碰 msvcrt，反之亦然。
@@ -1161,17 +1162,53 @@ def resolve_note_relations(meta_file, target):
 
 
 def collect_md_files(vault, exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_FILES,
-                     exclude_patterns=EXCLUDE_PATTERNS, extensions=None):
-    """收集应纳入索引的文件（与索引使用同一套过滤规则；扩展名白名单，默认 md）。"""
+                     exclude_patterns=EXCLUDE_PATTERNS, extensions=None,
+                     selection=None, selection_default="follow"):
+    """收集应纳入索引的文件（与索引使用同一套过滤规则；扩展名白名单，默认 md）。
+
+    问题44 路径级勾选（selection=(sel_in, sel_out)，来自注册表条目）：
+      - 优先级：exclude_* 硬排除 > 显式勾选（最近显式赢）> 中性默认
+      - 显式 "in" 可穿透扩展名白名单（用户点名要的文件优先于格式开关）；
+        显式 "out" 一票排除（即使格式在白名单里）
+      - 中性文件的默认归属 selection_default："follow"=按扩展名白名单（默认）、
+        "include"=受支持格式一律纳入（可穿透白名单）、"exclude"=一律排除
+    selection=None 时行为与旧版完全一致（扩展名白名单）。
+    """
     if not Path(vault).is_dir():
         return []
     exts = [e.lower().lstrip(".") for e in (extensions or ["md"])]
+    ext_set = set(exts)
     pats = tuple(exclude_patterns or ())
-    return [p for p in Path(vault).rglob("*")
-            if p.is_file() and p.suffix.lower().lstrip(".") in exts
-            and not any(any(ex in part for ex in exclude_dirs) for part in p.parts)
-            and p.name not in exclude_files
-            and not p.name.startswith(pats)]
+    sel = None
+    if selection is not None:
+        sel = (set(selection[0] or ()), set(selection[1] or ()))
+    out = []
+    for p in Path(vault).rglob("*"):
+        if not p.is_file():
+            continue
+        if any(any(ex in part for ex in exclude_dirs) for part in p.parts):
+            continue
+        if p.name in exclude_files or p.name.startswith(pats):
+            continue
+        suffix = p.suffix.lower().lstrip(".")
+        if sel is not None:
+            rel = str(p.relative_to(vault)).replace("\\", "/")
+            v = resolve_selection(sel[0], sel[1], rel)
+            if v == "out":
+                continue
+            if v is None:
+                if selection_default == "exclude":
+                    continue
+                if selection_default == "include":
+                    if suffix not in SUPPORTED_EXTS:
+                        continue
+                elif suffix not in ext_set:
+                    continue
+            # v == "in"：显式勾选穿透白名单，直接纳入
+            out.append(p)
+        elif suffix in ext_set:
+            out.append(p)
+    return out
 
 
 def make_anchor(front, body):
@@ -1206,7 +1243,7 @@ def _chroma_count(collection_name=COLLECTION_NAME):
 def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
              exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_FILES,
              exclude_patterns=EXCLUDE_PATTERNS, extensions=None, tbd_ratio=0.0,
-             agent_allowed=None):
+             agent_allowed=None, selection=None, selection_default="follow"):
     """指纹检查：先比 mtime+size（快速路径），变化才读全文 MD5。
 
     只读、不加载模型、不嵌入。返回 (是否过期, 统计)。
@@ -1226,7 +1263,9 @@ def kb_stale(vault, meta_file=INDEX_META, collection_name=COLLECTION_NAME,
     if not Path(vault).is_dir():
         return True, {"changed": 0, "added": 0, "removed": 0, "missing": True}
     meta = load_meta(meta_file)
-    files = collect_md_files(vault, exclude_dirs, exclude_files, exclude_patterns, extensions)
+    files = collect_md_files(vault, exclude_dirs, exclude_files, exclude_patterns,
+                             extensions, selection=selection,
+                             selection_default=selection_default)
     # 判空基准 = 真实条目（剔除 _version 哨兵与非 dict 脏数据）：
     # 只剩版本号的 meta 不是"有记录"，否则全删/清空后的收敛态会被 emptied 分支
     # 永远误报 stale。
@@ -1528,7 +1567,9 @@ def index_library(lib, incremental=True, full=False, agent_allowed=None,
                          lib["short_doc_char_limit"], library_label=lib["name"],
                          incremental=incremental, full=full,
                          tbd_ratio=CFG.get("tbd_exclude_ratio", 0.0),
-                         agent_allowed=agent_allowed)
+                         agent_allowed=agent_allowed,
+                         selection=(lib.get("selection_in"), lib.get("selection_out")),
+                         selection_default=lib.get("selection_default", "follow"))
     if wemm_sync:
         _wemm_auto_phase(lib, full=full, agent_allowed=agent_allowed)
     return result
@@ -1537,7 +1578,7 @@ def index_library(lib, incremental=True, full=False, agent_allowed=None,
 def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 exclude_patterns, extensions, chunk_max, short_doc,
                 library_label="", incremental=True, full=False, tbd_ratio=0.0,
-                agent_allowed=None):
+                agent_allowed=None, selection=None, selection_default="follow"):
     tag = f"[{library_label}] " if library_label else ""
     if not Path(vault).is_dir():
         log(f"{tag}库路径不存在，跳过索引（保留现有索引）：{vault}")
@@ -1547,7 +1588,9 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
     # 即恢复——此前复位只在并行云端段，串行路径（并发=1）在长驻 server 进程里
     # 一旦置位就永久锁死到进程重启。
     mineru_token_reset()
-    files = collect_md_files(vault, exclude_dirs, exclude_files, exclude_patterns, extensions)
+    files = collect_md_files(vault, exclude_dirs, exclude_files, exclude_patterns,
+                             extensions, selection=selection,
+                             selection_default=selection_default)
     progress_start(phase="scanning", files_total=len(files), message="扫描文件...",
                    library=library_label)
 
