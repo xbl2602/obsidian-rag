@@ -1890,3 +1890,33 @@ Python↔Flutter 双进程 JSON 桥扛不住逐帧画布动画（力导/涟漪/�
 test_config_editor.py 基线零回归；接线检查全绿；pywebview 真机冒烟
 （窗口+WebView2+双向桥）通过，真实数据实跑验证（5 库快照/397 节点图谱/
 失败明细/WEMM 探活）。
+
+## 问题43：guiweb 真机首轮反馈修复——设置页空下拉根因 + 原生路径弹窗 + 图谱检索反馈（2026-09-06）
+
+**动机**：用户真机反馈三件事——图谱页检索"没有正确生效"、设置页"几乎全部多选项
+不生效"、路径类输入只会粘贴，要求点一下弹原生选择窗口。
+
+**根因定位（computer-use 驱动真机 + 运行日志取证）**：
+1. **设置页空下拉（真凶，JS 空数组 truthy）**：`fieldRow` 用 `if (f.choices)`
+   分支，而 bridge.get_settings 对无选项字段返回空数组 `[]`——JS 里空数组是
+   truthy，导致几乎所有字段（含 bool 开关、文本框）被渲染成**零选项的空 select**，
+   整个设置页不可用。修复：`if (f.choices && f.choices.length)`。浏览器与真机
+   截图双重复现，Python 侧 apply_updates 回写链路实测无辜（临时副本 roundtrip
+   全对：str/int/bool/list 落盘 + 注释保留）。
+2. **图谱检索"没生效"**：日志证实检索链路本身通（旧实例 charmap 报错来自修复
+   前进程；新实例 36.4s 冷启动成功后 5-6s 常速）——真正的问题是冷启动 30-60s
+   界面零反馈，且 `G.searching` 守卫静默吞掉重复点击。修复：检索按钮 busy 态
+   （禁用 + "检索中…"）+ 重复点击 toast 提示；顺带修掉 **clearGLit 不清理上一轮
+   `.g-conf` 置信度角标**的残留 bug（浏览器复现：两轮连续检索旧角标滞留）。
+   另离线核对真实数据 id 匹配：真检索命中（FLUENT 配置.md）与图谱节点
+   `lib|rel` 完全对上。
+3. **原生路径弹窗**：新增契约方法 `pick_path(mode, start)`（pywebview
+   FOLDER_DIALOG/OPEN_DIALOG，start 用输入框现值定位起始目录），接线三处：
+   设置页 vault（选文件夹）与 wemm_python（选文件）、添加库弹层路径、提取
+   试验台文件路径。浏览器 mock + 接线检查同步。
+
+**测试**：test_guiweb.py 48/48（新增"空 choices 渲染守卫"回归 3 用例——
+长度判断存在、裸 if (f.choices) 禁绝、真桥 choices 一律数组）；十件套全绿
+（38+15+5+0fail+0fail+73+49+13+23+28+48）+ verify_export_import；接线检查
+全绿（pick_path 三向对齐）；浏览器实测两轮连续检索角标不残留、保存链路 toast
+正常、busy 态往返正确。

@@ -90,6 +90,8 @@
 
 ### open_path(path) → {ok}（打开文件夹/日志目录）
 
+### pick_path(mode, start) → {path, error}（原生选择弹窗；mode: "dir"|"file"；start 为输入框现值用于定位起始目录；取消 → {path:null}）
+
 ### get_settings() → 设置页全量
 ```json
 {"groups":[{"title":"PDF 与云端 OCR","level":"basic|advanced","desc":"…",

@@ -479,6 +479,13 @@
     open_source: function () { return Promise.resolve({ ok: true }); },
     open_path: function () { return Promise.resolve({ ok: true }); },
 
+    pick_path: function (mode) {
+      return delay(300).then(function () {
+        return { path: mode === 'file' ? 'D:\\Vault\\论文\\课件.pdf' : 'C:\\Users\\you\\Notes',
+                 error: null };
+      });
+    },
+
     get_settings: function () { return Promise.resolve(settingsPayload()); },
 
     save_settings: function (updates) {

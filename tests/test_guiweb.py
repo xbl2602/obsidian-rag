@@ -296,6 +296,30 @@ def test_ui_wiring():
            "; ".join(problems[:8]))
 
 
+def test_settings_choices_guard():
+    """回归（2026-09-06 真机实测）：fieldRow 用 `if (f.choices)` 判分支，
+    而后端对无选项字段返回空数组 []——JS 里空数组是 truthy，导致几乎所有
+    设置字段（含 bool 开关）被渲染成零选项的空下拉框，设置页整体不可用。
+    守卫必须是长度判断。"""
+    ui = ROOT / "guiweb" / "ui"
+    js = (ui / "app.js").read_text(encoding="utf-8") if (ui / "app.js").exists() else ""
+    if not js:
+        print("SKIP test_settings_choices_guard（guiweb/ui 尚未生成）")
+        return
+    _check("settings: fieldRow choices 守卫用长度判断（空数组不进下拉分支）",
+           "f.choices && f.choices.length" in js)
+    _check("settings: 不存在裸 if (f.choices) 旧写法",
+           "if (f.choices) {" not in js)
+    # mock 与真桥同构：get_settings 的 choices 一律是数组（可能为空），
+    # 前端必须同时兼容两种空形态
+    sys.path.insert(0, str(ROOT))
+    from guiweb.bridge import Bridge
+    data = Bridge().get_settings()
+    bad = [f["key"] for g in data["groups"] for f in g["fields"]
+           if not isinstance(f["choices"], list)]
+    _check("settings: 真桥 get_settings 的 choices 均为数组", not bad, str(bad))
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

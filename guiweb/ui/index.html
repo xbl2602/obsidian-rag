@@ -313,6 +313,7 @@
     </div>
     <div class="shell sec"><div class="core lab-bar">
       <input class="in-text lab-path mono" id="labPath" type="text" placeholder="粘贴文件绝对路径，例如 D:\Vault\论文\课件.pdf">
+      <button class="btn btn-ghost btn-sm" id="labBrowse" type="button">浏览…</button>
       <select id="labBackend" aria-label="后端覆盖">
         <option value="">跟随全局设置</option>
         <option value="local">本地直提</option>
@@ -465,7 +466,10 @@
     </div>
     <div class="field">
       <label for="aPath">文件夹路径</label>
-      <input class="in-text mono" id="aPath" type="text" placeholder="C:\Users\you\Notes">
+      <div class="pick-row">
+        <input class="in-text mono" id="aPath" type="text" placeholder="C:\Users\you\Notes">
+        <button class="btn btn-ghost btn-sm" id="aPathBrowse" type="button">浏览…</button>
+      </div>
       <div class="f-err" id="aPathErr">请填写文件夹路径</div>
     </div>
     <div class="m-ops">

@@ -88,3 +88,12 @@
    会被当成来源行渲染成畸形结果卡。guiweb.parse_search_text 将其归为
    `notice:true` 提示条目，前端渲染为横幅。复现：低置信查询的 hybrid_search
    输出首行是括号提示行 → 旧 GUI 结果区第一张卡是畸形卡。
+2. **设置页整页变成空下拉**（guiweb 真机实测，2026-09-06）：fieldRow 用
+   `if (f.choices)` 分支，bridge 对无选项字段返回空数组 `[]`，JS 空数组是
+   truthy → 几乎全部字段（含 bool 开关）渲染成零选项的空 select。修复：
+   `if (f.choices && f.choices.length)`。回归：test_guiweb.py
+   test_settings_choices_guard。
+3. **图谱检索无加载反馈 + 置信度角标残留**：冷启动 30-60s 零反馈、重复点击被
+   G.searching 守卫静默吞掉；clearGLit 不清 `.g-conf` 旧角标，两轮连续检索
+   显示互相污染。修复：按钮 busy 态 + toast；clearGLit 同步清角标。浏览器
+   两轮连续检索实测干净。

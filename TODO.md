@@ -465,4 +465,6 @@ python index.py --library "Obsidian Vault"
 - [x] 前端六视图（图谱/检索/库/索引/试验台/诊断/设置）+ 动态岛 + 全部确认门禁，离线零 CDN
 - [x] 接线静态检查（wiring_check）纳入回归；tests/test_guiweb.py 45 用例
 - [x] 真实数据实跑验证（5 库快照 / 397 节点图谱 / 失败明细 / WEMM 探活）
+- [x] 真机首轮反馈修复（问题 43）：设置页空下拉根因（JS 空数组 truthy）、
+      图谱检索 busy 反馈 + 角标残留清理、原生路径选择弹窗（pick_path 三处接线）
 - [ ] 后续可选：pywebview 打包单 exe（PyInstaller）；语义边缓存落盘；WEMM 页节点缩略图预览

@@ -388,6 +388,33 @@ class Bridge:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
 
+    def pick_path(self, mode="dir", start=""):
+        """原生文件/文件夹选择弹窗（pywebview 编排到 GUI 线程）。mode: 'dir'|'file'。
+        start 是输入框现值，用于定位起始目录；取消返回 {"path": None}。"""
+        import os
+        try:
+            import webview
+            if self._wnd is None:
+                return {"path": None, "error": "窗口未就绪"}
+            start_dir = start or ""
+            if start_dir and not os.path.isdir(start_dir):
+                start_dir = os.path.dirname(start_dir) or ""
+            if not os.path.isdir(start_dir):
+                start_dir = ""
+            if mode == "file":
+                res = self._wnd.create_file_dialog(
+                    webview.OPEN_DIALOG, allow_multiple=False, directory=start_dir,
+                    file_types=("文档 (*.pdf;*.docx;*.md;*.txt)", "所有文件 (*.*)"))
+            else:
+                res = self._wnd.create_file_dialog(
+                    webview.FOLDER_DIALOG, allow_multiple=False, directory=start_dir)
+            path = res[0] if res else None
+            if path:
+                self._log("选择路径 %s" % path)
+            return {"path": path, "error": None}
+        except Exception as e:  # noqa: BLE001
+            return {"path": None, "error": str(e)}
+
     def get_static_path(self, name):
         mapping = {"logs": str(Path(__import__("worker").LOG_FILE.parent)),
                    "root": str(ROOT)}

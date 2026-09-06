@@ -788,6 +788,18 @@ function labReset() {
   $('labCancel').disabled = true;
   labPolling = false;
 }
+function wireBrowse(btnId, inputId, mode) {
+  var b = $(btnId);
+  if (!b) return;
+  b.addEventListener('click', function () {
+    var input = $(inputId);
+    API.pick_path(mode, input ? input.value : '').then(function (r) {
+      if (r && r.path && input) input.value = r.path;
+    }).catch(function () { toast('打开选择窗口失败', 'err'); });
+  });
+}
+wireBrowse('labBrowse', 'labPath', 'file');
+wireBrowse('aPathBrowse', 'aPath', 'dir');
 $('labRun').addEventListener('click', function () {
   var p = $('labPath').value.trim();
   if (!p) { toast('请先粘贴要提取的文件路径', 'warn'); $('labPath').focus(); return; }
@@ -992,11 +1004,25 @@ function buildSettings() {
     });
   });
   bindSuggest();
+  bindPickButtons();
 }
+function bindPickButtons() {
+  Array.prototype.forEach.call($('sgPanelWrap').querySelectorAll('[data-pickfor]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var input = $(btn.getAttribute('data-pickfor'));
+      if (!input) return;
+      API.pick_path(btn.getAttribute('data-pickmode'), input.value).then(function (r) {
+        if (r && r.path) { input.value = r.path; toast('已选择路径'); }
+      }).catch(function () { toast('打开选择窗口失败', 'err'); });
+    });
+  });
+}
+/* 需要原生选择弹窗的路径字段：key → 'dir' | 'file' */
+var PICK_FIELDS = { vault: 'dir', wemm_python: 'file' };
 function fieldRow(f) {
   var ctl = '';
   var ctlId = 'f_' + f.key;
-  if (f.choices) {
+  if (f.choices && f.choices.length) {
     ctl = '<select id="' + ctlId + '"' + (f.secret ? ' class="in-sel"' : ' class="in-sel"') + '>'
       + f.choices.map(function (c) {
         return '<option value="' + esc(c[0]) + '"' + (c[0] === f.value ? ' selected' : '') + '>' + esc(c[1]) + '</option>';
@@ -1008,6 +1034,9 @@ function fieldRow(f) {
     var cls = 'in-text' + (f.secret ? ' in-pw' : '') + (f.kind === 'int' || f.kind === 'float' ? ' in-num' : (f.kind === 'list' ? ' in-list' : ''));
     ctl = '<input type="' + (f.secret ? 'password' : 'text') + '" id="' + ctlId + '" class="' + cls + '" value="' + esc(f.value) + '" autocomplete="off" '
       + (f.kind === 'int' || f.kind === 'float' ? 'style="width:90px"' : f.kind === 'list' ? 'style="width:240px"' : '') + '>';
+    if (!f.secret && PICK_FIELDS[f.key]) {
+      ctl += '<button type="button" class="btn btn-ghost btn-sm" data-pickfor="' + ctlId + '" data-pickmode="' + PICK_FIELDS[f.key] + '">浏览…</button>';
+    }
   }
   var sug = '';
   if (f.suggest && f.suggest.length) {
@@ -1735,6 +1764,8 @@ function bindTip() {
 var gTimers = [], G_SEQ = 0;
 function clearGLit() {
   G.nodes.forEach(function (n) { var el = G.nodeEls[n.id]; if (el) el.classList.remove('lit'); });
+  // 置信度角标跟随命中态一起清（残留会污染下一轮检索的显示）
+  Array.prototype.forEach.call(document.querySelectorAll('#gNodes .g-conf'), function (c) { c.remove(); });
   applyGDim();
 }
 function applyGDim() {
@@ -1768,6 +1799,8 @@ function applyGDim() {
 function clearGSearch() {
   gTimers.forEach(clearTimeout); gTimers = [];
   G_SEQ++;
+  setGoBusy(false);
+  G.searching = false;
   if (G.qNode) { if (G.nodeEls.qnode) G.nodeEls.qnode.remove(); G.nodeEls.qnode = null; G.qNode = null; }
   G.redges.forEach(function (r) { r.el.remove(); });
   G.redges = [];
@@ -1781,9 +1814,17 @@ function clearGSearch() {
   if (!RM) startSim(0.5);
   requestRender();
 }
+function setGoBusy(on) {
+  var b = $('gGo');
+  if (!b) return;
+  b.disabled = on;
+  b.textContent = on ? '检索中…' : '检索';
+  b.classList.toggle('busy', on);
+}
 function runGSearch(q) {
-  if (G.searching) return;
+  if (G.searching) { toast('检索进行中，请稍候…', 'warn'); return; }
   G.searching = true;
+  setGoBusy(true);
   gTimers.forEach(clearTimeout); gTimers = [];
   G_SEQ++;
   G.nodes.forEach(function (n) { n.orbit = null; });
@@ -1799,11 +1840,12 @@ function runGSearch(q) {
   API.search(q, G.topK, scopeStr(), true).then(function (res) {
     if (seq !== G_SEQ) return;
     G.searching = false;
-    if (res.error) { toast('检索失败：' + res.error, 'err'); return; }
+    setGoBusy(false);
+    if (res.error) { setGoBusy(false); toast('检索失败：' + res.error, 'err'); return; }
     var hits = (res.results || []).map(function (r) {
       return { id: r.lib + '|' + r.rel, conf: r.confidence, snip: r.body || '' };
     }).filter(function (h) { return G.byId[h.id] && gVisible(G.byId[h.id]); }).slice(0, G.topK);
-    if (!hits.length) { toast('没有匹配到可见节点，换个问法或调整库范围', 'warn'); return; }
+    if (!hits.length) { setGoBusy(false); toast('没有匹配到可见节点，换个问法或调整库范围', 'warn'); return; }
     var r0 = gStageRect();
     var c = s2w(r0.left + r0.width / 2 - 170, r0.top + r0.height * 0.36);
     G.qNode = { id: 'qnode', x: c.x, y: c.y, fixed: true };
@@ -1904,6 +1946,7 @@ function runGSearch(q) {
   }).catch(function (err) {
     if (seq !== G_SEQ) return;
     G.searching = false;
+    setGoBusy(false);
     toast('检索失败：' + (err && err.message ? err.message : err), 'err');
   });
 }
