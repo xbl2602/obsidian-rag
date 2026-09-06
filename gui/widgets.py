@@ -723,14 +723,14 @@ class SearchCard:
 
 
 def _conf_color(conf, colors):
-    """置信度标签配色：≥0.65 绿 / ≥0.55 青 / 其余橙。
+    """置信度标签配色：≥0.85 绿 / ≥0.20 青 / 其余橙。
 
-    2026-09-06 按实测分布重校准（问题43）：重排 sigmoid 绝对分挤在 0.50~0.73，
-    0.65+ 即为确定命中档（与 retriever.CONF_TIER_STRONG 一致），
-    0.55 与 warn 阈值对齐；旧边界 0.75/0.5 会把大部分好命中标成中间色。"""
-    if conf >= 0.65:
+    2026-09-06 问题45 起解析到的是**重标定后的展示分**（retriever._conf_display：
+    噪音地板归 0、实测强命中上限 1.0），档位随之换算——0.85 展示分 = 原始 0.65
+    （高相关线），0.20 展示分 = 原始 0.55（warn 阈值线）。"""
+    if conf >= 0.85:
         return colors["success"]
-    if conf >= 0.55:
+    if conf >= 0.20:
         return colors["accent"]
     return colors["warning"]
 

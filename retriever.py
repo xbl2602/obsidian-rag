@@ -325,12 +325,42 @@ CONF_TIER_STRONG = 0.65
 
 
 def _conf_tier(conf, warn_c):
-    """置信度 → 分档词（高相关/中相关/弱相关），附在 [置信度 x.xx·档位] 里。"""
+    """置信度 → 分档词（高相关/中相关/弱相关），附在 [置信度 x.xx·档位] 里。
+
+    参数与比较都在**原始分**（重排 sigmoid）尺度上进行；展示数值另行经
+    _conf_display 重标定。"""
     if conf >= CONF_TIER_STRONG:
         return "高相关"
     if conf >= warn_c:
         return "中相关"
     return "弱相关"
+
+
+# ---------- 展示分重标定（2026-09-06 问题45） ----------
+# 问题45 前半只加了档位词，数值本身的零点错位仍在：重排 sigmoid 把"证据=0"（完全无关）
+# 映射到 0.50，导致未命中也显示 50%。这里按实测锚点做分段线性重映射，把零点挪回
+# 真正的"无关"位置：噪音地板 0.50 → 显示 0.00，实测强命中上限 0.73 → 显示 1.00。
+# 锚点取自 2026-09-06 九组真库查询实测分布（3 确定命中 top1 0.61~0.73、
+# 3 模糊口语 0.50~0.56、3 库中不存在 0.50~0.52）。**换重排/嵌入打分模型后必须重测
+# 锚点**，否则映射失真——此约束同时写在 TASK_LOG 问题45 与 AI_GUIDE。
+# 只影响展示数值；排序、drop/warn 阈值过滤、HyDE 触发判断全部仍用原始分。
+_CONF_ANCHORS = (  # (原始分, 展示分)，原始分升序；展示分随原始分单调
+    (0.50, 0.00),  # 噪音地板：logit≈0（"无法判断"）→ 归零
+    (0.55, 0.20),  # warn 阈值线：弱相关的上界
+    (0.65, 0.85),  # 高相关分档线（CONF_TIER_STRONG）
+    (0.73, 1.00),  # 实测强命中上限；更高一律钳到 1.00
+)
+
+
+def _conf_display(raw):
+    """原始 sigmoid 分 → 展示分（分段线性重标定，保序；锚点外线性外推后钳位 0~1）。"""
+    a = _CONF_ANCHORS
+    if raw <= a[0][0]:
+        return 0.0
+    for (x0, y0), (x1, y1) in zip(a, a[1:]):
+        if raw <= x1:
+            return min(1.0, max(0.0, y0 + (raw - x0) / (x1 - x0) * (y1 - y0)))
+    return 1.0
 
 
 def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=False,
@@ -373,7 +403,9 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
             src += f" [块 {int(k) + 1}/{n}]"
         conf = (scores or {}).get((name, cid))
         if conf is not None:
-            src += f" [置信度 {conf:.2f}·{_conf_tier(conf, warn_c)}]"
+            # 展示数值经 _conf_display 重标定（零点=无关），排序/阈值判断仍用原始 conf
+            shown_conf = _conf_display(conf)
+            src += f" [置信度 {shown_conf:.2f}·{_conf_tier(conf, warn_c)}]"
             if conf < drop_c:
                 # 低置信护栏（drop）：噪音命中直接不输出，宁缺毋滥——
                 # 防止 LLM 把不相关来源当真引用（实测"火箭冷却"混入 agents/test 噪音）。
@@ -383,8 +415,8 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
                 # 或未来换打分模型时分布会变，单路第 2 名 0.375 这类仍需要它）。
                 continue
             if conf < warn_c:
-                # 低置信护栏（warn）：照常输出但显式标注，供调用方判断
-                src += f"（低置信度 {conf:.2f}，仅供参考）"
+                # 低置信护栏（warn）：照常输出但显式标注，供调用方判断（数值同展示尺度）
+                src += f"（低置信度 {shown_conf:.2f}，仅供参考）"
         shown += 1
         max_shown_conf = max(max_shown_conf, conf if conf is not None else 1.0)
         if not include_body:
@@ -412,7 +444,8 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
     if scores and max_shown_conf < warn_c:
         # 白话/模糊输入场景：整体置信度偏低但不隐藏（用户可能说人话问事），
         # 在头部统一提示，让 LLM 知道这批结果需要谨慎引用。
-        lines.insert(0, f"（本次查询整体置信度偏低（最高 {max_shown_conf:.2f}），以下结果仅供参考）")
+        # 判断用原始分，提示数值用重标定后的展示分（与来源行同尺度）。
+        lines.insert(0, f"（本次查询整体置信度偏低（最高 {_conf_display(max_shown_conf):.2f}），以下结果仅供参考）")
     if capped:
         lines.append(f"（同一文件最多展示 {_max_chunks_per_file()} 块，完整内容请打开源文件）")
     return "\n".join(lines)
