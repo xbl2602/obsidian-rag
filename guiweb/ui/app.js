@@ -600,23 +600,57 @@ function loadSelTree() {
 }
 var ICO_FOLDER = '<svg class="tree-ico sel-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>';
 var ICO_FILE = '<svg class="sel-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/><path d="M14 3v5h5"/></svg>';
+SEL.expanded = { '': true };  // 目录树展开态（默认全收起：仅顶层可见）
 function renderSelTree(r) {
   var cur = SEL.sub;
-  var h = r.folders.map(function (f) {
+  // 当前目录的祖先链自动展开（经右栏下钻/面包屑跳转时保持可见）
+  if (cur) {
+    var ps = cur.split('/');
+    for (var i = 1; i < ps.length; i++) SEL.expanded[ps.slice(0, i).join('/')] = true;
+  }
+  var parentSet = {};
+  r.folders.forEach(function (f) {
+    if (!f.path) return;
+    var pp = f.path.split('/'); pp.pop();
+    parentSet[pp.join('/')] = true;
+  });
+  function visible(f) {
+    if (!f.path) return true;
+    var parts = f.path.split('/');
+    for (var i = 1; i < parts.length; i++) {
+      if (!SEL.expanded[parts.slice(0, i).join('/')]) return false;
+    }
+    return true;
+  }
+  var h = r.folders.filter(visible).map(function (f) {
     var ind = f.depth * 14;  // 数字：先拼 'px' 再 +ind 会得 NaN（缩进全失效 = 平铺）
+    var kids = !!parentSet[f.path] || f.path === '';
+    var caret = kids
+      ? '<span class="t-caret' + (SEL.expanded[f.path] ? ' open' : '') + '" data-caret="'
+        + esc(f.path) + '" title="' + (SEL.expanded[f.path] ? '收起' : '展开') + '">▸</span>'
+      : '<span class="t-caret none"></span>';
     var cls = 'sel-tree-row' + (f.path === cur ? ' on' : '')
       + (f.state === 'out' ? ' excluded' : '');
     var dot = f.state === 'root' ? '' :
       '<span class="t-dot ' + (f.state === 'in' || f.state === 'auto_in' ? 'in' : 'out')
       + (f.explicit ? ' exp' : '') + '" title="' + esc(f.state_text) + '"></span>';
-    return '<button class="' + cls + '" data-tree="' + esc(f.path) + '" style="padding-left:' + (8 + +ind) + 'px">'
-      + ICO_FOLDER + '<span class="t-name">' + esc(f.name) + '</span>' + dot + '</button>';
+    return '<div class="' + cls + '" style="padding-left:' + (4 + ind) + 'px">' + caret
+      + '<button class="sel-tree-name" data-tree="' + esc(f.path) + '">' + ICO_FOLDER
+      + '<span class="t-name">' + esc(f.name) + '</span></button>' + dot + '</div>';
   }).join('');
   $('selTree').innerHTML = h;
   Array.prototype.forEach.call($('selTree').querySelectorAll('[data-tree]'), function (b) {
     b.addEventListener('click', function () {
       SEL.sub = b.getAttribute('data-tree');
       loadSelTree();
+    });
+  });
+  Array.prototype.forEach.call($('selTree').querySelectorAll('[data-caret]'), function (c) {
+    c.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      var p = c.getAttribute('data-caret');
+      SEL.expanded[p] = !SEL.expanded[p];
+      renderSelTree(r);  // 纯前端展开收起，不重新拉数据
     });
   });
 }

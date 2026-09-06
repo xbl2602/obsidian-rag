@@ -1072,3 +1072,19 @@ body.mock{padding-top:30px}
 .sel-legend{display:flex;align-items:center;gap:5px}
 .sel-legend .fx{min-width:0}
 .sel-legend-txt{font-size:11px;color:var(--sec);margin-left:6px}
+
+/* 目录树展开/收起（附记5） */
+.sel-tree-row{cursor:default}
+.sel-tree-name{
+  display:flex;align-items:center;gap:7px;flex:1;min-width:0;text-align:left;
+  background:none;border:none;cursor:pointer;color:inherit;font-size:13px;padding:0;
+}
+.sel-tree-name .t-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sel-tree-row.on .sel-tree-name{color:var(--text)}
+.t-caret{
+  flex:none;width:14px;height:14px;line-height:14px;text-align:center;font-size:10px;
+  color:var(--sec);cursor:pointer;user-select:none;
+  transition:transform .18s var(--ease);
+}
+.t-caret.open{transform:rotate(90deg);color:var(--body)}
+.t-caret.none{visibility:hidden}
