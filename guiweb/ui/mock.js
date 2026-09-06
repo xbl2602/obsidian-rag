@@ -453,10 +453,19 @@
         if (ql.indexOf('wemm') >= 0 || q.indexOf('页级') >= 0 || q.indexOf('视觉') >= 0) pool = WEMM_RESULTS;
         else if (ql.indexOf('mineru') >= 0 || q.indexOf('扫描') >= 0 || q.indexOf('OCR') >= 0) pool = MINERU_RESULTS;
         else pool = GENERIC_POOL;
-        var libs = libraries ? libraries.split(',').filter(Boolean) : [];
-        var k = top_k || 5;
-        var results = pool.filter(function (r) { return !libs.length || libs.indexOf(r.lib) >= 0; }).slice(0, k);
-        return { results: JSON.parse(JSON.stringify(results)), elapsed: ms / 1000 + Math.random() * 0.4, error: null };
+      var libs = libraries ? libraries.split(',').filter(Boolean) : [];
+      var k = top_k || 5;
+      // 同文件封顶：对齐真检索语义（max_chunks_per_file，演示数据固定 3）
+      var cap = 3, perFile = {}, results = [];
+      for (var i = 0; i < pool.length && results.length < k; i++) {
+        var r = pool[i];
+        if (libs.length && libs.indexOf(r.lib) < 0) continue;
+        var fk = r.lib + '|' + r.rel;
+        perFile[fk] = (perFile[fk] || 0) + 1;
+        if (perFile[fk] > cap) continue;
+        results.push(JSON.parse(JSON.stringify(r)));
+      }
+      return { results: results, elapsed: ms / 1000 + Math.random() * 0.4, error: null };
       });
     },
 
@@ -638,6 +647,13 @@
     window.pywebview = { api: apiProxy };
     if (document.body) document.body.classList.add('mock');
     else document.addEventListener('DOMContentLoaded', function () { document.body.classList.add('mock'); });
+    // 顶部横幅：演示模式必须一眼可辨，避免与真实库混淆
+    document.addEventListener('DOMContentLoaded', function () {
+      var b = document.createElement('div');
+      b.className = 'mock-banner';
+      b.textContent = '演示模式：当前页面为假数据，与真实知识库无关 · 真实检索请用桌面 App（Obsidian RAG 快捷方式）';
+      document.body.appendChild(b);
+    });
     setTimeout(function () { window.dispatchEvent(new Event('pywebviewready')); }, 30);
     setInterval(function () { window.__push('snapshot', jstr(snapshotPayload())); }, 1000);
     console.info('[mock] 演示模式已启用：实现契约方法 ' + KNOWN.length + ' 个。检索框输入含「慢速」可模拟 35 秒慢返回。');
