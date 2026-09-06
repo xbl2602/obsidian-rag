@@ -6,6 +6,7 @@
 不写 Chroma；索引/试验台均为子进程。
 """
 import json
+import os
 import sys
 import threading
 import time
@@ -17,6 +18,23 @@ UI_DIR = Path(__file__).resolve().parent / "ui"
 for _p in (str(ROOT), str(GUI_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+# ---- 标准流兜底（必须在导入 store/library 等会 print 的模块之前）----
+# pythonw 下 stdout/stderr 是 None：任何 print 直接 AttributeError；
+# 部分终端代码页是 charmap 家族：中文 print 直接 UnicodeEncodeError。
+# 两者都会炸穿 js_api 调用。统一重定向到 utf-8 日志文件。
+_LOG_DIR = ROOT / "data"
+try:
+    _LOG_DIR.mkdir(exist_ok=True)
+    _stream = open(_LOG_DIR / "guiweb_stdio.log", "a", buffering=1,
+                   encoding="utf-8", errors="replace")
+    sys.stdout = _stream
+    sys.stderr = _stream
+except OSError:
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
 
 GUI_LOCK_FILE = ROOT / "data" / "guiweb_instance.lock"
 GUI_PID_FILE = ROOT / "data" / "guiweb_instance.pid"

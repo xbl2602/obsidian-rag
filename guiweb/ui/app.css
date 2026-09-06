@@ -509,6 +509,13 @@ td.g{color:var(--sec);font-size:12px}
 .sg-item:hover{background:var(--s2);color:var(--body)}
 .sg-item.on{background:var(--accent-dim);border-color:var(--accent-line);color:var(--text)}
 .sg-panel-wrap{padding:20px 22px;min-height:320px}
+/* 分组面板显隐：JS 切 .on（buildSettings 绑定 sg-item），必须有这条才生效 */
+.sg-panel{display:none}
+.sg-panel.on{display:block;animation:fadeIn .25s var(--ease)}
+/* 检索加载活性指示 */
+.sk-live{display:flex;align-items:center;gap:8px;justify-content:center;color:var(--sec);font-size:12px}
+.sk-live .live-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:breathe 1.2s ease-in-out infinite}
+/* breathe 复用第 193 行的既有定义，不重复声明 */
 .sg-group-title{font-size:15px;font-weight:700;color:var(--text)}
 .sg-group-desc{font-size:12px;color:var(--ph);margin:2px 0 10px}
 .f-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 0;border-bottom:1px solid var(--hair);flex-wrap:wrap}

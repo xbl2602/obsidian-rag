@@ -396,8 +396,16 @@ function doSearch() {
   $('searchErr').classList.remove('show');
   $('searchSkeleton').style.display = 'flex';
   $('searchBtn').disabled = true;
+  // 加载活性指示：已耗时秒数递增，首次检索明确提示模型加载时长
+  var skT0 = Date.now();
+  $('skLiveTxt').textContent = S.firstSearchDone ? '正在检索…' : '正在加载嵌入模型并检索…';
+  $('skLiveSec').textContent = '0s';
+  var skTimer = setInterval(function () {
+    $('skLiveSec').textContent = Math.round((Date.now() - skT0) / 1000) + 's';
+  }, 500);
   API.search(q, parseInt($('topkSel').value, 10) || 5, scopeStr(), true).then(function (res) {
     searching = false;
+    clearInterval(skTimer);
     $('searchSkeleton').style.display = 'none';
     $('searchBtn').disabled = false;
     S.firstSearchDone = true;
