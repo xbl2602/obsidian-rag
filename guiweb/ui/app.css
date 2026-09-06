@@ -994,33 +994,74 @@ body.g-mono .g-node .g-mark{background:var(--s4) !important;border-color:var(--h
   text-align:center;padding:6px 16px;font-size:12px;pointer-events:none}
 body.mock{padding-top:30px}
 
-/* ============ 勾选范围抽屉（问题44） ============ */
-.overlay.overlay-right{justify-content:flex-end;align-items:stretch;padding:0}
-.sel-drawer{
-  position:relative;margin:0;height:100%;width:560px;max-width:92vw;border-radius:0;
-  border-right:none;border-top:none;border-bottom:none;
-  transform:translateX(100%);transition:transform .28s var(--ease);
+/* ============ 勾选范围弹窗（问题44：左目录树 / 右文件列表） ============ */
+.sel-modal{
+  width:min(1180px, 94vw);height:min(800px, 92vh);display:flex;flex-direction:column;
 }
-.overlay.open .sel-drawer{transform:translateX(0)}
-.sel-core{display:flex;flex-direction:column;height:100%;padding:18px 20px;gap:12px;min-height:0}
+.sel-core{display:flex;flex-direction:column;height:100%;padding:18px 22px;gap:12px;min-height:0}
 .sel-head{display:flex;align-items:flex-start;gap:12px}
 .sel-title{font-size:16px;font-weight:700;color:var(--text)}
 .sel-sub{font-size:12px;color:var(--sec);margin-top:2px}
-.sel-crumb{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:12.5px}
+.sel-body{flex:1;display:flex;gap:14px;min-height:0}
+
+/* 左：目录树 */
+.sel-tree{
+  width:320px;flex:none;overflow-y:auto;min-height:0;
+  border:1px solid var(--s3);border-radius:10px;padding:8px 6px;background:var(--s1);
+}
+.sel-tree-row{
+  display:flex;align-items:center;gap:7px;width:100%;text-align:left;
+  background:none;border:none;cursor:pointer;color:var(--body);
+  font-size:13px;padding:5px 8px;border-radius:7px;white-space:nowrap;overflow:hidden;
+}
+.sel-tree-row:hover{background:var(--s2)}
+.sel-tree-row.on{background:var(--accent-dim);color:var(--text)}
+.sel-tree-row .tree-ico{flex:none;width:15px;height:15px;color:var(--warn);opacity:.85}
+.sel-tree-row.excluded .tree-ico{color:var(--err)}
+.sel-tree-row.excluded{color:var(--sec)}
+.sel-tree-row .t-name{overflow:hidden;text-overflow:ellipsis}
+.sel-tree-row .t-dot{flex:none;width:6px;height:6px;border-radius:50%;margin-left:auto}
+.t-dot.in{background:var(--accent)}
+.t-dot.out{background:var(--err)}
+.t-dot.exp{background:var(--warn)}
+
+/* 右：文件列表 */
+.sel-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+.sel-crumb{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:12.5px;min-height:24px}
 .sel-crumb-it{background:none;border:none;color:var(--accent);cursor:pointer;padding:2px 4px;border-radius:6px;font-size:12.5px}
 .sel-crumb-it:hover{background:var(--s2)}
 .sel-crumb-sep{color:var(--sec)}
-.sel-fmts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 0;border-top:1px solid var(--s3);border-bottom:1px solid var(--s3)}
+.sel-fmts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 0;border-top:1px solid var(--s3);border-bottom:1px solid var(--s3);margin-bottom:6px}
 .sel-fmts-label{font-size:12px;color:var(--sec)}
-.sel-list{flex:1;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:2px}
+.sel-list{flex:1;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:2px;padding-right:4px}
 .sel-loading{color:var(--sec);font-size:13px;padding:20px 0;text-align:center}
-.sel-row{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;min-height:34px}
+
+/* 行：目录行 / 文件行 视觉分层 */
+.sel-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;min-height:38px}
 .sel-row:hover{background:var(--s2)}
+.sel-row.is-dir{background:var(--s1);border:1px solid var(--s3);margin-top:4px}
+.sel-row.is-dir:first-child{margin-top:0}
+.sel-row.is-dir .sel-name{font-weight:700;color:var(--text)}
 .sel-row .sel-ck{flex:none;margin:0}
-.sel-name{background:none;border:none;color:var(--body);font-size:13px;padding:0;text-align:left;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sel-name.sel-dir{color:var(--accent);cursor:pointer;font-weight:600}
+.sel-ico{flex:none;width:16px;height:16px}
+.sel-row.is-dir .sel-ico{color:var(--warn)}
+.sel-name{background:none;border:none;color:var(--body);font-size:13px;padding:0;text-align:left;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.sel-name.sel-dir{color:var(--accent);cursor:pointer;font-weight:700}
 .sel-name.sel-dir:hover{text-decoration:underline}
-.sel-badge{margin-left:auto;flex:none;font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--s3);color:var(--sec);white-space:nowrap}
+.sel-row.na .sel-name{color:var(--sec)}
+
+/* 文件类型徽章 */
+.fx{
+  flex:none;font-size:10px;font-weight:700;letter-spacing:.4px;padding:2px 7px;
+  border-radius:5px;border:1px solid var(--s3);color:var(--sec);min-width:34px;text-align:center;
+}
+.fx-md{color:#4ade80;border-color:rgba(74,222,128,.35);background:rgba(74,222,128,.08)}
+.fx-pdf{color:#f87171;border-color:rgba(248,113,113,.35);background:rgba(248,113,113,.08)}
+.fx-docx{color:#60a5fa;border-color:rgba(96,165,250,.35);background:rgba(96,165,250,.08)}
+.fx-txt{color:#a1a1aa;border-color:rgba(161,161,170,.35);background:rgba(161,161,170,.08)}
+.fx-na{color:var(--sec);opacity:.6}
+
+.sel-badge{flex:none;font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--s3);color:var(--sec);white-space:nowrap}
 .sel-badge.sin{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
 .sel-badge.sout{color:var(--err);border-color:transparent}
 .sel-follow{flex:none;background:none;border:1px solid var(--s3);color:var(--sec);font-size:11px;padding:1px 8px;border-radius:99px;cursor:pointer}
@@ -1028,3 +1069,6 @@ body.mock{padding-top:30px}
 .sel-pend-dot{color:var(--warn);font-size:12px}
 .sel-foot{display:flex;align-items:center;gap:10px;padding-top:10px;border-top:1px solid var(--s3)}
 .sel-pend{font-size:12px;color:var(--warn)}
+.sel-legend{display:flex;align-items:center;gap:5px}
+.sel-legend .fx{min-width:0}
+.sel-legend-txt{font-size:11px;color:var(--sec);margin-left:6px}

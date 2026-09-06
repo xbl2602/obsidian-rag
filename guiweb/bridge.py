@@ -372,8 +372,29 @@ class Bridge:
                     files.append({"name": it.name, "dir": False, "path": rel,
                                   "explicit": ex, "state": st, "state_text": tx,
                                   "ext": it.suffix.lower().lstrip(".")})
+            folders = [{"path": "", "depth": 0, "name": name,
+                        "explicit": None, "state": "root", "state_text": "库根"}]
+            SKIP_TOP = {root.name}
+
+            def _walk_dirs(base, depth):
+                try:
+                    entries = sorted(base.iterdir(), key=lambda x: x.name.lower())
+                except OSError:
+                    return
+                for it in entries:
+                    if not it.is_dir() or it.name.startswith("."):
+                        continue
+                    rel = str(it.relative_to(root)).replace("\\", "/")
+                    st, ex, tx = _state(rel, is_dir=True, name=it.name)
+                    folders.append({"path": rel, "depth": depth, "name": it.name,
+                                    "explicit": ex, "state": st, "state_text": tx})
+                    if len(folders) < 4000:
+                        _walk_dirs(it, depth + 1)
+
+            _walk_dirs(root, 1)
             return {"lib": name, "sub": sub_n, "root": str(root), "dirs": dirs,
-                    "files": files, "selection_in": sel_in, "selection_out": sel_out,
+                    "files": files, "folders": folders,
+                    "selection_in": sel_in, "selection_out": sel_out,
                     "extensions": cfg["extensions"], "default": default,
                     "error": None}
         except ValueError as e:  # noqa: BLE001

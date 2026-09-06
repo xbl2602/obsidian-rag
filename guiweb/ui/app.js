@@ -592,10 +592,33 @@ function loadSelTree() {
   $('selCrumb').innerHTML = ''; $('selFmts').innerHTML = '';
   API.selection_tree(SEL.lib, SEL.sub).then(function (r) {
     if (r.error) { $('selList').innerHTML = '<div class="sel-loading">' + esc(r.error) + '</div>'; return; }
+    renderSelTree(r);
     renderSelCrumb(r);
     renderSelFmts(r);
     renderSelList(r);
   }).catch(function () { $('selList').innerHTML = '<div class="sel-loading">加载失败</div>'; });
+}
+var ICO_FOLDER = '<svg class="tree-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>';
+var ICO_FILE = '<svg class="sel-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/><path d="M14 3v5h5"/></svg>';
+function renderSelTree(r) {
+  var cur = SEL.sub;
+  var h = r.folders.map(function (f) {
+    var ind = (f.depth * 14) + 'px';
+    var cls = 'sel-tree-row' + (f.path === cur ? ' on' : '')
+      + (f.state === 'out' ? ' excluded' : '');
+    var dot = f.state === 'root' ? '' :
+      '<span class="t-dot ' + (f.state === 'in' || f.state === 'auto_in' ? 'in' : 'out')
+      + (f.explicit ? ' exp' : '') + '" title="' + esc(f.state_text) + '"></span>';
+    return '<button class="' + cls + '" data-tree="' + esc(f.path) + '" style="padding-left:' + (8 + +ind) + 'px">'
+      + ICO_FOLDER + '<span class="t-name">' + esc(f.name) + '</span>' + dot + '</button>';
+  }).join('');
+  $('selTree').innerHTML = h;
+  Array.prototype.forEach.call($('selTree').querySelectorAll('[data-tree]'), function (b) {
+    b.addEventListener('click', function () {
+      SEL.sub = b.getAttribute('data-tree');
+      loadSelTree();
+    });
+  });
 }
 function renderSelCrumb(r) {
   var parts = r.sub ? r.sub.split('/') : [];
@@ -641,20 +664,28 @@ function renderSelFmts(r) {
     });
   });
 }
+var FX_KNOWN = { md: 'md', pdf: 'pdf', docx: 'docx', txt: 'txt' };
 function selRowHTML(it) {
   var effIn = it.state === 'in' || it.state === 'auto_in';
   var pend = SEL.changes[it.path];
   var pendTxt = pend ? '<span class="sel-pend-dot" title="待保存：' + pend + '">✎</span>' : '';
   var badgeCls = effIn ? 'sin' : 'sout';
+  var ext = (it.ext || '').toLowerCase();
+  var fxKey = FX_KNOWN[ext];
+  var fx = it.dir
+    ? ''
+    : '<span class="fx ' + (fxKey ? 'fx-' + fxKey : 'fx-na') + '">'
+      + esc(fxKey ? ext.toUpperCase() : (ext ? ext.slice(0, 5).toUpperCase() : '无类型')) + '</span>';
   var nameHTML = it.dir
-    ? '<button class="sel-name sel-dir" data-drill="' + esc(it.path) + '">' + esc(it.name) + '/</button>'
+    ? '<button class="sel-name sel-dir" data-drill="' + esc(it.path) + '">' + esc(it.name) + '</button>'
     : '<span class="sel-name">' + esc(it.name) + '</span>';
   var follow = it.explicit
     ? '<button class="sel-follow" data-follow="' + esc(it.path) + '" title="清除显式选择，恢复跟随格式">跟随</button>'
     : '';
-  return '<div class="sel-row" data-path="' + esc(it.path) + '">'
+  var ico = it.dir ? ICO_FOLDER : ICO_FILE;
+  return '<div class="sel-row' + (it.dir ? ' is-dir' : (fxKey ? '' : ' na')) + '" data-path="' + esc(it.path) + '">'
     + '<label class="switch sel-ck"><input type="checkbox" data-selck="' + esc(it.path) + '"' + (effIn ? ' checked' : '') + '><i></i></label>'
-    + nameHTML + pendTxt
+    + ico + nameHTML + fx + pendTxt
     + '<span class="sel-badge ' + badgeCls + '">' + esc(it.state_text) + '</span>'
     + follow + '</div>';
 }

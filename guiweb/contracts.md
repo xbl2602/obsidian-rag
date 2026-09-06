@@ -92,13 +92,18 @@
 
 ### pick_path(mode, start) → {path, error}（原生选择弹窗；mode: "dir"|"file"；start 为输入框现值用于定位起始目录；取消 → {path:null}）
 
-### selection_tree(lib, sub) → 该目录一层的勾选态（问题44；sub 空=库根；越界/非法 → {error}）
+### selection_tree(lib, sub) → 该目录一层的勾选态 + 整棵目录树（问题44；sub 空=库根；越界/非法 → {error}）
 ```json
-{"lib":"…","sub":"…","root":"…","dirs":[{"name":"课件","dir":true,"path":"课件","explicit":null,"state":"auto_in","state_text":"入库（跟随格式）","n_children":5}],
+{"lib":"…","sub":"…","root":"…",
+ "folders":[{"path":"","depth":0,"name":"库名","state":"root","state_text":"库根","explicit":null},
+            {"path":"20-Projects/课件","depth":2,"name":"课件","state":"auto_in","state_text":"入库（跟随子内容）","explicit":null}],
+ "dirs":[{"name":"课件","dir":true,"path":"课件","explicit":null,"state":"auto_in","state_text":"入库（跟随子内容）","n_children":5}],
  "files":[{"name":"a.pdf","dir":false,"path":"课件/a.pdf","explicit":"in","state":"in","state_text":"已入库（显式勾选）","ext":"pdf"}],
- "selection_in":["…"],"selection_out":["…"],"error":null}
+ "selection_in":["…"],"selection_out":["…"],"extensions":["md","pdf"],"default":"follow","error":null}
 ```
-state：in/out（显式）| auto_in/auto_out（中性，按格式开关与 selection_new_files 判定）。
+state：in/out（显式）| auto_in/auto_out（中性，按格式开关与 selection_new_files 判定）|
+root（树根）。folders = 全库目录树（扁平、depth 缩进、跳过隐藏目录，≤4000 项）——
+前端左栏目录树一次拉取，右栏按 sub 懒加载文件。
 
 ### selection_update(lib, changes:[{path, action:"in"|"out"|"neutral"}]) → {ok, error?, selection_in, selection_out}
 GUI=用户本人，直接生效（无需 MCP 那套确认码）；下一轮索引自动应用。

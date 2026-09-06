@@ -506,7 +506,13 @@
              mk('日记.md', false)]
           : sub ? [mk('青苹果菜单.pdf', false), mk('锅包肉配方.pdf', false), mk('小明账单.pdf', false)]
           : [mk('主页.md', false), mk('读书笔记.md', false)];
-        return { lib: lib, sub: sub, root: 'C:\\demo\\' + lib, dirs: dirs, files: files,
+        var folders = [
+          { path: '', depth: 0, name: lib, explicit: null, state: 'root', state_text: '库根' },
+          { path: '20-Projects', depth: 1, name: '20-Projects', explicit: null, state: 'auto_in', state_text: '入库（跟随子内容）' },
+          { path: '10-Areas', depth: 1, name: '10-Areas', explicit: null, state: 'auto_in', state_text: '入库（跟随子内容）' },
+          { path: '私人', depth: 1, name: '私人', explicit: null, state: 'auto_in', state_text: '入库（跟随子内容）' }
+        ];
+        return { lib: lib, sub: sub, root: 'C:\\demo\\' + lib, dirs: dirs, files: files, folders: folders,
                  selection_in: ['20-Projects/课件/青苹果菜单.pdf'], selection_out: ['私人/账单.pdf'],
                  extensions: ['md', 'pdf', 'docx'], default: 'follow',
                  error: null };

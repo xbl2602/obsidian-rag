@@ -344,6 +344,11 @@ def test_bridge_selection():
                guo["explicit"] is None and guo["state"] == "auto_in")
         _check("bridge: payload 带 extensions/default",
                r["extensions"] and r["default"] == "follow")
+        # 整棵目录树（左栏一次拉取；跳过隐藏目录；root 哨兵打头）
+        fp = [f["path"] for f in r["folders"]]
+        _check("bridge: folders 目录树（root + 课件 + 私人）",
+               fp[0] == "" and set(fp) == {"", "课件", "私人"} and
+               all(f["depth"] == 1 for f in r["folders"] if f["path"]))
         _check("bridge: 越界拒绝",
                "error" in b.selection_tree("t", "../../etc") and
                b.selection_tree("t", "../../etc")["error"])

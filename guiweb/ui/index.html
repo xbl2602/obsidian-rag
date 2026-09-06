@@ -455,22 +455,31 @@
 
 <!-- ============ 弹层们 ============ -->
 <!-- 添加库 -->
-<!-- 勾选范围（问题44）：右侧滑出抽屉 -->
-<div class="overlay overlay-right" id="mSel">
-  <div class="sel-drawer shell"><div class="core sel-core">
+<!-- 勾选范围（问题44）：宽幅两栏弹窗（左目录树 / 右文件列表） -->
+<div class="overlay" id="mSel">
+  <div class="sel-modal shell"><div class="core sel-core">
     <div class="sel-head">
       <div style="min-width:0">
         <div class="sel-title" id="selTitle">勾选范围</div>
-        <div class="sel-sub">勾选 = 建向量库 · 不勾 = 全流程排除 · 点文件夹名下钻（不越库根）</div>
+        <div class="sel-sub">勾选 = 建向量库 · 不勾 = 全流程排除 · 左树选目录，右列勾文件</div>
       </div>
       <button class="btn btn-sm btn-ghost" id="selClose" data-close>关闭</button>
     </div>
-    <div class="sel-crumb" id="selCrumb"></div>
-    <div class="sel-fmts" id="selFmts"></div>
-    <div class="sel-list" id="selList" role="list"></div>
+    <div class="sel-body">
+      <aside class="sel-tree" id="selTree" aria-label="目录树"></aside>
+      <div class="sel-main">
+        <div class="sel-crumb" id="selCrumb"></div>
+        <div class="sel-fmts" id="selFmts"></div>
+        <div class="sel-list" id="selList" role="list"></div>
+      </div>
+    </div>
     <div class="sel-foot">
-      <span class="sel-pend" id="selPend"></span>
+      <span class="sel-legend">
+        <span class="fx fx-md">MD</span><span class="fx fx-pdf">PDF</span><span class="fx fx-docx">DOCX</span><span class="fx fx-txt">TXT</span><span class="fx fx-na">不支持</span>
+        <span class="sel-legend-txt">图例：类型徽章 · 绿点=入库 红=排除</span>
+      </span>
       <span style="flex:1"></span>
+      <span class="sel-pend" id="selPend"></span>
       <button class="btn btn-sm btn-ghost" id="selGiveup">放弃</button>
       <button class="btn btn-sm btn-primary" id="selSave" disabled>保存更改</button>
     </div>
