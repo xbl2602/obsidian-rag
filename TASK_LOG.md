@@ -2040,3 +2040,6 @@ Roadmap 状态）。
    遮挡列表——双类修复。DevTools 定位法：RAG_GUIWEB_DEBUG=1 开 DevTools +
    elementsFromPoint/copy() 到剪贴板（SVG className 是对象不是字符串，typeof
    判断会误报无类名）。
+4. **用户反馈"树完全平铺没有层级"**：renderSelTree 里 `var ind = f.depth*14+'px'`
+   先拼了 'px'，后面 `8 + +ind` 把 "14px" 转数字得 NaN，padding-left 全部非法，
+   整棵树视觉平铺。改为数字参与运算再拼 px，缩进恢复。
