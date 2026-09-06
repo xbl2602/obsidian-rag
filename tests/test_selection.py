@@ -359,6 +359,11 @@ def test_bridge_selection():
         up2 = b.selection_update("t", [{"path": "../../x", "action": "in"}])
         _check("bridge: update 越界拒绝", not up2["ok"] and up2["error"])
         _check("bridge: 不存在的库报错", b.selection_tree("没有的库", "")["error"])
+        # 中性文件夹 = 跟随子内容（无扩展名不能落格式判定，否则全显示"排除"）
+        kechen = next(d for d in r["dirs"] if d["name"] == "课件")
+        _check("bridge: 中性文件夹 auto_in（跟随子内容）",
+               kechen["state"] == "auto_in" and kechen["explicit"] is None and
+               kechen["state_text"] == "入库（跟随子内容）")
 
 
 # ---------------------------------------------------------------------------

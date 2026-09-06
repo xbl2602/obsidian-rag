@@ -318,7 +318,7 @@ class Bridge:
             sel_in, sel_out = cfg["selection_in"], cfg["selection_out"]
             default = cfg.get("selection_default", "follow")
 
-            def _state(rel):
+            def _state(rel, is_dir=False):
                 v = resolve_selection(sel_in, sel_out, rel)
                 explicit = None
                 if v == "in":
@@ -326,7 +326,11 @@ class Bridge:
                 elif v == "out":
                     explicit = "out"
                 if v is None:
-                    if default == "exclude":
+                    if is_dir:
+                        # 文件夹是容器：中性 = 跟随子内容（文件夹没有扩展名，
+                        # 不能落进格式判定——否则全部显示"排除"误导用户）
+                        v = "in"
+                    elif default == "exclude":
                         v = "out"
                     elif default == "include":
                         v = "in"
@@ -334,7 +338,8 @@ class Bridge:
                         v = "in" if rel.rsplit(".", 1)[-1].lower() in cfg["extensions"]                             else "out"
                 state = v if explicit else ("auto_" + v)
                 text = {"in": "已入库（显式勾选）", "out": "已排除（显式取消）",
-                        "auto_in": "入库（跟随格式）", "auto_out": "排除（跟随格式）"}[state]
+                        "auto_in": "入库（跟随子内容）" if is_dir else "入库（跟随格式）",
+                        "auto_out": "排除（跟随格式）"}[state]
                 return state, explicit, text
 
             dirs, files = [], []
@@ -343,7 +348,7 @@ class Bridge:
                     continue  # 隐藏目录（.obsidian 等）不进面板
                 rel = (sub_n + "/" if sub_n else "") + it.name
                 if it.is_dir():
-                    st, ex, tx = _state(rel)
+                    st, ex, tx = _state(rel, is_dir=True)
                     dirs.append({"name": it.name, "dir": True, "path": rel,
                                  "explicit": ex, "state": st, "state_text": tx,
                                  "n_children": sum(1 for _ in it.iterdir())})
