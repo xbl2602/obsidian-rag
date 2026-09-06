@@ -619,15 +619,34 @@
     }
   });
 
-  /* ---------- 注入 ---------- */
-  window.__RAG_MOCK.active = true;
-  window.__push = function (type, payloadJson) {
-    window.dispatchEvent(new CustomEvent(type, { detail: payloadJson }));
-  };
-  window.pywebview = { api: apiProxy };
-  if (document.body) document.body.classList.add('mock');
-  else document.addEventListener('DOMContentLoaded', function () { document.body.classList.add('mock'); });
-  setTimeout(function () { window.dispatchEvent(new Event('pywebviewready')); }, 30);
-  setInterval(function () { window.__push('snapshot', jstr(snapshotPayload())); }, 1000);
-  console.info('[mock] 演示模式已启用：实现契约方法 ' + KNOWN.length + ' 个。检索框输入含「慢速」可模拟 35 秒慢返回。');
+  /* ---------- 注入（带真桥让位：pywebview 注入是异步的，必须等宽限期）----------
+     真 App 里 pywebview 在文档脚本执行前/后不久才注入 window.pywebview；
+     mock 若无条件抢先安装，真桥会被覆盖或与之每秒互殴（表现为快照数字闪跳、
+     图谱是假数据、右下角常驻演示角标）。因此：真桥存在 → 永不激活；
+     1.5s 宽限期内真桥就绪 → 永不激活。 */
+  function realBridge() {
+    var a = window.pywebview && window.pywebview.api;
+    return !!(a && a.__isMock !== true);
+  }
+  function activate() {
+    if (window.__RAG_MOCK.active || realBridge()) return;
+    window.__RAG_MOCK.active = true;
+    apiProxy.__isMock = true;
+    window.__push = function (type, payloadJson) {
+      window.dispatchEvent(new CustomEvent(type, { detail: payloadJson }));
+    };
+    window.pywebview = { api: apiProxy };
+    if (document.body) document.body.classList.add('mock');
+    else document.addEventListener('DOMContentLoaded', function () { document.body.classList.add('mock'); });
+    setTimeout(function () { window.dispatchEvent(new Event('pywebviewready')); }, 30);
+    setInterval(function () { window.__push('snapshot', jstr(snapshotPayload())); }, 1000);
+    console.info('[mock] 演示模式已启用：实现契约方法 ' + KNOWN.length + ' 个。检索框输入含「慢速」可模拟 35 秒慢返回。');
+  }
+  if (!realBridge()) {
+    var graceStart = Date.now();
+    var graceTimer = setInterval(function () {
+      if (realBridge()) { clearInterval(graceTimer); return; }
+      if (Date.now() - graceStart >= 1500) { clearInterval(graceTimer); activate(); }
+    }, 100);
+  }
 })();
