@@ -1,0 +1,3182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Obsidian RAG · 深黑玻璃 · 全库图谱</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   DEMO 7 · 深黑玻璃 · 全库图谱
+   色彩锁定：画布 #050505，唯一强调色 冷翡翠 #34D399
+   ============================================================ */
+:root{
+  --canvas:#050505;
+  --text:#F2F3F5;
+  --body:#E8EAED;
+  --sec:#8A9099;
+  --ph:#767E88;
+  --s1:rgba(255,255,255,0.03);
+  --s2:rgba(255,255,255,0.05);
+  --s3:rgba(255,255,255,0.08);
+  --s4:rgba(255,255,255,0.12);
+  --hair:rgba(255,255,255,0.10);
+  --hair-strong:rgba(255,255,255,0.18);
+  --core:#0C0E11;
+  --core-2:#101318;
+  --accent:#34D399;
+  --accent-ink:#07130D;      /* 翡翠底上的深字，保证 AA */
+  --accent-dim:rgba(52,211,153,0.13);
+  --accent-line:rgba(52,211,153,0.35);
+  --err:#F87171;
+  --err-dim:rgba(248,113,113,0.12);
+  --warn:#FBBF24;
+  --warn-dim:rgba(251,191,36,0.12);
+  --info:#7DB8FF;
+  --info-dim:rgba(125,184,255,0.12);
+  --glass:rgba(10,12,15,0.72);
+  --ease:cubic-bezier(0.32,0.72,0,1);
+  --shell-r:20px;
+  --core-r:13px;
+  --pad:7px;
+  --nav-h:56px;
+  --sb-w:200px;
+  --shadow-float:0 24px 48px -16px rgba(0,0,0,0.55);
+  /* 图谱专用 */
+  --g-edge:rgba(255,255,255,0.32);
+  --g-sem:rgba(255,255,255,0.60);
+  --g-own:rgba(255,255,255,0.36);
+  --g-dot:rgba(255,255,255,0.085);
+  --q-bg:#E9ECEF;
+  --q-ink:#0B0D10;
+}
+[data-theme="light"]{
+  --canvas:#F3F4F6;
+  --text:#171A1F;
+  --body:#262A31;
+  --sec:#5D6570;
+  --ph:#7A828C;
+  --s1:rgba(15,20,28,0.03);
+  --s2:rgba(15,20,28,0.05);
+  --s3:rgba(15,20,28,0.07);
+  --s4:rgba(15,20,28,0.11);
+  --hair:rgba(15,20,28,0.10);
+  --hair-strong:rgba(15,20,28,0.22);
+  --core:#FFFFFF;
+  --core-2:#FAFBFC;
+  --glass:rgba(255,255,255,0.78);
+  --accent:#0E9F6E;
+  --accent-ink:#FFFFFF;
+  --accent-dim:rgba(14,159,110,0.10);
+  --accent-line:rgba(14,159,110,0.40);
+  --err:#DC2626;
+  --err-dim:rgba(220,38,38,0.08);
+  --warn:#B45309;
+  --warn-dim:rgba(180,83,9,0.08);
+  --info:#1D6FD1;
+  --info-dim:rgba(29,111,209,0.08);
+  --shadow-float:0 24px 48px -20px rgba(20,26,36,0.25);
+  --g-edge:rgba(15,20,28,0.30);
+  --g-sem:rgba(15,20,28,0.52);
+  --g-own:rgba(15,20,28,0.34);
+  --g-dot:rgba(15,20,28,0.10);
+  --q-bg:#15181D;
+  --q-ink:#F2F3F5;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{font-size:16px}
+body{
+  background:var(--canvas);
+  color:var(--body);
+  font-family:'Noto Sans SC',sans-serif;
+  font-size:14px;
+  line-height:1.65;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{background:rgba(52,211,153,0.28);color:var(--text)}
+button,input,select{font-family:inherit;font-size:inherit;color:inherit}
+button{cursor:pointer;background:none;border:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
+.grotesk{font-family:'Space Grotesk','Noto Sans SC',sans-serif}
+
+/* 背景辉光 orb：极暗径向，fixed 不随滚动重绘 */
+.orb{position:fixed;border-radius:50%;pointer-events:none;z-index:0}
+.orb-a{width:620px;height:620px;left:-160px;top:-180px;background:radial-gradient(circle,rgba(52,211,153,0.11),transparent 62%)}
+.orb-b{width:700px;height:700px;right:-200px;top:24vh;background:radial-gradient(circle,rgba(56,102,208,0.10),transparent 62%)}
+[data-theme="light"] .orb-a{background:radial-gradient(circle,rgba(14,159,110,0.08),transparent 62%)}
+[data-theme="light"] .orb-b{background:radial-gradient(circle,rgba(29,111,209,0.07),transparent 62%)}
+
+/* ============ Double-Bezel 双层嵌套卡 ============ */
+.shell{
+  background:var(--s2);
+  border:1px solid var(--hair);
+  border-radius:var(--shell-r);
+  padding:var(--pad);
+}
+.core{
+  background:var(--core);
+  border-radius:var(--core-r);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.06);
+  height:100%;
+}
+[data-theme="light"] .core{box-shadow:inset 0 1px 0 rgba(255,255,255,0.9)}
+
+/* ============ 顶部玻璃导航 ============ */
+.nav{
+  position:fixed;top:0;left:0;right:0;height:var(--nav-h);z-index:50;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 20px;
+  background:var(--glass);
+  backdrop-filter:blur(20px);
+  -webkit-backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--hair);
+}
+.brand{display:flex;align-items:center;gap:10px;font-family:'Space Grotesk','Noto Sans SC',sans-serif;font-weight:600;font-size:15px;color:var(--text);letter-spacing:-0.01em}
+.brand-mark{
+  width:22px;height:22px;border-radius:7px;flex:none;
+  background:linear-gradient(135deg,rgba(52,211,153,0.9),rgba(52,211,153,0.35));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.35);
+}
+.nav-right{display:flex;align-items:center;gap:2px}
+.nav-link{
+  padding:6px 12px;border-radius:8px;color:var(--sec);font-size:13px;font-weight:500;
+  transition:background .2s var(--ease),color .2s var(--ease);
+}
+.nav-link:hover{background:var(--s2);color:var(--body)}
+.nav-link.on{background:var(--s3);color:var(--text)}
+.icon-btn{
+  width:34px;height:34px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;
+  color:var(--sec);border:1px solid transparent;margin-left:6px;
+  transition:background .2s var(--ease),color .2s var(--ease),border-color .2s var(--ease),transform .12s var(--ease);
+}
+.icon-btn:hover{background:var(--s2);color:var(--body);border-color:var(--hair)}
+.icon-btn:active{transform:scale(0.98)}
+.icon-btn svg{width:17px;height:17px}
+
+/* ============ 动态岛（全页签名元素） ============ */
+.island{
+  position:absolute;left:50%;top:9px;transform:translateX(-50%);
+  height:38px;border-radius:999px;overflow:hidden;
+  background:var(--glass);
+  backdrop-filter:blur(20px);
+  -webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--hair);
+  width:236px;
+  transition:width .55s var(--ease),border-color .35s var(--ease);
+  /* 宽度形变是动态岛语言的本体，全页仅此一处布局过渡 */
+  text-align:left;
+}
+.island.live{border-color:var(--accent-line)}
+.island-inner{display:block;position:relative;height:100%;width:100%}
+.island-idle{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:9px;
+  font-size:12.5px;color:var(--sec);white-space:nowrap;
+  transition:opacity .3s var(--ease),transform .45s var(--ease);
+}
+.island-idle .dot{
+  width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;
+  animation:breathe 3.2s ease-in-out infinite; /* 全页唯一常驻动画：就绪状态心跳 */
+}
+.island-idle b{color:var(--text);font-weight:500}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+.island-run{
+  position:absolute;inset:0;display:flex;align-items:center;gap:10px;padding:0 8px 0 14px;
+  opacity:0;transform:translateY(8px);pointer-events:none;white-space:nowrap;
+  transition:opacity .3s var(--ease) .15s,transform .45s var(--ease) .15s;
+}
+.island.run{width:432px}
+.island.run .island-idle{opacity:0;transform:translateY(-8px)}
+.island.run .island-run{opacity:1;transform:translateY(0);pointer-events:auto}
+.i-phase{font-size:12.5px;font-weight:500;color:var(--text);min-width:34px}
+.i-bar{
+  flex:1;height:4px;border-radius:99px;background:var(--s3);overflow:hidden;position:relative;
+}
+.i-bar i{
+  position:absolute;inset:0;border-radius:99px;background:var(--accent);
+  transform:scaleX(0);transform-origin:left;
+  transition:transform .3s var(--ease); /* 进度条 scaleX：只动 transform，统一缓动 */
+}
+.i-num{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--text);min-width:38px;text-align:right;font-variant-numeric:tabular-nums}
+.i-eta{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--sec);min-width:52px;font-variant-numeric:tabular-nums}
+.i-stop{
+  height:24px;padding:0 10px;border-radius:99px;font-size:11.5px;color:var(--err);flex:none;
+  border:1px solid rgba(248,113,113,0.35);
+  transition:background .2s var(--ease),transform .12s var(--ease);
+}
+.i-stop:hover{background:var(--err-dim)}
+.i-stop:active{transform:scale(0.98)}
+
+/* ============ 主体布局 ============ */
+.sidebar{
+  position:fixed;left:0;top:var(--nav-h);bottom:0;width:var(--sb-w);z-index:30;
+  padding:16px 12px;
+  background:var(--s1);
+  border-right:1px solid var(--hair);
+}
+.sb-item{
+  display:flex;align-items:center;gap:10px;width:100%;
+  padding:9px 12px;border-radius:10px;margin-bottom:2px;
+  color:var(--sec);font-size:13.5px;font-weight:500;text-align:left;
+  border:1px solid transparent;position:relative;
+  transition:background .2s var(--ease),color .2s var(--ease),border-color .2s var(--ease);
+}
+.sb-item svg{width:16px;height:16px;flex:none}
+.sb-item:hover{background:var(--s2);color:var(--body)}
+.sb-item.on{
+  background:var(--accent-dim);
+  border-color:var(--accent-line);          /* 选中态：翡翠 hairline */
+  box-shadow:inset 0 0 18px rgba(52,211,153,0.07); /* 微光 */
+  color:var(--text);
+}
+.sb-item.on svg{color:var(--accent)}
+.sb-cap{font-size:11px;color:var(--ph);padding:0 12px;margin:18px 0 6px;letter-spacing:0.06em}
+.sb-foot{position:absolute;left:12px;right:12px;bottom:16px;font-size:11px;color:var(--ph);line-height:1.5;padding:0 4px}
+
+.main{
+  margin-left:var(--sb-w);
+  padding:calc(var(--nav-h) + 28px) 32px 72px;
+}
+.wrap{max-width:860px;margin:0 auto}
+.view{display:none}
+.view.on{display:block;animation:viewIn .38s var(--ease)} /* 视图切换反馈：短暂上移入场 */
+@keyframes viewIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+h1{font-family:'Space Grotesk','Noto Sans SC',sans-serif;font-size:22px;font-weight:600;color:var(--text);letter-spacing:-0.02em;line-height:1.3}
+.page-head{margin-bottom:22px}
+.page-head p{color:var(--sec);font-size:13px;margin-top:4px}
+h2{font-size:15px;font-weight:700;color:var(--text);letter-spacing:-0.01em}
+.sec{margin-bottom:26px}
+.sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sec-head .hint{font-size:12px;color:var(--ph)}
+
+/* ============ 按钮 ============ */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  height:36px;padding:0 16px;border-radius:10px;
+  font-size:13px;font-weight:500;white-space:nowrap;
+  background:var(--s2);color:var(--body);border:1px solid var(--hair);
+  transition:background .2s var(--ease),border-color .2s var(--ease),color .2s var(--ease),transform .12s var(--ease);
+}
+.btn:hover{background:var(--s3);border-color:var(--hair-strong)}
+.btn:active{transform:scale(0.98)}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+.btn svg{width:14px;height:14px}
+.btn-primary{background:var(--accent);border-color:transparent;color:var(--accent-ink);font-weight:700}
+.btn-primary:hover{background:var(--accent);filter:brightness(1.08);border-color:transparent}
+.btn-danger{background:transparent;color:var(--err);border-color:rgba(248,113,113,0.35)}
+.btn-danger:hover{background:var(--err-dim);border-color:rgba(248,113,113,0.55)}
+.btn-sm{height:30px;padding:0 12px;font-size:12.5px;border-radius:8px}
+.btn-ghost{background:transparent;border-color:transparent;color:var(--sec)}
+.btn-ghost:hover{background:var(--s2);color:var(--body);border-color:transparent}
+
+/* ============ 检索 ============ */
+.search-shell{margin-bottom:20px}
+.search-row{display:flex;align-items:center;gap:8px;padding:8px}
+.q-input{
+  flex:1;height:42px;background:var(--core-2);border:1px solid var(--hair);border-radius:11px;
+  padding:0 14px;font-size:14px;color:var(--text);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.04);
+  transition:border-color .2s var(--ease);
+}
+.q-input::placeholder{color:var(--ph)}
+.q-input:focus{outline:none;border-color:var(--hair-strong)}
+.q-input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.search-opts{display:flex;align-items:center;gap:16px;padding:0 14px 12px;flex-wrap:wrap}
+.opt{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--sec)}
+select{
+  height:30px;background:var(--core-2);border:1px solid var(--hair);border-radius:8px;
+  color:var(--body);font-size:12.5px;padding:0 8px;cursor:pointer;
+  transition:border-color .2s var(--ease);
+}
+select:hover{border-color:var(--hair-strong)}
+select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+/* 开关 */
+.switch{position:relative;display:inline-block;width:34px;height:20px;flex:none}
+.switch input{position:absolute;opacity:0;width:100%;height:100%;cursor:pointer;margin:0}
+.switch i{
+  position:absolute;inset:0;border-radius:99px;background:var(--s3);border:1px solid var(--hair);
+  transition:background .25s var(--ease),border-color .25s var(--ease);
+}
+.switch i::after{
+  content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
+  background:#B9BFC7;transition:transform .25s var(--ease); /* 滑块位移：只动 transform */
+}
+.switch input:checked + i{background:var(--accent-dim);border-color:var(--accent-line)}
+.switch input:checked + i::after{transform:translateX(14px);background:var(--accent)}
+.switch input:focus-visible + i{outline:2px solid var(--accent);outline-offset:2px}
+
+.empty{
+  padding:56px 24px;text-align:center;color:var(--ph);font-size:13px;
+}
+.empty .grotesk{font-size:15px;color:var(--sec);margin-bottom:6px}
+
+/* 骨架屏：形状与最终结果一致，shimmer 只动 transform */
+.skeleton{display:flex;flex-direction:column;gap:14px}
+.sk-card{padding:18px}
+.sk-line{height:12px;border-radius:6px;background:var(--s2);position:relative;overflow:hidden;margin-bottom:11px}
+.sk-line::after{
+  content:"";position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.06),transparent);
+  animation:shimmer 1.4s var(--ease) infinite; /* 加载反馈：滑光指示进行中 */
+}
+@keyframes shimmer{to{transform:translateX(100%)}}
+.sk-line.w60{width:60%}.sk-line.w85{width:85%}.sk-line.w40{width:40%;height:10px;margin-bottom:0}
+
+/* 结果卡 */
+.result{margin-bottom:12px;transition:background .2s var(--ease),border-color .2s var(--ease)}
+.result:hover{background:var(--s3);border-color:var(--hair-strong)}
+.r-head{display:flex;align-items:center;gap:10px;padding:14px 16px 0}
+.r-path{flex:1;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--sec);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.r-path b{color:var(--body);font-weight:500}
+.badge{font-size:11px;font-weight:500;padding:2px 8px;border-radius:6px;flex:none;font-variant-numeric:tabular-nums}
+.badge-hi{background:var(--accent-dim);color:var(--accent)}
+.badge-mid{background:var(--info-dim);color:var(--info)}
+.badge-lo{background:var(--warn-dim);color:var(--warn)}
+.r-snippet{
+  padding:9px 16px 0;font-size:13.5px;color:var(--body);line-height:1.75;cursor:pointer;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+  transition:color .2s var(--ease);
+}
+.r-snippet.open{-webkit-line-clamp:unset}
+.r-snippet:hover{color:var(--text)}
+.r-full{padding:9px 16px 0;font-size:13.5px;color:var(--body);line-height:1.8}
+.r-actions{display:flex;align-items:center;gap:4px;padding:8px 10px 10px}
+.r-more{font-size:12px;color:var(--ph);margin-left:auto;padding-right:8px;font-variant-numeric:tabular-nums}
+.rel{
+  margin:0 16px 12px;padding:12px 14px;border:1px solid var(--hair);border-radius:11px;background:var(--core-2);
+}
+.rel-row{display:flex;align-items:flex-start;gap:10px;margin-bottom:8px}
+.rel-row:last-child{margin-bottom:0}
+.rel-k{font-size:11.5px;color:var(--sec);flex:none;width:38px;line-height:24px}
+.rel-chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{
+  font-size:12px;color:var(--body);background:var(--s2);border:1px solid var(--hair);
+  border-radius:99px;padding:3px 11px;transition:background .2s var(--ease),border-color .2s var(--ease);
+}
+button.chip{cursor:pointer}
+.chip:hover{background:var(--s3);border-color:var(--hair-strong)}
+.rel-loading{font-size:12px;color:var(--ph);display:flex;align-items:center;gap:8px}
+.mini-spin{
+  width:12px;height:12px;border-radius:50%;border:2px solid var(--s4);border-top-color:var(--accent);
+  animation:spin .8s linear infinite; /* 关系首次加载的进行中反馈 */
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+mark{background:rgba(52,211,153,0.22);color:var(--text);border-radius:3px;padding:0 2px}
+
+/* ============ 库 ============ */
+.lib-card{margin-bottom:12px}
+.lib-inner{padding:16px 18px}
+.lib-top{display:flex;align-items:flex-start;gap:14px}
+.lib-name{font-size:15px;font-weight:700;color:var(--text)}
+.lib-path{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--ph);margin-top:2px;word-break:break-all}
+.lib-stats{display:flex;gap:22px;margin-left:auto;text-align:right;flex:none}
+.lib-stat b{display:block;font-family:'Space Grotesk','JetBrains Mono',monospace;font-size:17px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;letter-spacing:-0.01em}
+.lib-stat span{font-size:11px;color:var(--ph)}
+.fmt-row{display:flex;align-items:center;gap:6px;margin-top:12px;flex-wrap:wrap}
+.fmt{font-family:'JetBrains Mono',monospace;font-size:11px;padding:2px 8px;border-radius:6px;background:var(--s2);color:var(--sec);border:1px solid var(--hair)}
+.gate-flag{font-size:11.5px;display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px}
+.gate-on{background:var(--accent-dim);color:var(--accent)}
+.gate-off{background:var(--warn-dim);color:var(--warn)}
+.lib-ops{display:flex;gap:6px;margin-top:14px;padding-top:13px;border-top:1px solid var(--hair)}
+
+/* ============ 索引 ============ */
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:22px}
+.kpi{padding:16px 18px}
+.kpi b{display:block;font-family:'Space Grotesk','JetBrains Mono',monospace;font-size:24px;font-weight:600;color:var(--text);letter-spacing:-0.02em;font-variant-numeric:tabular-nums;line-height:1.2}
+.kpi span{font-size:12px;color:var(--sec)}
+.kpi .u{font-size:12px;color:var(--ph);font-weight:400;margin-left:2px}
+.idx-actions{padding:18px}
+.idx-actions p{font-size:12.5px;color:var(--sec);margin-bottom:14px}
+.idx-btns{display:flex;gap:10px;flex-wrap:wrap}
+.job{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--hair);font-size:12.5px}
+.job:last-child{border-bottom:none}
+.job .t{font-family:'JetBrains Mono',monospace;color:var(--ph);font-size:11.5px;flex:none}
+.job .n{color:var(--body);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st{font-size:11px;padding:2px 8px;border-radius:6px;flex:none}
+.st-ok{background:var(--accent-dim);color:var(--accent)}
+.st-info{background:var(--info-dim);color:var(--info)}
+
+/* ============ 诊断 ============ */
+table{width:100%;border-collapse:collapse}
+th{
+  text-align:left;font-size:11px;font-weight:500;color:var(--ph);letter-spacing:0.05em;
+  padding:10px 16px;border-bottom:1px solid var(--hair);
+}
+td{padding:11px 16px;font-size:12.5px;border-bottom:1px solid var(--hair);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td.p{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--body);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td.g{color:var(--sec);font-size:12px}
+.tbl-shell{overflow:hidden}
+.tbl-core{overflow-x:auto}
+.wemm-grid{display:flex;align-items:center;gap:14px;padding:16px 18px;flex-wrap:wrap}
+.wemm-state{font-size:12.5px;color:var(--sec);flex:1;min-width:200px}
+.wemm-state b{color:var(--text);font-weight:500}
+.dup{padding:14px 18px;border-bottom:1px solid var(--hair)}
+.dup:last-child{border-bottom:none}
+.dup-top{display:flex;align-items:center;gap:10px}
+.dup-pair{flex:1;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--body);line-height:1.6;word-break:break-all}
+.dup-pair em{font-style:normal;color:var(--ph);display:block;font-size:10.5px}
+.io-row{display:flex;align-items:center;gap:12px;padding:16px 18px;flex-wrap:wrap}
+.io-note{font-size:12px;color:var(--sec);flex:1;min-width:220px}
+.io-prog{width:180px;height:4px;border-radius:99px;background:var(--s3);overflow:hidden;position:relative;display:none}
+.io-prog i{position:absolute;inset:0;background:var(--accent);transform:scaleX(0);transform-origin:left;border-radius:99px}
+.io-prog.run{display:block}
+.io-prog.run i{transition:transform 2s var(--ease);transform:scaleX(1)}
+
+/* ============ 设置 ============ */
+.set-grid{display:grid;grid-template-columns:172px 1fr;gap:16px;align-items:start}
+.sg-list{padding:6px}
+.sg-item{
+  display:block;width:100%;text-align:left;padding:9px 13px;border-radius:10px;
+  font-size:13px;color:var(--sec);font-weight:500;border:1px solid transparent;margin-bottom:2px;
+  transition:background .2s var(--ease),color .2s var(--ease),border-color .2s var(--ease);
+}
+.sg-item:hover{background:var(--s2);color:var(--body)}
+.sg-item.on{background:var(--accent-dim);border-color:var(--accent-line);color:var(--text)}
+.sg-panel{display:none;padding:20px 22px}
+.sg-panel.on{display:block}
+.f-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 0;border-bottom:1px solid var(--hair)}
+.f-row:last-child{border-bottom:none}
+.f-meta{min-width:0}
+.f-label{font-size:13.5px;color:var(--text);font-weight:500}
+.f-help{font-size:12px;color:var(--ph);margin-top:1px}
+.f-ctl{display:flex;align-items:center;gap:8px;flex:none}
+.in-text{
+  height:32px;background:var(--core-2);border:1px solid var(--hair);border-radius:8px;
+  padding:0 10px;font-size:12.5px;color:var(--text);width:200px;
+  transition:border-color .2s var(--ease);
+}
+.in-text::placeholder{color:var(--ph)}
+.in-text:focus{outline:none;border-color:var(--hair-strong)}
+.in-pw{width:220px;font-family:'JetBrains Mono',monospace;letter-spacing:0.08em}
+.in-num{width:74px;text-align:right;font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
+.in-sel{width:200px}
+.reco{
+  font-size:10.5px;color:var(--accent);background:var(--accent-dim);border:1px solid var(--accent-line);
+  padding:1px 7px;border-radius:99px;font-weight:500;white-space:nowrap;
+}
+.sg-save{margin-top:18px;display:flex;justify-content:flex-end}
+
+/* ============ 阅读面板（右侧滑入） ============ */
+.read{
+  position:fixed;top:0;right:0;bottom:0;width:400px;z-index:60;
+  background:var(--glass);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  border-left:1px solid var(--hair);
+  transform:translateX(105%);           /* 滑入滑出：只动 transform */
+  transition:transform .45s var(--ease);
+  display:flex;flex-direction:column;
+  box-shadow:var(--shadow-float);
+}
+.read.open{transform:translateX(0)}
+.read-head{padding:18px 20px 14px;border-bottom:1px solid var(--hair)}
+.read-head-top{display:flex;align-items:flex-start;gap:10px}
+.read-title{font-size:15px;font-weight:700;color:var(--text);flex:1;line-height:1.4}
+.read-path{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--ph);margin-top:4px;word-break:break-all}
+.read-body{
+  flex:1;overflow-y:auto;padding:20px;font-size:13.5px;line-height:1.9;color:var(--body);
+}
+.read-body p{margin-bottom:14px}
+.read-foot{padding:12px 16px;border-top:1px solid var(--hair);display:flex;justify-content:flex-end}
+
+/* ============ 弹层 ============ */
+.overlay{
+  position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;padding:24px;
+  background:rgba(2,3,5,0.6);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+}
+[data-theme="light"] .overlay{background:rgba(230,233,238,0.55)}
+.overlay.open{display:flex;animation:fadeIn .25s var(--ease)}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{width:440px;max-width:100%;animation:modalIn .35s var(--ease)} /* 弹层入场：与玻璃语言一致的上浮 */
+@keyframes modalIn{from{opacity:0;transform:translateY(14px) scale(0.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+.modal-core{padding:22px 24px}
+.modal h3{font-size:16px;font-weight:700;color:var(--text);margin-bottom:6px}
+.modal .m-desc{font-size:12.5px;color:var(--sec);margin-bottom:16px;line-height:1.7}
+.m-ops{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12.5px;font-weight:500;color:var(--body);margin-bottom:6px}
+.field .in-text{width:100%}
+.f-err{font-size:12px;color:var(--err);margin-top:5px;display:none}
+.f-err.show{display:block}
+.in-text.bad{border-color:rgba(248,113,113,0.55)}
+/* 配置弹层 */
+.cfg-fmts{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.ck{
+  display:inline-flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-size:12px;
+  padding:6px 13px;border-radius:9px;border:1px solid var(--hair);background:var(--core-2);color:var(--sec);
+  cursor:pointer;user-select:none;
+  transition:background .2s var(--ease),border-color .2s var(--ease),color .2s var(--ease);
+}
+.ck input{position:absolute;opacity:0;pointer-events:none}
+.ck.on{background:var(--accent-dim);border-color:var(--accent-line);color:var(--text)}
+.ck:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.notice{
+  display:none;align-items:flex-start;gap:9px;font-size:12.5px;line-height:1.6;
+  padding:11px 13px;border-radius:10px;margin-bottom:4px;
+}
+.notice.show{display:flex;animation:fadeIn .3s var(--ease)}
+.notice svg{width:15px;height:15px;flex:none;margin-top:2px}
+.n-warn{background:var(--warn-dim);color:var(--warn);border:1px solid rgba(251,191,36,0.3)}
+.n-err{background:var(--err-dim);color:var(--err);border:1px solid rgba(248,113,113,0.3)}
+.n-mut{background:var(--s2);color:var(--sec);border:1px solid var(--hair)}
+/* 移除弹层 */
+.opt-row{
+  display:flex;gap:10px;align-items:flex-start;padding:13px 14px;border:1px solid var(--hair);
+  border-radius:11px;margin-bottom:9px;cursor:pointer;
+  transition:border-color .2s var(--ease),background .2s var(--ease);
+}
+.opt-row:hover{background:var(--s1)}
+.opt-row.sel{border-color:var(--accent-line);background:var(--accent-dim)}
+.opt-row.sel.danger{border-color:rgba(248,113,113,0.5);background:var(--err-dim)}
+.opt-row input{margin-top:3px;accent-color:var(--accent)}
+.opt-row.danger input{accent-color:var(--err)}
+.opt-t{font-size:13.5px;font-weight:500;color:var(--text)}
+.opt-d{font-size:12px;color:var(--sec);margin-top:1px}
+.opt-t.red{color:var(--err)}
+.chk-line{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--body);margin-top:4px}
+.chk-line input{accent-color:var(--err);width:14px;height:14px}
+/* 全量重建确认 */
+.full-list{border:1px solid var(--hair);border-radius:11px;overflow:hidden;margin-bottom:12px}
+.full-row{display:flex;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--hair);font-size:12.5px}
+.full-row:last-child{border-bottom:none}
+.full-row .n{color:var(--body)}
+.full-row .v{font-family:'JetBrains Mono',monospace;color:var(--sec);font-variant-numeric:tabular-nums}
+
+/* ============ Toast ============ */
+.toasts{
+  position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;
+  display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;
+}
+.toast{
+  display:flex;align-items:center;gap:9px;
+  background:var(--glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--hair-strong);border-radius:99px;
+  padding:9px 18px;font-size:13px;color:var(--text);white-space:nowrap;
+  box-shadow:var(--shadow-float);
+  opacity:0;transform:translateY(10px);
+  transition:opacity .3s var(--ease),transform .4s var(--ease); /* toast 升入：轻反馈 */
+}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast svg{width:14px;height:14px;color:var(--accent);flex:none}
+.toast.warn svg{color:var(--warn)}
+
+/* 角标 */
+.stamp{
+  position:fixed;right:16px;bottom:14px;z-index:40;
+  font-size:11px;color:var(--ph);background:var(--s2);border:1px solid var(--hair);
+  border-radius:99px;padding:4px 12px;pointer-events:none;
+}
+
+/* ============================================================
+   图谱视图（DEMO 7 核心）
+   ============================================================ */
+#view-graph{
+  position:fixed;left:var(--sb-w);top:var(--nav-h);right:0;bottom:0;z-index:5;margin:0;
+}
+#view-graph.on{display:block;animation:none} /* fixed 画布不做 viewIn 位移，避免浮层跟随抖动 */
+.g-stage{position:absolute;inset:0;overflow:hidden;touch-action:none}
+.g-world{position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:0 0;will-change:transform}
+.g-dots{
+  position:absolute;left:-6000px;top:-6000px;width:12000px;height:12000px;
+  background-image:radial-gradient(circle,var(--g-dot) 1px,transparent 1.2px);
+  background-size:30px 30px;pointer-events:none;
+}
+.g-edges{position:absolute;left:-6000px;top:-6000px;width:12000px;height:12000px;overflow:visible;pointer-events:none}
+.g-nodes{position:absolute;left:0;top:0}
+/* 边 */
+.ge{fill:none;stroke:var(--g-edge);stroke-width:1.3;opacity:.6;transition:opacity .35s var(--ease)}
+.ge.dim{opacity:.05}
+.gs{fill:none;stroke:var(--g-sem);stroke-width:0.9;transition:opacity .35s var(--ease)}
+.gs.dim{opacity:.03}
+.go{fill:none;stroke:var(--g-own);stroke-width:1;stroke-dasharray:2 5;opacity:.62;transition:opacity .35s var(--ease)}
+.go.dim{opacity:.05}
+.gr{fill:none;stroke:var(--accent);stroke-linecap:round;opacity:0;transition:opacity .5s var(--ease)}
+.gr.on{opacity:.85}
+.gr-c{fill:none;stroke:var(--accent)}
+/* 节点 */
+.g-node{position:absolute;left:0;top:0;will-change:transform;user-select:none;-webkit-user-select:none}
+.g-card{
+  position:relative;
+  display:flex;align-items:center;gap:7px;transform:translate(-50%,-50%);
+  background:var(--core-2);border:1px solid var(--hair);border-radius:10px;padding:6px 11px;
+  white-space:nowrap;cursor:grab;
+  box-shadow:0 8px 22px rgba(0,0,0,0.38);
+  transition:box-shadow .3s var(--ease),opacity .4s var(--ease),border-color .3s var(--ease);
+}
+[data-theme="light"] .g-card{box-shadow:0 4px 14px rgba(20,26,36,0.10)}
+.g-node:active .g-card{cursor:grabbing}
+.g-node.dragging .g-card{box-shadow:0 14px 34px rgba(0,0,0,0.5)}
+.g-mark{width:11px;height:11px;flex:none;background:var(--s4);border:1px solid var(--hair-strong);position:relative}
+.t-md .g-mark{border-radius:3.5px}
+.t-pdf .g-mark{clip-path:polygon(0 0,56% 0,100% 44%,100% 100%,0 100%)}
+.t-pdf .g-mark::after{content:"";position:absolute;inset:0;background:rgba(5,5,5,0.38);clip-path:polygon(56% 0,100% 44%,56% 44%)}
+.t-cache .g-mark{width:12px;height:12px;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);border:none}
+.t-page .g-card{background:transparent;border-color:transparent;box-shadow:none;padding:3px 8px;border-radius:99px}
+.t-page .g-mark{width:7px;height:7px;border-radius:50%}
+.t-page .g-label{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--sec)}
+.t-page:hover .g-card{background:var(--core-2);border-color:var(--hair)}
+.g-label{font-size:12px;font-weight:500;color:var(--body)}
+.g-node.big .g-label{font-size:13px;font-weight:700;color:var(--text)}
+/* 库着色 */
+.g-node[data-lib="tech"] .g-mark{background:#34D399;border-color:transparent}
+.g-node[data-lib="paper"] .g-mark{background:#7DB8FF;border-color:transparent}
+.g-node[data-lib="meet"] .g-mark{background:#FBBF24;border-color:transparent}
+body.g-mono .g-node .g-mark{background:var(--s4) !important;border-color:var(--hair-strong) !important}
+/* 淡出 / 命中 / 选中 */
+.g-node.dim{opacity:.45}
+.g-node.lit .g-card{border-color:var(--accent);box-shadow:0 0 0 1.5px var(--accent-line),0 8px 26px rgba(52,211,153,0.14)}
+.g-node.sel .g-card{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.g-conf{
+  position:absolute;left:50%;top:100%;transform:translate(-50%,4px);
+  font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent);
+  opacity:0;transition:opacity .4s var(--ease);
+}
+.g-node.lit .g-conf{opacity:1}
+@keyframes gflash{0%,100%{box-shadow:0 8px 22px rgba(0,0,0,0.38)}45%{box-shadow:0 0 0 4px var(--accent-line),0 8px 26px rgba(52,211,153,0.2)}}
+.g-node.flash .g-card{animation:gflash .55s var(--ease) 2}
+/* 问题节点：反色墨胶囊 */
+.g-node.qnode{z-index:5}
+.g-card .q-x{flex:none;width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-radius:50%;font-size:12px;line-height:1;cursor:pointer;opacity:.55;transition:opacity .15s var(--ease),background .15s var(--ease)}
+.g-card .q-x:hover{opacity:1;background:rgba(127,127,127,.18)}
+.g-node.qnode .g-card{background:var(--q-bg);border-color:transparent;border-radius:999px;padding:9px 18px;box-shadow:0 18px 44px rgba(0,0,0,0.5);max-width:420px}
+.g-node.qnode .g-label{color:var(--q-ink);font-weight:500;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.g-node.qnode .g-mark{display:none}
+
+/* 搜索岛（左上） */
+.g-dock{position:absolute;top:16px;left:18px;z-index:20;width:440px;max-width:calc(100% - 36px)}
+.g-island{
+  display:flex;align-items:center;gap:8px;height:50px;padding:0 8px 0 14px;border-radius:14px;
+  background:var(--glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--hair);box-shadow:var(--shadow-float);
+  transition:border-color .3s var(--ease);
+}
+.g-island:focus-within{border-color:var(--accent-line)}
+.g-dock-ico{width:16px;height:16px;flex:none;color:var(--sec)}
+.g-dock-ico svg{width:100%;height:100%;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round}
+.g-input{flex:1;min-width:0;height:34px;background:transparent;border:none;outline:none;font-size:13.5px;color:var(--text)}
+.g-input::placeholder{color:var(--ph)}
+.g-hints{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;padding-left:2px}
+.g-chip{
+  font-size:11.5px;color:var(--sec);padding:4.5px 13px;border-radius:999px;
+  background:var(--glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid var(--hair);
+  transition:color .2s var(--ease),border-color .2s var(--ease);
+}
+.g-chip:hover{color:var(--text);border-color:var(--accent-line)}
+
+/* 图层面板（右上） */
+.g-panel{
+  position:absolute;top:16px;right:18px;z-index:20;width:238px;
+  background:var(--glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--hair);border-radius:14px;box-shadow:var(--shadow-float);
+  padding:12px 14px 10px;
+}
+.gp-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px}
+.gp-head b{font-size:13px;font-weight:700;color:var(--text)}
+.gp-sum{font-size:10px;color:var(--ph)}
+.gp-cap{font-size:10px;color:var(--ph);letter-spacing:0.08em;margin:9px 0 3px}
+.gp-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4.5px 0;font-size:12.5px;color:var(--body)}
+.gp-rowline{display:flex;align-items:center;justify-content:space-between;gap:10px;flex:1}
+.gp-slider{display:flex;align-items:center;gap:8px;padding:2px 0 0}
+.gp-slider input[type="range"]{flex:1;height:14px;accent-color:var(--accent);cursor:pointer}
+.gp-slider .mono{font-size:10.5px;color:var(--accent);min-width:30px;text-align:right}
+.gp-hint{font-size:10px;color:var(--ph);padding-top:1px}
+.g-panel .switch{transform:scale(0.9);transform-origin:right center}
+
+/* 图例 + 力学说明（左下） */
+.g-legend{
+  position:absolute;left:18px;bottom:56px;z-index:20;
+  background:var(--glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--hair);border-radius:14px;box-shadow:var(--shadow-float);
+  padding:10px 14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+}
+.gl-item{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--sec)}
+.gl-item i.g-mark{width:10px;height:10px;display:inline-block}
+.gl-item .shape-md{border-radius:3px}
+.gl-item .shape-pdf{clip-path:polygon(0 0,56% 0,100% 44%,100% 100%,0 100%);border:1px solid var(--hair-strong)}
+.gl-item .shape-cache{width:11px;height:11px;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);border:none;background:var(--s4)}
+.gl-item .shape-page{width:7px;height:7px;border-radius:50%;background:var(--s4);border:none}
+.gl-libs{display:flex;align-items:center;gap:10px;padding-left:14px;border-left:1px solid var(--hair)}
+.gl-lib{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--sec)}
+.gl-lib i{width:8px;height:8px;border-radius:50%;flex:none}
+.gl-lib.tech i{background:#34D399}
+.gl-lib.paper i{background:#7DB8FF}
+.gl-lib.meet i{background:#FBBF24}
+.g-info-btn{
+  width:26px;height:26px;border-radius:50%;flex:none;
+  border:1px solid var(--hair);color:var(--sec);font-size:12px;font-weight:700;
+  font-family:'Space Grotesk',sans-serif;display:inline-flex;align-items:center;justify-content:center;
+  transition:color .2s var(--ease),border-color .2s var(--ease),background .2s var(--ease);
+}
+.g-info-btn:hover,.g-info-btn.on{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}
+.g-physics{
+  position:absolute;left:18px;bottom:128px;z-index:21;width:342px;max-width:calc(100% - 36px);
+  background:var(--glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--hair);border-radius:14px;box-shadow:var(--shadow-float);
+  padding:14px 16px;display:none;
+}
+.g-physics.open{display:block;animation:fadeIn .25s var(--ease)}
+.g-physics h4{font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:8px}
+.gf-item{display:flex;gap:8px;font-size:11.5px;line-height:1.65;color:var(--sec);margin-bottom:6px}
+.gf-item b{color:var(--body);font-weight:600;flex:none}
+.gf-note{font-size:10.5px;color:var(--ph);border-top:1px solid var(--hair);padding-top:8px;margin-top:2px;line-height:1.6}
+
+/* 缩放 dock（右下） */
+.g-zoom{position:absolute;right:18px;bottom:52px;z-index:20;display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+.gz-btn{
+  width:36px;height:36px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+  background:var(--glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid var(--hair);color:var(--sec);
+  transition:color .2s var(--ease),border-color .2s var(--ease),transform .12s var(--ease);
+}
+.gz-btn:hover{color:var(--text);border-color:var(--hair-strong)}
+.gz-btn:active{transform:scale(0.96)}
+.gz-btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round}
+#gZoomLabel{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--ph)}
+
+/* 底部状态行 */
+.g-status{
+  position:absolute;left:50%;bottom:16px;transform:translateX(-50%);z-index:20;white-space:nowrap;
+  font-size:11px;color:var(--sec);letter-spacing:0.02em;
+  background:var(--s2);border:1px solid var(--hair);border-radius:99px;padding:4px 16px;
+}
+.g-status b{color:var(--body);font-weight:500}
+
+/* Tooltip */
+.g-tip{
+  position:fixed;z-index:45;pointer-events:none;opacity:0;transition:opacity .18s var(--ease);
+  background:var(--core);border:1px solid var(--hair-strong);border-radius:10px;padding:8px 12px;max-width:340px;
+  box-shadow:var(--shadow-float);transform:translate(-50%,calc(-100% - 12px));
+}
+.g-tip.show{opacity:1}
+.g-tip .t-path{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--body);word-break:break-all;line-height:1.5}
+.g-tip .t-meta{font-size:10.5px;color:var(--ph);margin-top:3px}
+
+/* 图谱 Inspector（380px 玻璃） */
+.read.g-ins{width:380px}
+.g-ins-lib{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--sec);margin-bottom:8px}
+.g-ins-lib .g-mark{width:9px;height:9px}
+.g-ins-lib [data-lib="tech"]{background:#34D399;border-color:transparent}
+.g-ins-lib [data-lib="paper"]{background:#7DB8FF;border-color:transparent}
+.g-ins-lib [data-lib="meet"]{background:#FBBF24;border-color:transparent}
+.g-ins-meta{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--ph);margin-top:8px;display:flex;gap:12px;flex-wrap:wrap}
+.gi-sec{margin-bottom:18px}
+.gi-sec h5{font-size:11px;font-weight:500;color:var(--ph);letter-spacing:0.06em;margin-bottom:7px}
+.gi-snip{font-size:13px;color:var(--body);line-height:1.8;background:var(--core-2);border:1px solid var(--hair);border-radius:11px;padding:11px 13px}
+.gi-none{font-size:12px;color:var(--ph);padding:2px 0 6px}
+.gi-kv{display:flex;align-items:baseline;gap:10px;font-size:12.5px;padding:5px 0}
+.gi-kv .k{color:var(--ph);flex:none;width:64px;font-size:11.5px}
+.gi-kv .v{color:var(--body)}
+.gi-kv .v.ok{color:var(--accent)}
+.gi-kv .v.pending{color:var(--warn)}
+.gi-list{display:flex;flex-direction:column;gap:4px}
+.gi-item{
+  display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+  padding:7px 10px;border-radius:9px;font-size:12.5px;color:var(--body);
+  border:1px solid transparent;
+  transition:background .2s var(--ease),color .2s var(--ease);
+}
+.gi-item:hover{background:var(--s2);color:var(--text)}
+.gi-item .g-mark{width:9px;height:9px}
+.gi-item span.nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gi-item .arr{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ph);flex:none}
+.gi-item:hover .arr{color:var(--accent)}
+.gi-sim{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--accent)}
+
+.gi-item .g-mark[data-lib="tech"]{background:#34D399;border-color:transparent}
+.gi-item .g-mark[data-lib="paper"]{background:#7DB8FF;border-color:transparent}
+.gi-item .g-mark[data-lib="meet"]{background:#FBBF24;border-color:transparent}
+
+/* 管线状态（结构性样式，任何着色模式下都可见） */
+.g-node.st-nocache .g-card{border-style:dashed;background:transparent;box-shadow:none}
+.g-node.st-nocache .g-mark{background:transparent;border-style:dashed}
+.g-node.st-failed .g-card{border-color:rgba(248,113,113,0.55)}
+.g-node.st-failed .g-mark{background:#F87171;border-color:transparent}
+.g-node.st-failed .g-card::after{
+  content:"!";position:absolute;top:-6px;right:-6px;width:14px;height:14px;border-radius:50%;
+  background:var(--err);color:#2A0505;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;
+}
+/* 着色三模式：按库（默认）/ 按生效状态 / 单色 */
+body.g-stcolor .g-node .g-mark{background:var(--s4);border-color:var(--hair-strong)}
+body.g-stcolor .g-node[data-state="ok"] .g-mark{background:#34D399;border-color:transparent}
+body.g-stcolor .g-node[data-state="partial"] .g-mark{background:#7DB8FF;border-color:transparent}
+body.g-stcolor .g-node[data-state="failed"] .g-mark{background:#F87171;border-color:transparent}
+body.g-stcolor .g-node[data-state="none"] .g-mark{background:transparent;border:1px dashed var(--sec)}
+/* 着色分段控件 */
+.g-seg{display:flex;border:1px solid var(--hair);border-radius:9px;overflow:hidden;flex:none}
+.g-seg button{padding:3px 10px;font-size:11.5px;color:var(--sec);transition:background .2s var(--ease),color .2s var(--ease)}
+.g-seg button + button{border-left:1px solid var(--hair)}
+.g-seg button.on{background:var(--accent-dim);color:var(--text)}
+/* 问题胶囊 ×（反色底上继承墨色） */
+.g-node.qnode .q-x{color:var(--q-ink)}
+/* 轨道虚线环 */
+.g-orbit-ring{fill:none;stroke:var(--accent);stroke-dasharray:3 7}
+/* 库边界标签 */
+.g-libtag{
+  position:absolute;left:0;top:0;z-index:2;pointer-events:none;
+  display:flex;align-items:baseline;gap:8px;padding:5px 13px;border-radius:999px;
+  background:var(--glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--hair);white-space:nowrap;
+  box-shadow:0 8px 22px rgba(0,0,0,0.30);
+}
+.g-libtag b{font-size:12px;font-weight:600;color:var(--text);letter-spacing:-0.01em}
+.g-libtag span{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ph)}
+/* Inspector 管线区块 */
+.gi-pipe{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.gi-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.gi-chip{font-family:'JetBrains Mono',monospace;font-size:10.5px;padding:2px 9px;border-radius:6px;font-variant-numeric:tabular-nums}
+.gi-chip.ok{background:var(--accent-dim);color:var(--accent)}
+.gi-chip.wait{background:var(--warn-dim);color:var(--warn)}
+.gi-chip.bad{background:var(--err-dim);color:var(--err)}
+.gi-chip.off{background:var(--s2);color:var(--sec)}
+.gi-link{font-size:11.5px;color:var(--accent);padding:0;border-bottom:1px dashed var(--accent-line)}
+.gi-link:hover{border-bottom-style:solid}
+
+/* 响应式（图谱部分） */
+@media (max-width:1080px){
+  .g-dock{width:360px}
+  .g-legend .gl-item span,.gl-lib span{display:none}
+  .gl-libs{padding-left:0;border-left:none}
+  .g-panel{width:206px}
+  .read.g-ins{width:min(380px,100vw)}
+}
+</style>
+</head>
+<body>
+<div class="orb orb-a"></div>
+<div class="orb orb-b"></div>
+
+<!-- ============ 顶部导航 ============ -->
+<header class="nav">
+  <div class="brand"><span class="brand-mark"></span>Obsidian RAG</div>
+  <div style="flex:1;position:relative;height:100%">
+    <!-- 动态岛：全页签名元素 -->
+    <div class="island" id="island" role="status" aria-live="polite" aria-label="索引状态">
+      <span class="island-inner">
+        <span class="island-idle">
+          <span class="dot"></span>
+          <span>全部就绪 · <b class="mono" id="idleChunks">8,306</b> 块</span>
+        </span>
+        <span class="island-run">
+          <span class="i-phase" id="iPhase">扫描</span>
+          <span class="i-bar"><i id="iBar"></i></span>
+          <span class="i-num" id="iPct">0%</span>
+          <span class="i-eta" id="iEta">剩 8s</span>
+          <button class="i-stop" id="iStop">停止</button>
+        </span>
+      </span>
+    </div>
+  </div>
+  <nav class="nav-right" aria-label="快捷导航">
+    <button class="nav-link" data-nav="library">库</button>
+    <button class="nav-link" data-nav="index">索引</button>
+    <button class="nav-link" data-nav="diag">诊断</button>
+    <button class="nav-link" data-nav="settings">设置</button>
+    <button class="icon-btn" id="themeBtn" aria-label="切换浅色模式">
+      <svg id="iconMoon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg id="iconSun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" style="display:none"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </nav>
+</header>
+
+<!-- ============ 侧栏 ============ -->
+<aside class="sidebar">
+  <div class="sb-cap">工作台</div>
+  <button class="sb-item on" data-nav="graph">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="6" r="2.1"/><circle cx="18.5" cy="5" r="2.1"/><circle cx="12" cy="18.5" r="2.1"/><path d="M7 7l3.6 9.6M17 6.8l-3.5 9.8M7.6 6.2l8.8-1"/></svg>
+    <span>图谱</span>
+  </button>
+  <button class="sb-item" data-nav="search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <span>检索</span>
+  </button>
+  <button class="sb-item" data-nav="library">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>
+    <span>库</span>
+  </button>
+  <button class="sb-item" data-nav="index">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3l-9 9"/></svg>
+    <span>索引</span>
+  </button>
+  <button class="sb-item" data-nav="diag">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a5 5 0 0 0-6.9 6.1L3 17.3V21h3.7l4.9-4.8a5 5 0 0 0 6.1-6.9L14 13l-3-3z"/></svg>
+    <span>诊断</span>
+  </button>
+  <button class="sb-item" data-nav="settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/></svg>
+    <span>设置</span>
+  </button>
+  <div class="sb-foot">本地语义检索 · 数据不出机器</div>
+</aside>
+
+<!-- ============ 主体 ============ -->
+<main class="main"><div class="wrap">
+
+  <!-- ===== 图谱（默认视图，全库常驻） ===== -->
+  <section class="view on" id="view-graph" aria-label="全库知识图谱">
+    <div class="g-stage" id="gStage">
+      <div class="g-world" id="gWorld">
+        <div class="g-dots"></div>
+        <svg class="g-edges" aria-hidden="true">
+          <defs>
+            <radialGradient id="glowTech"><stop offset="0%" stop-color="#34D399" stop-opacity="0.09"/><stop offset="60%" stop-color="#34D399" stop-opacity="0.05"/><stop offset="100%" stop-color="#34D399" stop-opacity="0"/></radialGradient>
+            <radialGradient id="glowPaper"><stop offset="0%" stop-color="#7DB8FF" stop-opacity="0.09"/><stop offset="60%" stop-color="#7DB8FF" stop-opacity="0.05"/><stop offset="100%" stop-color="#7DB8FF" stop-opacity="0"/></radialGradient>
+            <radialGradient id="glowMeet"><stop offset="0%" stop-color="#FBBF24" stop-opacity="0.08"/><stop offset="60%" stop-color="#FBBF24" stop-opacity="0.045"/><stop offset="100%" stop-color="#FBBF24" stop-opacity="0"/></radialGradient>
+          </defs>
+          <g id="gBoundsG"></g>
+          <g id="gOwnG"></g><g id="gSemG"></g><g id="gBilatG"></g><g id="gRedgeG"></g><g id="gOrbitG"></g><g id="gRippleG"></g>
+        </svg>
+        <div class="g-nodes" id="gNodes"></div>
+        <div class="g-libtag" id="gtag-tech"><b>技术笔记</b><span id="gtc-tech"></span></div>
+        <div class="g-libtag" id="gtag-paper"><b>论文阅读</b><span id="gtc-paper"></span></div>
+        <div class="g-libtag" id="gtag-meet"><b>会议记录</b><span id="gtc-meet"></span></div>
+      </div>
+    </div>
+
+    <!-- 搜索岛 -->
+    <div class="g-dock">
+      <div class="g-island">
+        <span class="g-dock-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span>
+        <input class="g-input" id="gq" type="text" value="WEMM 页级视觉导航是怎么实现的？" placeholder="向全库提问，结果从问题节点荡开" aria-label="图谱语义检索">
+        <select id="gTopk" aria-label="返回条数"><option>3</option><option selected>5</option><option>8</option><option>10</option><option>15</option></select>
+        <button class="btn btn-primary btn-sm" id="gGo">检索</button>
+      </div>
+      <div class="g-hints" id="gHints"></div>
+    </div>
+
+    <!-- 图层面板 -->
+    <div class="g-panel" aria-label="图层">
+      <div class="gp-head"><b class="grotesk">图层</b><span class="gp-sum mono">全库常驻 · 实时生效</span></div>
+      <div class="gp-cap">边</div>
+      <div class="gp-row"><span>显式双链</span><label class="switch"><input type="checkbox" id="lyBilat" checked><i></i></label></div>
+      <div class="gp-row" style="flex-wrap:wrap">
+        <div class="gp-rowline"><span>语义相似边</span><label class="switch"><input type="checkbox" id="lySem" checked><i></i></label></div>
+        <div class="gp-slider" style="width:100%"><input type="range" id="semTh" min="0.50" max="0.85" step="0.01" value="0.62" aria-label="语义边相似度阈值"><span class="mono" id="semThVal">0.62</span></div>
+        <div class="gp-hint" id="semCount"></div>
+      </div>
+      <div class="gp-row"><span>归属边</span><label class="switch"><input type="checkbox" id="lyOwn" checked><i></i></label></div>
+      <div class="gp-cap">节点</div>
+      <div class="gp-row"><span>WEMM 页节点</span><label class="switch"><input type="checkbox" id="lyPage" checked><i></i></label></div>
+      <div class="gp-row"><span>PDF→MD 缓存</span><label class="switch"><input type="checkbox" id="lyCache" checked><i></i></label></div>
+      <div class="gp-row"><span>PDF 原件</span><label class="switch"><input type="checkbox" id="lyPdf" checked><i></i></label></div>
+      <div class="gp-cap">显示</div>
+      <div class="gp-row"><span>着色</span><div class="g-seg" id="gColorSeg" role="group" aria-label="着色模式"><button type="button" data-cm="lib" class="on">按库</button><button type="button" data-cm="state">按生效</button><button type="button" data-cm="mono">单色</button></div></div>
+      <div class="gp-row"><span>库边界</span><label class="switch"><input type="checkbox" id="lyBounds" checked><i></i></label></div>
+    </div>
+
+    <!-- 图例 + 力学说明 -->
+    <div class="g-legend">
+      <span class="gl-item"><i class="g-mark shape-md"></i><span>md 笔记</span></span>
+      <span class="gl-item"><i class="g-mark shape-pdf"></i><span>PDF 原件</span></span>
+      <span class="gl-item"><i class="g-mark shape-cache"></i><span>PDF→MD 缓存</span></span>
+      <span class="gl-item"><i class="g-mark shape-page"></i><span>WEMM 页节点</span></span>
+      <span class="gl-libs" id="glLibs">
+        <span class="gl-lib tech"><i></i><span>技术</span></span>
+        <span class="gl-lib paper"><i></i><span>论文</span></span>
+        <span class="gl-lib meet"><i></i><span>会议</span></span>
+      </span>
+      <span class="gl-libs" id="glState" style="display:none">
+        <span class="gl-lib"><i style="background:#34D399"></i><span>全链路生效</span></span>
+        <span class="gl-lib"><i style="background:#7DB8FF"></i><span>缺 WEMM</span></span>
+        <span class="gl-lib"><i style="background:transparent;border:1px dashed var(--sec)"></i><span>待识别</span></span>
+        <span class="gl-lib"><i style="background:#F87171"></i><span>OCR 失败</span></span>
+      </span>
+      <span class="gl-libs" id="glMono" style="display:none">
+        <span class="gl-lib"><i style="background:var(--s4);border:1px solid var(--hair-strong)"></i><span>单色</span></span>
+      </span>
+      <button class="g-info-btn" id="gInfoBtn" aria-label="图谱力学说明" aria-expanded="false">i</button>
+    </div>
+
+    <div class="g-physics" id="gPhysics">
+      <h4>图谱力学</h4>
+      <div class="gf-item"><b>语义引力</b><span>每个节点带 16 维语义向量，余弦相似超过 0.62 的节点对互相吸引，不画线也受力。</span></div>
+      <div class="gf-item"><b>库锚点</b><span>三个库各有一个空间锚点，同库聚成落；跨库的强相似把节点拉向中间，形成「桥」。</span></div>
+      <div class="gf-item"><b>短程斥力</b><span>靠得太近的节点互相推开，维持可读间距。</span></div>
+      <div class="gf-item"><b>边弹簧</b><span>显式双链与归属边像弹簧，把相连节点拉向固定距离。</span></div>
+      <div class="gf-note">阈值滑杆只控制画线：就算关掉全部边图层，语义引力仍撑住整个图谱。多数 md 笔记没有显式双链，是语义引力让它们彼此靠近。</div>
+    </div>
+
+    <!-- 缩放 dock -->
+    <div class="g-zoom">
+      <button class="gz-btn" id="gzIn" aria-label="放大"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button class="gz-btn" id="gzOut" aria-label="缩小"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      <button class="gz-btn" id="gzFit" aria-label="重置取景" title="重置取景"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      <span id="gZoomLabel" class="mono">100%</span>
+    </div>
+
+    <div class="g-status mono" id="gStatus" aria-live="polite"></div>
+    <div class="g-tip" id="gTip" role="tooltip"><div class="t-path"></div><div class="t-meta"></div></div>
+  </section>
+
+  <!-- ===== 检索 ===== -->
+  <section class="view" id="view-search">
+    <div class="page-head">
+      <h1>语义检索</h1>
+      <p>用自然语言提问，跨全部已索引库检索语义近似的笔记片段</p>
+    </div>
+
+    <div class="shell search-shell"><div class="core" style="background:var(--core-2)">
+      <div style="padding:8px 8px 0">
+        <input class="q-input" id="qInput" type="text" placeholder="例如：混合检索的重排策略是怎么设计的？" aria-label="检索内容">
+      </div>
+      <div class="search-opts">
+        <div class="opt">
+          <label for="topkSel">返回条数</label>
+          <select id="topkSel">
+            <option>3</option><option selected>5</option><option>8</option><option>10</option><option>15</option>
+          </select>
+        </div>
+        <div class="opt">
+          <label class="switch" aria-label="展开正文">
+            <input type="checkbox" id="expandTgl"><i></i>
+          </label>
+          <span>展开正文</span>
+        </div>
+        <button class="btn btn-primary" id="searchBtn" style="margin-left:auto">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          检索
+        </button>
+      </div>
+    </div></div>
+
+    <div id="searchEmpty" class="shell"><div class="core"><div class="empty">
+      <div class="grotesk">从一个问题开始</div>
+      <div>检索结果按语义相似度排序，置信度徽章标注匹配强度</div>
+    </div></div></div>
+
+    <div id="searchSkeleton" class="skeleton" style="display:none">
+      <div class="shell"><div class="core sk-card"><div class="sk-line w40"></div><div class="sk-line"></div><div class="sk-line w85"></div><div class="sk-line w60"></div></div></div>
+      <div class="shell"><div class="core sk-card"><div class="sk-line w40"></div><div class="sk-line"></div><div class="sk-line w85"></div><div class="sk-line w60"></div></div></div>
+    </div>
+
+    <div id="resultList" style="display:none"></div>
+  </section>
+
+  <!-- ===== 库 ===== -->
+  <section class="view" id="view-library">
+    <div class="page-head" style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px">
+      <div>
+        <h1>知识库</h1>
+        <p>共 3 个库参与索引，二进制格式受 Agent 门禁约束</p>
+      </div>
+      <button class="btn btn-primary" id="addLibBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        添加库
+      </button>
+    </div>
+    <div id="libGrid"></div>
+  </section>
+
+  <!-- ===== 索引 ===== -->
+  <section class="view" id="view-index">
+    <div class="page-head">
+      <h1>索引</h1>
+      <p>进度在顶部状态胶囊实时呈现，可随时中断</p>
+    </div>
+    <div class="kpis">
+      <div class="shell"><div class="core kpi"><b id="kpiFiles">1,894</b><span>已索引文件</span></div></div>
+      <div class="shell"><div class="core kpi"><b id="kpiChunks">8,306</b><span>向量块<span class="u">BGE-M3 · 1024 维</span></span></div></div>
+      <div class="shell"><div class="core kpi"><b id="kpiLast">1分20秒</b><span>上次增量耗时</span></div></div>
+    </div>
+    <div class="shell sec"><div class="core idx-actions">
+      <h2>重建</h2>
+      <p style="margin-top:4px">增量重建只处理有变动的文件，通常几十秒内完成；全量重建会清空并重写整个向量库。</p>
+      <div class="idx-btns">
+        <button class="btn btn-primary" id="btnIncr">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3l-9 9"/></svg>
+          增量重建
+        </button>
+        <button class="btn btn-danger" id="btnFull">全量重建</button>
+      </div>
+    </div></div>
+    <div class="shell sec"><div class="core">
+      <div class="sec-head" style="padding:14px 16px 0;margin-bottom:0"><h2>最近任务</h2><span class="hint mono">今天</span></div>
+      <div style="margin-top:6px">
+        <div class="job"><span class="t">14:02</span><span class="n">增量重建 · 12 个文件变动，新增 47 块</span><span class="st st-ok">成功</span></div>
+        <div class="job"><span class="t">09:47</span><span class="n">增量重建 · 3 个文件变动，新增 9 块</span><span class="st st-ok">成功</span></div>
+        <div class="job"><span class="t">昨天 21:15</span><span class="n">全量重建 · 1,894 个文件，8,306 块</span><span class="st st-info">耗时 4分12秒</span></div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ===== 诊断 ===== -->
+  <section class="view" id="view-diag">
+    <div class="page-head">
+      <h1>诊断</h1>
+      <p>失败溯源、页级视觉导航服务状态、近似去重与备份演练</p>
+    </div>
+
+    <div class="shell sec"><div class="core tbl-shell"><div class="tbl-core">
+      <table>
+        <thead><tr><th style="width:46%">文件</th><th>原因</th><th style="width:34%">处置</th></tr></thead>
+        <tbody id="failBody"></tbody>
+      </table>
+    </div></div></div>
+
+    <div class="shell sec"><div class="core">
+      <div class="sec-head" style="padding:16px 18px 0;margin-bottom:0"><h2>WEMM 页级视觉导航</h2><span class="hint">独立页向量库 · 默认关闭</span></div>
+      <div class="wemm-grid">
+        <label class="switch" aria-label="启用 WEMM"><input type="checkbox" id="wemmTgl"><i></i></label>
+        <div class="wemm-state" id="wemmState">当前关闭。开启后为 PDF 课件与扫描件建立页级向量，支持以图搜图式定位。</div>
+        <button class="btn btn-sm" id="wemmProbe">探测服务</button>
+      </div>
+    </div></div>
+
+    <div class="shell sec"><div class="core">
+      <div class="sec-head" style="padding:14px 16px 0;margin-bottom:0"><h2>近似去重</h2><span class="hint">MinHash + LSH · 只读分析</span></div>
+      <div id="dupList" style="margin-top:6px"></div>
+    </div></div>
+
+    <div class="shell"><div class="core">
+      <div class="sec-head" style="padding:14px 16px 0;margin-bottom:0"><h2>导出与导入</h2><span class="hint">副本演练 · 校验后写回</span></div>
+      <div class="io-row">
+        <div class="io-note">导出会把向量库与元数据打包为可迁移副本；导入前自动做结构校验，整个过程不影响检索可用性。</div>
+        <div class="io-prog" id="ioProg"><i></i></div>
+        <button class="btn btn-sm" id="expBtn">导出</button>
+        <button class="btn btn-sm" id="impBtn">导入</button>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ===== 设置 ===== -->
+  <section class="view" id="view-settings">
+    <div class="page-head">
+      <h1>设置</h1>
+      <p>保存后配置热读生效，长驻进程无需重启</p>
+    </div>
+    <div class="shell set-grid">
+      <div class="core sg-list" style="background:var(--core-2)">
+        <button class="sg-item on" data-sg="kb">知识库</button>
+        <button class="sg-item" data-sg="model">模型</button>
+        <button class="sg-item" data-sg="pdf">PDF 与云端 OCR</button>
+        <button class="sg-item" data-sg="ret">检索输出</button>
+        <button class="sg-item" data-sg="wemm">视觉导航 WEMM</button>
+      </div>
+      <div class="core" style="background:var(--core)">
+        <div class="sg-panel on" data-sp="kb">
+          <div class="f-row"><div class="f-meta"><div class="f-label">默认检索库</div><div class="f-help">检索页未手动勾选时的范围</div></div>
+            <div class="f-ctl"><select class="in-sel"><option selected>Obsidian Vault 主库</option><option>项目文档</option><option>论文与课件</option><option>全部库</option></select></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">Agent 门禁</div><div class="f-help">AI 触发的索引只处理文本类与已批准格式</div></div>
+            <div class="f-ctl"><span class="reco">✓ 使用中</span><label class="switch"><input type="checkbox" checked><i></i></label></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">变动检测间隔</div><div class="f-help">文件指纹轮询周期，越短越及时、越耗电</div></div>
+            <div class="f-ctl"><select><option>10 秒</option><option selected>30 秒</option><option>2 分钟</option></select></div></div>
+        </div>
+        <div class="sg-panel" data-sp="model">
+          <div class="f-row"><div class="f-meta"><div class="f-label">嵌入模型</div><div class="f-help">更换后需全量重建</div></div>
+            <div class="f-ctl"><span class="reco">✓ 使用中</span><select class="in-sel"><option selected>BGE-M3 (1024 维)</option><option>bge-small-zh (512 维)</option></select></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">推理设备</div><div class="f-help">CUDA 不可用时自动回退 CPU</div></div>
+            <div class="f-ctl"><span class="reco">✓ 使用中</span><select><option selected>CUDA</option><option>CPU</option></select></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">检索后重排</div><div class="f-help">对 Top-K 候选做交叉编码精排</div></div>
+            <div class="f-ctl"><label class="switch"><input type="checkbox" checked><i></i></label></div></div>
+        </div>
+        <div class="sg-panel" data-sp="pdf">
+          <div class="f-row"><div class="f-meta"><div class="f-label">文字层 PDF 提取后端</div><div class="f-help">local 即本地直提；送 MinerU 可得更好的版面结构</div></div>
+            <div class="f-ctl"><span class="reco">✓ 使用中</span><select><option selected>本地直提</option><option>MinerU 云端</option></select></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">扫描件 OCR 后端</div><div class="f-help">仅扫描页走云端识别，产生文件上传</div></div>
+            <div class="f-ctl"><select id="scanSel"><option selected>关闭</option><option>MinerU 云端</option></select></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">MinerU API Key</div><div class="f-help">仅存本机配置文件，不进日志</div></div>
+            <div class="f-ctl"><input type="password" class="in-text in-pw" id="keyInput" placeholder="●●●●●●●●●●●●" autocomplete="off"></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">云端并发数</div><div class="f-help">0 表示最大吞吐，由限速闸门自动节流</div></div>
+            <div class="f-ctl"><input type="number" class="in-text in-num" value="3" min="0" max="16"></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">每分钟提交上限</div><div class="f-help">滑动窗口限速，防止触发服务端 429</div></div>
+            <div class="f-ctl"><select><option>30</option><option selected>45</option><option>60</option></select></div></div>
+        </div>
+        <div class="sg-panel" data-sp="ret">
+          <div class="f-row"><div class="f-meta"><div class="f-label">默认返回条数</div><div class="f-help">检索页可临时覆盖</div></div>
+            <div class="f-ctl"><span class="reco">✓ 使用中</span><select><option>3</option><option selected>5</option><option>8</option></select></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">关联笔记</div><div class="f-help">结果卡内联展开双链出链与入链</div></div>
+            <div class="f-ctl"><label class="switch"><input type="checkbox" checked><i></i></label></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">命中高亮</div><div class="f-help">预览面板内标注查询词</div></div>
+            <div class="f-ctl"><label class="switch"><input type="checkbox" checked><i></i></label></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">切块目标长度</div><div class="f-help">调整后触发全量重建</div></div>
+            <div class="f-ctl"><select><option>512 字</option><option selected>768 字</option><option>1024 字</option></select></div></div>
+        </div>
+        <div class="sg-panel" data-sp="wemm">
+          <div class="f-row"><div class="f-meta"><div class="f-label">页级视觉索引</div><div class="f-help">独立 collection，不影响文本检索</div></div>
+            <div class="f-ctl"><select id="wemmSel"><option selected>关闭</option><option>本地模型</option></select></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">页面渲染 DPI</div><div class="f-help">越高越清晰、页库体积越大</div></div>
+            <div class="f-ctl"><span class="reco">✓ 使用中</span><select><option>110</option><option selected>144</option><option>200</option></select></div></div>
+          <div class="f-row"><div class="f-meta"><div class="f-label">空闲卸载显存</div><div class="f-help">无查询一段时间后释放模型</div></div>
+            <div class="f-ctl"><label class="switch"><input type="checkbox"><i></i></label></div></div>
+        </div>
+        <div class="sg-save"><button class="btn btn-primary" id="saveBtn">保存设置</button></div>
+      </div>
+    </div>
+  </section>
+
+</div></main>
+
+<!-- ============ 阅读面板 ============ -->
+<aside class="read" id="readPanel" aria-label="文档预览">
+  <div class="read-head">
+    <div class="read-head-top">
+      <div style="flex:1;min-width:0">
+        <div class="read-title" id="readTitle"></div>
+        <div class="read-path" id="readPath"></div>
+      </div>
+      <button class="icon-btn" id="readClose" aria-label="关闭预览">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="read-body" id="readBody"></div>
+  <div class="read-foot"><button class="btn btn-sm" id="readOpen">在 Obsidian 打开</button></div>
+</aside>
+
+<!-- ============ 图谱 Inspector（380px 玻璃） ============ -->
+<aside class="read g-ins" id="gIns" aria-label="节点详情">
+  <div class="read-head">
+    <div class="read-head-top">
+      <div style="flex:1;min-width:0">
+        <div class="g-ins-lib"><span class="g-mark" id="giMark"></span><span id="giLib"></span><span id="giBadge"></span></div>
+        <div class="read-title" id="giTitle"></div>
+        <div class="read-path" id="giPath"></div>
+        <div class="g-ins-meta" id="giMeta"></div>
+      </div>
+      <button class="icon-btn" id="giClose" aria-label="关闭详情">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="read-body" id="giBody"></div>
+  <div class="read-foot"><button class="btn btn-sm" id="giOpen">在 Obsidian 打开</button></div>
+</aside>
+
+<!-- ============ 弹层们 ============ -->
+<!-- 添加库 -->
+<div class="overlay" id="mAdd">
+  <div class="shell modal"><div class="core modal-core">
+    <h3>添加知识库</h3>
+    <p class="m-desc">指向一个本地文件夹，保存后立即纳入扫描与索引。</p>
+    <div class="field">
+      <label for="aName">库名称</label>
+      <input class="in-text" id="aName" type="text" placeholder="例如：读书笔记">
+      <div class="f-err" id="aNameErr">请填写库名称</div>
+    </div>
+    <div class="field">
+      <label for="aPath">文件夹路径</label>
+      <input class="in-text mono" id="aPath" type="text" placeholder="C:\Users\you\Notes">
+      <div class="f-err" id="aPathErr">请填写文件夹路径</div>
+    </div>
+    <div class="m-ops">
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-primary" id="addOk">添加</button>
+    </div>
+  </div></div>
+</div>
+
+<!-- 库配置 -->
+<div class="overlay" id="mCfg">
+  <div class="shell modal"><div class="core modal-core">
+    <h3 id="cTitle">库配置</h3>
+    <p class="m-desc">格式勾选决定哪些文件进入索引；其余格式保留条目但不产块。</p>
+    <div class="cfg-fmts" id="cFmts">
+      <label class="ck on"><input type="checkbox" checked value="md">md</label>
+      <label class="ck"><input type="checkbox" value="pdf">pdf</label>
+      <label class="ck"><input type="checkbox" value="docx">docx</label>
+      <label class="ck"><input type="checkbox" value="txt">txt</label>
+    </div>
+    <div class="f-row" style="border-top:1px solid var(--hair);padding-top:14px">
+      <div class="f-meta"><div class="f-label">Agent 门禁</div><div class="f-help">控制 AI Agent 触发的索引是否处理此库的二进制文件</div></div>
+      <label class="switch"><input type="checkbox" id="agentTgl" checked><i></i></label>
+    </div>
+    <div class="notice n-warn" id="agentWarn" style="margin-top:12px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <span>AI Agent 将无法自动索引该库的二进制文件</span>
+    </div>
+    <div class="m-ops">
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-primary" id="cfgOk">保存</button>
+    </div>
+  </div></div>
+</div>
+
+<!-- 移除库 -->
+<div class="overlay" id="mRm">
+  <div class="shell modal"><div class="core modal-core">
+    <h3>移除「<span id="rName"></span>」</h3>
+    <p class="m-desc">选择移除方式，此操作立即生效。</p>
+    <label class="opt-row sel" id="rKeep">
+      <input type="radio" name="rmode" checked>
+      <span><span class="opt-t">仅注销</span><div class="opt-d">从系统中移除该库，原始文件与缓存全部保留，可随时重新添加。</div></span>
+    </label>
+    <label class="opt-row danger" id="rDel">
+      <input type="radio" name="rmode">
+      <span><span class="opt-t red">注销并删除数据</span><div class="opt-d">同时删除该库的全部向量块、元数据与提取缓存。原始文件本身不会被删除。</div></span>
+    </label>
+    <div class="chk-line" id="rChkLine" style="visibility:hidden">
+      <input type="checkbox" id="rConfirmChk">
+      <label for="rConfirmChk">我确认不可恢复</label>
+    </div>
+    <div class="m-ops">
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-danger" id="rGo" disabled>移除</button>
+    </div>
+  </div></div>
+</div>
+
+<!-- 全量重建确认 -->
+<div class="overlay" id="mFull">
+  <div class="shell modal"><div class="core modal-core">
+    <h3>确认全量重建</h3>
+    <p class="m-desc">将清空现有向量库并逐库重写，期间检索可用性下降。</p>
+    <div class="full-list">
+      <div class="full-row"><span class="n">Obsidian Vault 主库</span><span class="v">1,204 文件 · 5,382 块</span></div>
+      <div class="full-row"><span class="n">项目文档</span><span class="v">512 文件 · 2,147 块</span></div>
+      <div class="full-row"><span class="n">论文与课件</span><span class="v">178 文件 · 777 块</span></div>
+      <div class="full-row"><span class="n">合计（约）</span><span class="v">1,894 文件 · 8,306 块</span></div>
+    </div>
+    <div class="notice n-err">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+      <span>预计耗时 3-5 分钟，期间检索结果可能不完整，建议避开使用高峰。</span>
+    </div>
+    <div class="m-ops">
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-danger" id="fullGo">开始全量重建</button>
+    </div>
+  </div></div>
+</div>
+
+<!-- 第三方上传同意 -->
+<div class="overlay" id="mConsent">
+  <div class="shell modal"><div class="core modal-core">
+    <h3>启用 MinerU 云端 OCR</h3>
+    <p class="m-desc">开启后，扫描件页面将被上传至 MinerU 云端 API 做视觉识别。这是第三方在线服务，文件内容将离开本机。</p>
+    <div class="notice n-warn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <span>含敏感内容的扫描件不建议开启。API Key 仅存本机，不会写入日志。</span>
+    </div>
+    <div class="m-ops">
+      <button class="btn" id="consentNo">取消</button>
+      <button class="btn btn-primary" id="consentOk">同意并启用</button>
+    </div>
+  </div></div>
+</div>
+
+<div class="toasts" id="toastWrap"></div>
+<div class="stamp">交互原型 · 数据为演示假数据</div>
+
+<script>
+(function(){
+'use strict';
+var $ = function(s,c){return (c||document).querySelector(s)};
+var $$ = function(s,c){return Array.prototype.slice.call((c||document).querySelectorAll(s))};
+
+/* ---------- toast ---------- */
+function toast(msg, warn){
+  var wrap = $('#toastWrap');
+  var t = document.createElement('div');
+  t.className = 'toast' + (warn ? ' warn' : '');
+  t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span></span>';
+  t.lastChild.textContent = msg;
+  wrap.appendChild(t);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){ t.classList.add('show'); }); });
+  setTimeout(function(){
+    t.classList.remove('show');
+    setTimeout(function(){ t.remove(); }, 350);
+  }, 2500);
+}
+
+/* ---------- 弹层与 Esc 逐层关闭 ---------- */
+var escStack = [];
+function openModal(id){
+  var m = $('#'+id);
+  m.classList.add('open');
+  escStack.push(m);
+  var f = m.querySelector('.btn-primary, .btn, input');
+  if (f) f.focus();
+}
+function hideOverlay(ov){
+  ov.classList.remove('open');
+  escStack = escStack.filter(function(x){ return x !== ov; });
+  if (ov.id === 'mConsent'){ $('#scanSel').value = consentPrev; } /* 任何路径关闭同意弹层都回退下拉值 */
+}
+function closeTop(){
+  var ph = $('#gPhysics');
+  if (ph && ph.classList.contains('open')){
+    ph.classList.remove('open');
+    var ib = $('#gInfoBtn');
+    if (ib){ ib.classList.remove('on'); ib.setAttribute('aria-expanded','false'); }
+    return true;
+  }
+  if (typeof gIns !== 'undefined' && gIns.classList.contains('open')){ closeGIns(); return true; }
+  var m = escStack.pop();
+  if (m){ hideOverlay(m); return true; }
+  if (readPanel.classList.contains('open')){ closeRead(); return true; }
+  if (gqNode || gSearch){ clearGSearch(); toast('已回到全库全景'); return true; }
+  return false;
+}
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape'){ closeTop(); }
+});
+$$('.overlay').forEach(function(ov){
+  ov.addEventListener('click', function(e){
+    if (e.target === ov){ hideOverlay(ov); }
+  });
+});
+$$('[data-close]').forEach(function(b){
+  b.addEventListener('click', function(){
+    hideOverlay(b.closest('.overlay'));
+  });
+});
+
+/* ---------- 主题切换 ---------- */
+$('#themeBtn').addEventListener('click', function(){
+  var root = document.documentElement;
+  var light = root.getAttribute('data-theme') === 'light';
+  root.setAttribute('data-theme', light ? '' : 'light');
+  $('#iconMoon').style.display = light ? '' : 'none';
+  $('#iconSun').style.display = light ? 'none' : '';
+});
+
+/* ---------- 视图切换 ---------- */
+var VIEWS = ['graph','search','library','index','diag','settings'];
+function go(v){
+  VIEWS.forEach(function(name){
+    var el = $('#view-'+name);
+    if (el) el.classList.toggle('on', name === v);
+  });
+  $$('[data-nav]').forEach(function(b){
+    b.classList.toggle('on', b.getAttribute('data-nav') === v && b.classList.contains('sb-item'));
+  });
+  $$('.nav-link').forEach(function(b){
+    b.classList.toggle('on', b.getAttribute('data-nav') === v);
+  });
+  if (v !== 'graph'){ closeGIns(); }
+}
+$$('[data-nav]').forEach(function(b){
+  b.addEventListener('click', function(){ go(b.getAttribute('data-nav')); });
+});
+
+/* ============================================================
+   检索（列表视图，原样保留）
+   ============================================================ */
+var DOCS = [
+  {
+    path:'20-Projects/Obsidian RAG/混合检索与重排.md', score:0.88,
+    snippet:'混合检索采用 BM25 关键词通道与向量语义通道并行召回，两路结果经 RRF 融合后再送交叉编码重排器精排。重排的意义在于：召回阶段追求高 recall，允许噪声进入候选集，精排阶段用更强的模型把真正相关的块顶到前排。实践中 Top-K 取 20 进重排、最终留 5 条，延迟与质量的平衡点最好。',
+    full:'混合检索采用 BM25 关键词通道与向量语义通道并行召回，两路结果经 RRF（Reciprocal Rank Fusion）融合后再送交叉编码重排器精排。\n\n重排的意义在于：召回阶段追求高 recall，允许噪声进入候选集；精排阶段用更强的交叉编码模型逐对计算 query 与 chunk 的相关度，把真正相关的块顶到前排。\n\n实践中 Top-K 取 20 进重排、最终保留 5 条，这是延迟与质量的平衡点。关闭重排时，RRF 序直接作为最终序，Top-3 的命中率会明显下降，尤其是查询词与笔记用词不一致的场合。\n\n另一个经验：嵌入模型与重排模型不必同源，BGE-M3 负责向量通道，bge-reranker-v2-m3 负责精排，两者共享多语训练分布，配合稳定。',
+    out:['切块与清洗策略','Chroma 集合管理'], inn:['检索页交互说明','MCP 工具设计']
+  },
+  {
+    path:'20-Projects/Obsidian RAG/切块与清洗策略.md', score:0.71,
+    snippet:'切块按标题层级优先、768 字目标长度兜底。清洗阶段折叠代码块与表格为摘要行，避免长 token 序列稀释语义。每次改动切块或清洗逻辑必须递增 META_VERSION，让旧块自然过期、全量重建接管，否则新旧块共存会让检索结果出现诡异的重复。',
+    full:'切块按标题层级优先、768 字目标长度兜底：能在标题边界断开的绝不硬切，超长的段落再按句切分。\n\n清洗阶段把代码块折叠为一行语言标注加摘要、把超过 10 行的表格折叠为表头加行数说明，避免长 token 序列稀释块级语义。\n\n铁律：每次改动切块或清洗逻辑必须递增 META_VERSION。旧版本的块会随指纹比对自然过期，由全量重建接管，否则新旧块共存会让同一主题出现措辞迥异的重复结果，检索质量骤降且极难排查。',
+    out:['混合检索与重排','统一终态设计'], inn:['索引KPI口径','PDF 处理链路']
+  },
+  {
+    path:'20-Projects/Obsidian RAG/Agent 门禁与隐私.md', score:0.55,
+    snippet:'Agent 触发的索引默认只处理文本类格式与已批准的二进制格式；未授权文件被冻结：保留条目与已产块，但每轮索引跳过。批准一次长期有效，可随时撤销。这套门禁解决的问题是：AI 在后台批量送云端 OCR 时，用户未必知情。',
+    full:'Agent 触发的索引默认只处理文本类格式（md、txt）与 agent_allowed 已批准的二进制格式；未授权文件被冻结：保留条目与已产块，但每轮索引跳过，条目永不被裁剪。\n\n批准动作发生在人机分权确认弹窗里，批准一次长期有效，可随时在库配置中撤销。\n\n这套门禁解决的本质问题是：AI 在后台批量把扫描件送云端 OCR 时，用户未必知情。门禁把"格式能否被自动处理"的决定权留给人，机器只做文本类的安全默认。',
+    out:['统一终态设计'], inn:['库配置说明']
+  },
+  {
+    path:'90-Archive/旧方案/早期检索草稿.md', score:0.42,
+    snippet:'最初的方案只做纯向量检索，没有关键词通道，也没有重排。缩写词和专有名词的召回几乎不可用：嵌入模型对 "RAG" 与 "检索增强生成" 的向量距离比想象中远得多。这个教训直接催生了后来的混合检索设计。',
+    full:'最初的方案只做纯向量检索，没有关键词通道，也没有重排。\n\n缩写词和专有名词的召回几乎不可用：嵌入模型对 "RAG" 与 "检索增强生成" 的向量距离比想象中远得多，纯语义通道对精确术语匹配天然弱势。\n\n这个教训直接催生了后来的混合检索设计：BM25 补精确词面，向量补语义泛化，RRF 融合，重排收口。',
+    out:['混合检索与重排'], inn:[]
+  }
+];
+var resultList = $('#resultList'), qInput = $('#qInput');
+var topkSel = $('#topkSel'), expandTgl = $('#expandTgl');
+var searched = false, lastQuery = '', relCached = {}, openRels = {}, openBody = {};
+
+function esc(s){
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escReg(s){
+  return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+}
+function hl(text, q){
+  var out = esc(text);
+  if (!q) return out;
+  var terms = q.trim().split(/\s+/).filter(function(t){return t.length > 1;}).map(escReg)
+    .sort(function(a,b){return b.length - a.length;});
+  if (!terms.length) return out;
+  var re;
+  try { re = new RegExp('(' + terms.join('|') + ')','gi'); } catch(e){ return out; }
+  return out.replace(re,'<mark>$1</mark>');
+}
+function nl2p(html){
+  return html.split('\n').filter(Boolean).map(function(p){ return '<p>' + p + '</p>'; }).join('');
+}
+function scoreBadge(s){
+  if (s >= 0.75) return '<span class="badge badge-hi">0.' + Math.round(s*100) + ' 高置信</span>';
+  if (s >= 0.5)  return '<span class="badge badge-mid">0.' + Math.round(s*100) + ' 中置信</span>';
+  return '<span class="badge badge-lo">0.' + Math.round(s*100) + ' 低置信</span>';
+}
+function relHtml(doc){
+  var chips = function(arr){
+    if (!arr || !arr.length) return '<span style="font-size:12px;color:var(--ph)">无</span>';
+    return '<div class="rel-chips">' + arr.map(function(n){ return '<span class="chip">' + esc(n) + '</span>'; }).join('') + '</div>';
+  };
+  return '<div class="rel">'
+    + '<div class="rel-row"><span class="rel-k">出链</span>' + chips(doc.out) + '</div>'
+    + '<div class="rel-row"><span class="rel-k">入链</span>' + chips(doc.inn) + '</div>'
+    + '</div>';
+}
+function renderResults(){
+  var k = parseInt(topkSel.value, 10) || 5;
+  var list = DOCS.slice(0, k);
+  var expandAll = expandTgl.checked;
+  resultList.innerHTML = list.map(function(doc, i){
+    var bodyOpen = expandAll || openBody[i];
+    var snip = bodyOpen
+      ? '<div class="r-full">' + nl2p(hl(doc.full, lastQuery)) + '</div>'
+      : '<div class="r-snippet" data-exp="' + i + '">' + hl(doc.snippet, lastQuery) + '</div>';
+    var relPart = openRels[i]
+      ? (relCached[i] ? relHtml(doc)
+         : '<div class="rel"><div class="rel-loading"><span class="mini-spin"></span>正在查询双链关系</div></div>')
+      : '';
+    return '<div class="shell result"><div class="core">'
+      + '<div class="r-head"><span class="r-path">' + esc(doc.path) + '</span>' + scoreBadge(doc.score) + '</div>'
+      + snip + relPart
+      + '<div class="r-actions">'
+      + '<button class="btn btn-sm btn-ghost" data-rel="' + i + '">' + (openRels[i] ? '收起关联' : '关联') + '</button>'
+      + '<button class="btn btn-sm btn-ghost" data-prev="' + i + '">预览</button>'
+      + '<button class="btn btn-sm btn-ghost" data-open="' + i + '">在 Obsidian 打开</button>'
+      + '<span class="r-more mono">' + (doc.out.length + doc.inn.length) + ' 条链</span>'
+      + '</div></div></div>';
+  }).join('');
+  resultList.style.display = 'block';
+}
+resultList.addEventListener('click', function(e){
+  var t = e.target.closest('[data-exp],[data-rel],[data-prev],[data-open]');
+  if (!t) return;
+  if (t.hasAttribute('data-exp')){
+    var i = t.getAttribute('data-exp');
+    openBody[i] = !openBody[i];
+    renderResults();
+  } else if (t.hasAttribute('data-rel')){
+    var i = t.getAttribute('data-rel');
+    if (openRels[i]){ delete openRels[i]; renderResults(); return; }
+    openRels[i] = true;
+    renderResults();
+    if (!relCached[i]){
+      /* 首次查关系：模拟查询耗时，结果进程内缓存 */
+      setTimeout(function(){
+        relCached[i] = true;
+        if (openRels[i]) renderResults();
+      }, 650);
+    }
+  } else if (t.hasAttribute('data-prev')){
+    openRead(parseInt(t.getAttribute('data-prev'), 10));
+  } else if (t.hasAttribute('data-open')){
+    toast('已在 Obsidian 中打开（原型模拟）');
+  }
+});
+function doSearch(){
+  var q = qInput.value.trim();
+  if (!q){ toast('请输入要检索的内容', true); qInput.focus(); return; }
+  searched = true; lastQuery = q;
+  openRels = {}; openBody = {};
+  $('#searchEmpty').style.display = 'none';
+  resultList.style.display = 'none';
+  $('#searchSkeleton').style.display = 'flex';
+  $('#searchBtn').disabled = true;
+  setTimeout(function(){
+    $('#searchSkeleton').style.display = 'none';
+    $('#searchBtn').disabled = false;
+    renderResults();
+  }, 800);
+}
+$('#searchBtn').addEventListener('click', doSearch);
+qInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') doSearch(); });
+topkSel.addEventListener('change', function(){
+  /* Top-K 改变：对已有结果立即截断生效 */
+  if (searched){ openRels = {}; renderResults(); }
+});
+expandTgl.addEventListener('change', function(){
+  if (searched) renderResults();
+});
+
+/* ---------- 阅读面板 ---------- */
+var readPanel = $('#readPanel');
+function openRead(i){
+  var doc = DOCS[i];
+  $('#readTitle').textContent = doc.path.split('/').pop().replace(/\.md$/,'');
+  $('#readPath').textContent = doc.path;
+  $('#readBody').innerHTML = nl2p(hl(doc.full, lastQuery));
+  readPanel.classList.add('open');
+}
+function closeRead(){ readPanel.classList.remove('open'); }
+$('#readClose').addEventListener('click', closeRead);
+$('#readOpen').addEventListener('click', function(){ toast('已在 Obsidian 中打开（原型模拟）'); });
+
+/* ============================================================
+   库
+   ============================================================ */
+var LIBS = [
+  { id:1, name:'Obsidian Vault 主库', path:'C:\\Users\\xbl26\\Notes\\ObsidianVault', files:'1,204', chunks:'5,382', fmts:['md'], gate:true },
+  { id:2, name:'项目文档', path:'D:\\work\\docs', files:'512', chunks:'2,147', fmts:['md','pdf','docx'], gate:true },
+  { id:3, name:'论文与课件', path:'E:\\reading\\papers', files:'178', chunks:'777', fmts:['pdf','docx'], gate:false }
+];
+function libCard(lib){
+  var fmts = lib.fmts.map(function(f){ return '<span class="fmt">.' + f + '</span>'; }).join('');
+  var gate = lib.gate
+    ? '<span class="gate-flag gate-on">Agent 门禁 · 已批准</span>'
+    : '<span class="gate-flag gate-off">Agent 门禁 · 二进制冻结</span>';
+  return '<div class="shell lib-card" data-lib="' + lib.id + '"><div class="core lib-inner">'
+    + '<div class="lib-top"><div style="min-width:0"><div class="lib-name">' + esc(lib.name) + '</div>'
+    + '<div class="lib-path">' + esc(lib.path) + '</div></div>'
+    + '<div class="lib-stats"><div class="lib-stat"><b>' + lib.files + '</b><span>文件</span></div>'
+    + '<div class="lib-stat"><b>' + lib.chunks + '</b><span>向量块</span></div></div></div>'
+    + '<div class="fmt-row">' + fmts + gate + '</div>'
+    + '<div class="lib-ops">'
+    + '<button class="btn btn-sm" data-act="cfg">配置</button>'
+    + '<button class="btn btn-sm btn-ghost" data-act="open">打开文件夹</button>'
+    + '<span style="flex:1"></span>'
+    + '<button class="btn btn-sm btn-ghost" data-act="rm" style="color:var(--err)">移除</button>'
+    + '</div></div></div>';
+}
+function renderLibs(){
+  $('#libGrid').innerHTML = LIBS.map(libCard).join('');
+}
+renderLibs();
+$('#libGrid').addEventListener('click', function(e){
+  var btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  var card = btn.closest('[data-lib]');
+  var lib = LIBS.find(function(l){ return String(l.id) === card.getAttribute('data-lib'); });
+  var act = btn.getAttribute('data-act');
+  if (act === 'open'){ toast('已打开所在文件夹（原型模拟）'); }
+  else if (act === 'cfg'){ openCfg(lib); }
+  else if (act === 'rm'){ openRm(lib); }
+});
+
+/* 添加库 */
+$('#addLibBtn').addEventListener('click', function(){
+  $('#aName').value = ''; $('#aPath').value = '';
+  $('#aName').classList.remove('bad'); $('#aPath').classList.remove('bad');
+  $('#aNameErr').classList.remove('show'); $('#aPathErr').classList.remove('show');
+  openModal('mAdd');
+});
+$('#addOk').addEventListener('click', function(){
+  var name = $('#aName').value.trim();
+  var path = $('#aPath').value.trim();
+  var ok = true;
+  if (!name){ $('#aNameErr').classList.add('show'); $('#aName').classList.add('bad'); ok = false; }
+  else { $('#aNameErr').classList.remove('show'); $('#aName').classList.remove('bad'); }
+  if (!path){ $('#aPathErr').classList.add('show'); $('#aPath').classList.add('bad'); ok = false; }
+  else { $('#aPathErr').classList.remove('show'); $('#aPath').classList.remove('bad'); }
+  if (!ok) return;
+  LIBS.push({ id:Date.now(), name:name, path:path, files:'0', chunks:'0', fmts:['md'], gate:true });
+  renderLibs();
+  var ov = $('#mAdd'); ov.classList.remove('open');
+  escStack = escStack.filter(function(x){ return x !== ov; });
+  toast('已添加库「' + name + '」，下轮索引生效');
+});
+
+/* 库配置弹层 */
+var cfgLib = null;
+function openCfg(lib){
+  cfgLib = lib;
+  $('#cTitle').textContent = '库配置 · ' + lib.name;
+  $$('#cFmts .ck').forEach(function(ck){
+    var v = ck.querySelector('input').value;
+    var on = lib.fmts.indexOf(v) >= 0;
+    ck.querySelector('input').checked = on;
+    ck.classList.toggle('on', on);
+  });
+  $('#agentTgl').checked = lib.gate;
+  $('#agentWarn').classList.toggle('show', !lib.gate);
+  openModal('mCfg');
+}
+$$('#cFmts .ck input').forEach(function(inp){
+  inp.addEventListener('change', function(){ inp.closest('.ck').classList.toggle('on', inp.checked); });
+});
+$('#agentTgl').addEventListener('change', function(){
+  $('#agentWarn').classList.toggle('show', !this.checked);
+});
+$('#cfgOk').addEventListener('click', function(){
+  if (!cfgLib) return;
+  cfgLib.fmts = $$('#cFmts .ck input').filter(function(i){ return i.checked; }).map(function(i){ return i.value; });
+  cfgLib.gate = $('#agentTgl').checked;
+  renderLibs();
+  var ov = $('#mCfg'); ov.classList.remove('open');
+  escStack = escStack.filter(function(x){ return x !== ov; });
+  toast('库配置已保存，下轮索引生效');
+});
+
+/* 移除弹层 */
+var rmLib = null;
+function openRm(lib){
+  rmLib = lib;
+  $('#rName').textContent = lib.name;
+  $('#rKeep').classList.add('sel'); $('#rDel').classList.remove('sel');
+  $('#rKeep').querySelector('input').checked = true;
+  $('#rDel').querySelector('input').checked = false;
+  $('#rChkLine').style.visibility = 'hidden';
+  $('#rConfirmChk').checked = false;
+  $('#rGo').disabled = false;
+  openModal('mRm');
+}
+$('#rKeep').addEventListener('click', function(){
+  $('#rKeep').classList.add('sel'); $('#rDel').classList.remove('sel');
+  $('#rChkLine').style.visibility = 'hidden';
+  $('#rGo').disabled = false;
+});
+$('#rDel').addEventListener('click', function(){
+  $('#rDel').classList.add('sel'); $('#rKeep').classList.remove('sel');
+  $('#rChkLine').style.visibility = 'visible';
+  $('#rGo').disabled = true;
+});
+$('#rConfirmChk').addEventListener('change', function(){
+  $('#rGo').disabled = !this.checked;
+});
+$('#rGo').addEventListener('click', function(){
+  if (!rmLib) return;
+  var delData = $('#rDel').querySelector('input').checked;
+  LIBS = LIBS.filter(function(l){ return l.id !== rmLib.id; });
+  renderLibs();
+  var ov = $('#mRm'); ov.classList.remove('open');
+  escStack = escStack.filter(function(x){ return x !== ov; });
+  toast(delData ? '已注销并删除「' + rmLib.name + '」的索引数据' : '已注销「' + rmLib.name + '」，原始文件已保留');
+  rmLib = null;
+});
+
+/* ============================================================
+   索引 · 动态岛模拟
+   ============================================================ */
+var PHASES = [
+  { name:'扫描', to:16 }, { name:'转换', to:44 }, { name:'嵌入', to:78 },
+  { name:'写库', to:96 }, { name:'完成', to:100 }
+];
+var idxRun = false, idxTimer = null, idxP = 0;
+var island = $('#island');
+function idxTick(){
+  idxP += 1.25; /* 100 / (8s * 10 tick/s)：整场 8 秒 */
+  if (idxP >= 100){
+    idxP = 100;
+    clearInterval(idxTimer); idxTimer = null;
+    idxPaint();
+    setTimeout(function(){
+      idxRun = false;
+      island.classList.remove('run','live');
+      $('#kpiLast').textContent = '刚刚';
+      $('#btnIncr').disabled = false;
+      $('#btnFull').disabled = false;
+      toast('索引完成，新增内容已可检索');
+    }, 1300);
+    return;
+  }
+  idxPaint();
+}
+function idxPaint(){
+  var phase = PHASES[0];
+  for (var i = 0; i < PHASES.length; i++){ if (idxP <= PHASES[i].to){ phase = PHASES[i]; break; } }
+  $('#iPhase').textContent = phase.name;
+  $('#iBar').style.transform = 'scaleX(' + (idxP/100) + ')';
+  $('#iPct').textContent = Math.round(idxP) + '%';
+  $('#iEta').textContent = '剩 ' + Math.max(1, Math.ceil((100 - idxP) * 0.08)) + 's';
+}
+function startIdx(){
+  if (idxRun) return;
+  idxRun = true; idxP = 0;
+  island.classList.add('run','live');
+  $('#btnIncr').disabled = true;
+  $('#btnFull').disabled = true;
+  idxPaint();
+  idxTimer = setInterval(idxTick, 100);
+}
+function stopIdx(){
+  if (!idxRun) return;
+  if (idxTimer){ clearInterval(idxTimer); idxTimer = null; }
+  idxRun = false;
+  island.classList.remove('run','live');
+  $('#btnIncr').disabled = false;
+  $('#btnFull').disabled = false;
+  toast('已停止索引，本轮进度未保留', true);
+}
+$('#btnIncr').addEventListener('click', startIdx);
+$('#iStop').addEventListener('click', function(e){ e.stopPropagation(); stopIdx(); });
+$('#btnFull').addEventListener('click', function(){ openModal('mFull'); });
+$('#fullGo').addEventListener('click', function(){
+  var ov = $('#mFull'); ov.classList.remove('open');
+  escStack = escStack.filter(function(x){ return x !== ov; });
+  startIdx();
+  go('index');
+});
+
+/* ============================================================
+   诊断
+   ============================================================ */
+var FAILS = [
+  ['20-Projects/课程资料/MinerU 使用手册.pdf','scanned','will_retry','扫描件：已提交云端 OCR，等待下轮自动重试','warn'],
+  ['E:\\reading\\papers\\CS231n 课件 07.pdf','scanned','will_retry','扫描件：已提交云端 OCR，等待下轮自动重试','warn'],
+  ['80-Attachments\\扫描合同 2026-07.pdf','scanned','will_retry','扫描件：已提交云端 OCR，等待下轮自动重试','warn'],
+  ['99-Inbox\\损坏的存档.docx','unreadable','terminal','文件损坏无法解析，建议用 Office 重新导出后手动重建','err'],
+  ['Daily\\2026-05-03.md','empty','terminal','空文件，已落终态不再重试','mut'],
+  ['Templates\\空白模板.md','empty','terminal','空文件，已落终态不再重试','mut'],
+  ['80-Attachments\\加密年报 2025.pdf','extract-failed','terminal','密码保护，解除后对该文件执行手动重建','err']
+];
+var ST_LABEL = { scanned:'scanned', unreadable:'unreadable', empty:'empty', 'extract-failed':'提取失败' };
+$('#failBody').innerHTML = FAILS.map(function(f){
+  var cls = f[4] === 'warn' ? 'badge-lo' : (f[4] === 'err' ? 'badge-mid' : '');
+  var style = f[4] === 'warn' ? 'background:var(--warn-dim);color:var(--warn)'
+            : f[4] === 'err'  ? 'background:var(--err-dim);color:var(--err)'
+            : 'background:var(--s2);color:var(--sec)';
+  return '<tr><td class="p" title="' + esc(f[0]) + '">' + esc(f[0]) + '</td>'
+    + '<td><span class="badge ' + cls + '" style="' + style + '">' + ST_LABEL[f[1]] + '</span>'
+    + (f[2] === 'will_retry' ? ' <span class="mono" style="font-size:10.5px;color:var(--warn)">will_retry</span>' : '')
+    + '</td><td class="g">' + esc(f[3]) + '</td></tr>';
+}).join('');
+
+/* WEMM */
+var wemmTgl = $('#wemmTgl');
+wemmTgl.addEventListener('change', function(){
+  $('#wemmState').innerHTML = this.checked
+    ? '已开启，页向量独立建库，文本检索不受影响。'
+    : '当前关闭。开启后为 PDF 课件与扫描件建立页级向量，支持以图搜图式定位。';
+});
+$('#wemmProbe').addEventListener('click', function(){
+  var st = $('#wemmState');
+  st.innerHTML = '<span style="display:inline-flex;align-items:center;gap:8px"><span class="mini-spin"></span>正在探测 wemm 服务</span>';
+  var btn = this; btn.disabled = true;
+  setTimeout(function(){
+    btn.disabled = false;
+    if (wemmTgl.checked){
+      st.innerHTML = '<b style="color:var(--accent)">已加载 · VRAM 2.1GB</b>，模型 bge-visualized · DPI 144 · 页向量 41,377 条。';
+    } else {
+      st.innerHTML = '<b style="color:var(--err)">服务未运行</b>，wemm_server 未启动。请先在设置中开启页级视觉索引。';
+    }
+  }, 1100);
+});
+
+/* 近似去重 */
+var DUPS = [
+  { sim:'0.91', a:'Projects/RAG 管道设计.md', b:'20-Projects/RAG 管道设计 (旧稿).md' },
+  { sim:'0.87', a:'20-Projects/Obsidian RAG/切块与清洗策略.md', b:'90-Archive/切块笔记 v1.md' },
+  { sim:'0.83', a:'D:\\work\\docs\\检索服务接口说明.docx', b:'20-Projects/MCP 工具清单.md' }
+];
+$('#dupList').innerHTML = DUPS.map(function(d){
+  var cls = d.sim >= '0.9' ? 'badge-hi' : 'badge-mid';
+  return '<div class="dup"><div class="dup-top">'
+    + '<span class="badge ' + cls + '">' + d.sim + '</span>'
+    + '<div class="dup-pair">' + esc(d.a) + '<em>与 ' + esc(d.b) + ' 近似</em></div>'
+    + '<button class="btn btn-sm btn-ghost diff-btn">查看差异</button>'
+    + '</div></div>';
+}).join('');
+$('#dupList').addEventListener('click', function(e){
+  if (e.target.closest('.diff-btn')) toast('差异视图暂未在原型中实现（演示假数据）', true);
+});
+
+/* 导出/导入 */
+function ioRun(label){
+  var prog = $('#ioProg');
+  if (prog.classList.contains('run')) return;
+  prog.classList.add('run');
+  prog.querySelector('i').style.transform = 'scaleX(0)';
+  void prog.offsetWidth;
+  prog.querySelector('i').style.transform = 'scaleX(1)';
+  setTimeout(function(){
+    prog.classList.remove('run');
+    toast(label + '完成，副本校验通过（原型模拟）');
+  }, 2200);
+}
+$('#expBtn').addEventListener('click', function(){ ioRun('导出'); });
+$('#impBtn').addEventListener('click', function(){ ioRun('导入'); });
+
+/* ============================================================
+   设置
+   ============================================================ */
+$$('.sg-item').forEach(function(b){
+  b.addEventListener('click', function(){
+    $$('.sg-item').forEach(function(x){ x.classList.toggle('on', x === b); });
+    var sg = b.getAttribute('data-sg');
+    $$('.sg-panel').forEach(function(p){ p.classList.toggle('on', p.getAttribute('data-sp') === sg); });
+  });
+});
+$('#saveBtn').addEventListener('click', function(){
+  toast('已保存，配置已热读生效');
+});
+
+/* 扫描后端切 MinerU 云端：必须先同意第三方上传 */
+var scanSel = $('#scanSel');
+var consentPrev = '关闭';
+scanSel.addEventListener('mousedown', function(){ consentPrev = scanSel.value; });
+scanSel.addEventListener('focus', function(){ consentPrev = scanSel.value; });
+scanSel.addEventListener('change', function(){
+  if (scanSel.value !== 'MinerU 云端') return;
+  openModal('mConsent');
+});
+$('#consentOk').addEventListener('click', function(){
+  var ov = $('#mConsent'); ov.classList.remove('open');
+  escStack = escStack.filter(function(x){ return x !== ov; });
+  toast('已启用 MinerU 云端 OCR，保存后生效');
+});
+$('#consentNo').addEventListener('click', function(){
+  hideOverlay($('#mConsent')); /* 取消：回退下拉值 */
+});
+
+/* ============================================================
+   图谱 · 全库常驻画布（DEMO 7 核心）
+   力学四股：语义引力 + 库锚点 + 短程斥力 + 边弹簧
+   ============================================================ */
+var G_LIBS = {
+  tech:  { name:'技术笔记', ax:-450, ay:-40 },
+  paper: { name:'论文阅读', ax:370, ay:-290 },
+  meet:  { name:'会议记录', ax:300, ay:310 }
+};
+var G_TYPE_NAME = { md:'md 笔记', pdf:'PDF 原件', cache:'PDF→MD 缓存', page:'WEMM 页节点' };
+
+/* 62 节点 = 30 md + 10 PDF 原件 + 8 PDF→MD 缓存 + 14 WEMM 页节点
+   数组顺序即语义向量的决定论生成顺序（种子 20260905，噪声 sigma 1.0） */
+var GN = [
+  {id:'wemm',t:'WEMM 设计',type:'md',lib:'tech',theme:'wemm',big:1,path:'20-Projects/Obsidian RAG/WEMM 设计.md',upd:'2026-09-02',snip:'页级视觉导航整体设计：独立 collection、独立 meta、独立版本号，终态带 xsrc 签名，失败每轮真重试。'},
+  {id:'pvect',t:'页向量检索',type:'md',lib:'tech',theme:'wemm',path:'20-Projects/Obsidian RAG/页向量检索.md',upd:'2026-09-01',snip:'页向量写入独立 collection，查询零写副作用，先页后块两段式返回。'},
+  {id:'diary',t:'2026-08-30 日记',type:'md',lib:'meet',theme:'wemm',path:'会议与日记/2026-08-30 日记.md',upd:'2026-08-30',snip:'今天把页级导航原型跑通了，翻 PDF 像翻书一样，就是显存有点紧。'},
+  {id:'weekly',t:'周会 2026-09-01',type:'md',lib:'meet',theme:'wemm',path:'会议与日记/周会 2026-09-01.md',upd:'2026-09-01',snip:'演示视觉翻页检索，确认 DPI 与空闲卸载显存策略下周落地。'},
+  {id:'wemmmeet',t:'WEMM 评审会',type:'md',lib:'meet',theme:'wemm',path:'会议与日记/WEMM 评审会.md',upd:'2026-08-27',snip:'评审结论：页库独立 meta 与版本号，失败真重试，改档自动重渲染。'},
+  {id:'gsurvey',t:'图谱检索 Survey',type:'md',lib:'paper',theme:'wemm',path:'论文笔记/图谱检索 Survey.md',upd:'2026-08-31',snip:'把笔记双链当图遍历的检索路线，与页级视觉索引互相印证。'},
+  {id:'rerank',t:'检索与重排',type:'md',lib:'tech',theme:'retr',big:1,path:'20-Projects/Obsidian RAG/检索与重排.md',upd:'2026-08-28',snip:'混合检索粗召回，交叉编码器精排，两段式返回页与块。'},
+  {id:'hybrid',t:'混合检索笔记',type:'md',lib:'tech',theme:'retr',path:'20-Projects/Obsidian RAG/混合检索笔记.md',upd:'2026-07-28',snip:'稠密与稀疏通道加权融合，RRF 与线性打分的实测差异。'},
+  {id:'chroma',t:'Chroma 实践',type:'md',lib:'tech',theme:'retr',path:'20-Projects/Obsidian RAG/Chroma 实践.md',upd:'2026-08-02',snip:'持久化配置、collection 规划与一致性自愈触发条件。'},
+  {id:'cerank',t:'Cross-Encoder 重排',type:'md',lib:'paper',theme:'retr',path:'论文笔记/Cross-Encoder 重排.md',upd:'2026-07-20',snip:'查询与文档拼接过评分的重排范式，精度高但只能少量入围。'},
+  {id:'retro',t:'检索质量复盘',type:'md',lib:'meet',theme:'retr',path:'会议与日记/检索质量复盘.md',upd:'2026-08-21',snip:'十个坏例归因：六个出在切块，三个出在重排缺席，一个纯 OCR。'},
+  {id:'chunk',t:'切块策略',type:'md',lib:'tech',theme:'chunk',path:'20-Projects/Obsidian RAG/切块策略.md',upd:'2026-07-19',snip:'标题感知切块与重叠窗口，切块逻辑变更必须递增 META_VERSION。'},
+  {id:'clean',t:'清洗与折叠',type:'md',lib:'tech',theme:'chunk',path:'20-Projects/Obsidian RAG/清洗与折叠.md',upd:'2026-07-21',snip:'代码块与超长表格折叠为摘要行，避免长 token 序列稀释语义。'},
+  {id:'semchunk',t:'语义分块研究',type:'md',lib:'paper',theme:'chunk',path:'论文笔记/语义分块研究.md',upd:'2026-07-25',snip:'以句向量突变点切分文本的实验，与固定窗口对比。'},
+  {id:'embed',t:'嵌入模型对比',type:'md',lib:'tech',theme:'embed',path:'20-Projects/Obsidian RAG/嵌入模型对比.md',upd:'2026-07-22',snip:'BGE-M3 与同规模模型在中文长文档上的召回对比记录。'},
+  {id:'bgem3',t:'BGE-M3 论文',type:'md',lib:'paper',theme:'embed',path:'论文笔记/BGE-M3 论文.md',upd:'2026-07-15',snip:'多语种多粒度统一嵌入训练框架，稠密稀疏双通道输出。'},
+  {id:'colbert',t:'ColBERT 稀疏向量',type:'md',lib:'paper',theme:'embed',path:'论文笔记/ColBERT 稀疏向量.md',upd:'2026-07-16',snip:'晚交互与词级稀疏表示，精确术语匹配的补充通道。'},
+  {id:'mineru',t:'MinerU 笔记',type:'md',lib:'tech',theme:'mineru',big:1,path:'20-Projects/Obsidian RAG/MinerU 笔记.md',upd:'2026-08-30',snip:'云端 API 批量提交、滑动窗口限速与断点簿记机制。'},
+  {id:'ocr',t:'OCR 路由策略',type:'md',lib:'tech',theme:'mineru',path:'20-Projects/Obsidian RAG/OCR 路由策略.md',upd:'2026-08-29',snip:'混合型 PDF 整本按扫描件路由，宁可诚实空缺也不拼接。'},
+  {id:'pdfp',t:'PDF 提取踩坑',type:'md',lib:'tech',theme:'mineru',path:'20-Projects/Obsidian RAG/PDF 提取踩坑.md',upd:'2026-07-11',snip:'文字层缺失、竖排版式与加密文件在提取层的三类坑。'},
+  {id:'perf',t:'索引性能评审',type:'md',lib:'meet',theme:'mineru',path:'会议与日记/索引性能评审.md',upd:'2026-08-15',snip:'扫描段攒批与线程池并行的吞吐数据，限速闸门符合预期。'},
+  {id:'gate',t:'Agent 门禁与隐私',type:'md',lib:'tech',theme:'config',big:1,path:'20-Projects/Obsidian RAG/Agent 门禁与隐私.md',upd:'2026-08-26',snip:'未授权二进制文件冻结保留，批准一次长期有效可撤销。'},
+  {id:'conf',t:'配置热加载',type:'md',lib:'tech',theme:'config',path:'20-Projects/Obsidian RAG/配置热加载.md',upd:'2026-08-24',snip:'长驻 MCP 进程一律现读配置，不读 import 快照。'},
+  {id:'gui',t:'Flet GUI 笔记',type:'md',lib:'tech',theme:'gui',path:'20-Projects/Obsidian RAG/Flet GUI 笔记.md',upd:'2026-08-18',snip:'GUI 是零侵入观察者：不加载模型、不直写 Chroma。'},
+  {id:'mcp',t:'MCP server 设计',type:'md',lib:'tech',theme:'gui',path:'20-Projects/Obsidian RAG/MCP server 设计.md',upd:'2026-08-20',snip:'工具面设计：search_knowledge 与 note_relations 双入口。'},
+  {id:'diag',t:'诊断面板设计',type:'md',lib:'tech',theme:'gui',path:'20-Projects/Obsidian RAG/诊断面板设计.md',upd:'2026-08-31',snip:'失败溯源、页库状态与去重分析的四个面板布局。'},
+  {id:'tasklog',t:'TASK_LOG',type:'md',lib:'tech',theme:'meta',big:1,path:'20-Projects/Obsidian RAG/TASK_LOG.md',upd:'2026-09-04',snip:'开发史叙事主线，问题 1 至 39 逐条记录设计取舍。'},
+  {id:'survey',t:'RAG 综述 2025',type:'md',lib:'paper',theme:'meta',path:'论文笔记/RAG 综述 2025.md',upd:'2026-08-05',snip:'检索增强生成分型：naive、迭代、图增强与 agent 化路线。'},
+  {id:'minhash',t:'MinHash 近似去重',type:'md',lib:'paper',theme:'meta',path:'论文笔记/MinHash 近似去重.md',upd:'2026-08-12',snip:'MinHash 加 LSH 的近似去重原理与分桶参数选择。'},
+  {id:'unif',t:'统一终态设计',type:'md',lib:'tech',theme:'meta',path:'20-Projects/Obsidian RAG/统一终态设计.md',upd:'2026-08-19',snip:'一切不产块的文件都落持久化终态，避免每轮误判死循环。'},
+  {id:'p1',t:'ICLR2026_review.pdf',type:'pdf',lib:'paper',theme:'retr',mineru:'done',wemm:'none',cacheId:'c1',pages:0,path:'E:\\reading\\papers\\ICLR2026_review.pdf',upd:'2026-08-03'},
+  {id:'c1',t:'ICLR2026_review.md',type:'cache',lib:'paper',theme:'retr',owner:'p1',blocks:214,path:'提取缓存/论文阅读/ICLR2026_review.md',upd:'2026-08-03'},
+  {id:'p2',t:'CS231n 课件 07.pdf',type:'pdf',lib:'paper',theme:'embed',mineru:'done',wemm:'done',cacheId:'c2',pages:28,path:'E:\\reading\\papers\\CS231n 课件 07.pdf',upd:'2026-07-18'},
+  {id:'c2',t:'CS231n 课件 07.md',type:'cache',lib:'paper',theme:'embed',owner:'p2',blocks:168,path:'提取缓存/论文阅读/CS231n 课件 07.md',upd:'2026-07-18'},
+  {id:'p3',t:'扫描课件 注意力机制.pdf',type:'pdf',lib:'paper',theme:'embed',mineru:'done',wemm:'done',cacheId:'c3',pages:36,path:'E:\\reading\\papers\\扫描课件 注意力机制.pdf',upd:'2026-07-02'},
+  {id:'c3',t:'扫描课件 注意力机制.md',type:'cache',lib:'paper',theme:'embed',owner:'p3',blocks:203,path:'提取缓存/论文阅读/扫描课件 注意力机制.md',upd:'2026-07-02'},
+  {id:'p4',t:'Transformer 原论文.pdf',type:'pdf',lib:'paper',theme:'embed',mineru:'queued',wemm:'none',pages:0,path:'E:\\reading\\papers\\Transformer 原论文.pdf',upd:'2026-06-28'},
+  {id:'p5',t:'扩散模型综述.pdf',type:'pdf',lib:'paper',theme:'meta',mineru:'done',wemm:'none',cacheId:'c5',pages:0,path:'E:\\reading\\papers\\扩散模型综述.pdf',upd:'2026-07-30'},
+  {id:'c5',t:'扩散模型综述.md',type:'cache',lib:'paper',theme:'meta',owner:'p5',blocks:141,path:'提取缓存/论文阅读/扩散模型综述.md',upd:'2026-07-30'},
+  {id:'p6',t:'RAG Survey 2025.pdf',type:'pdf',lib:'paper',theme:'retr',mineru:'done',wemm:'done',cacheId:'c6',pages:24,path:'E:\\reading\\papers\\RAG Survey 2025.pdf',upd:'2026-08-06'},
+  {id:'c6',t:'RAG Survey 2025.md',type:'cache',lib:'paper',theme:'retr',owner:'p6',blocks:187,path:'提取缓存/论文阅读/RAG Survey 2025.md',upd:'2026-08-06'},
+  {id:'p7',t:'强化学习导论.pdf',type:'pdf',lib:'paper',theme:'meta',mineru:'none',wemm:'none',pages:0,path:'E:\\reading\\papers\\强化学习导论.pdf',upd:'2026-06-20'},
+  {id:'p8',t:'视觉 Transformer 综述.pdf',type:'pdf',lib:'paper',theme:'wemm',mineru:'done',wemm:'done',cacheId:'c8',pages:32,path:'E:\\reading\\papers\\视觉 Transformer 综述.pdf',upd:'2026-08-22'},
+  {id:'c8',t:'视觉 Transformer 综述.md',type:'cache',lib:'paper',theme:'wemm',owner:'p8',blocks:176,path:'提取缓存/论文阅读/视觉 Transformer 综述.md',upd:'2026-08-22'},
+  {id:'p9',t:'MinerU 使用手册.pdf',type:'pdf',lib:'tech',theme:'mineru',mineru:'done',wemm:'done',cacheId:'c9',pages:20,path:'D:\\work\\docs\\MinerU 使用手册.pdf',upd:'2026-08-25'},
+  {id:'c9',t:'MinerU 使用手册.md',type:'cache',lib:'tech',theme:'mineru',owner:'p9',blocks:158,path:'提取缓存/项目文档/MinerU 使用手册.md',upd:'2026-08-25'},
+  {id:'p10',t:'季度汇报 扫描版.pdf',type:'pdf',lib:'meet',theme:'wemm',mineru:'done',wemm:'done',cacheId:'c10',pages:18,path:'E:\\reading\\papers\\季度汇报 扫描版.pdf',upd:'2026-09-01'},
+  {id:'c10',t:'季度汇报 扫描版.md',type:'cache',lib:'meet',theme:'wemm',owner:'p10',blocks:132,path:'提取缓存/会议与日记/季度汇报 扫描版.md',upd:'2026-09-01'},
+  {id:'p11',t:'API 限流与重试实践.pdf',type:'pdf',lib:'paper',theme:'config',mineru:'failed',wemm:'none',failReason:'提交超时（429 限流）',pages:0,path:'E:\\reading\\papers\\API 限流与重试实践.pdf',upd:'2026-08-27'},
+  {id:'pa1',t:'p.3',type:'page',lib:'paper',theme:'embed',owner:'c3',pg:3},
+  {id:'pa2',t:'p.12',type:'page',lib:'paper',theme:'embed',owner:'c3',pg:12},
+  {id:'pa3',t:'p.21',type:'page',lib:'paper',theme:'embed',owner:'c3',pg:21},
+  {id:'pb1',t:'p.1',type:'page',lib:'paper',theme:'embed',owner:'c2',pg:1},
+  {id:'pb2',t:'p.9',type:'page',lib:'paper',theme:'embed',owner:'c2',pg:9},
+  {id:'pc1',t:'p.2',type:'page',lib:'meet',theme:'wemm',owner:'c10',pg:2},
+  {id:'pc2',t:'p.5',type:'page',lib:'meet',theme:'wemm',owner:'c10',pg:5},
+  {id:'pc3',t:'p.11',type:'page',lib:'meet',theme:'wemm',owner:'c10',pg:11},
+  {id:'pd1',t:'p.4',type:'page',lib:'paper',theme:'retr',owner:'c6',pg:4},
+  {id:'pd2',t:'p.15',type:'page',lib:'paper',theme:'retr',owner:'c6',pg:15},
+  {id:'pe1',t:'p.6',type:'page',lib:'paper',theme:'wemm',owner:'c8',pg:6},
+  {id:'pe2',t:'p.19',type:'page',lib:'paper',theme:'wemm',owner:'c8',pg:19},
+  {id:'pf1',t:'p.5',type:'page',lib:'tech',theme:'mineru',owner:'c9',pg:5},
+  {id:'pf2',t:'p.13',type:'page',lib:'tech',theme:'mineru',owner:'c9',pg:13}
+];
+
+/* ---------- 确定性语义向量（16 维，余弦相似） ---------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    var t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+var G_RND = mulberry32(20260905);
+var G_DIM = 16, G_SIGMA = 1.0;
+function gNorm(v){
+  var s = 0, i;
+  for (i = 0; i < G_DIM; i++) s += v[i] * v[i];
+  s = Math.sqrt(s) || 1;
+  for (i = 0; i < G_DIM; i++) v[i] /= s;
+  return v;
+}
+var gById = {};
+GN.forEach(function(n){ gById[n.id] = n; });
+var gCent = {};
+['wemm','retr','chunk','embed','mineru','config','gui','meta'].forEach(function(k){
+  var v = [], i;
+  for (i = 0; i < G_DIM; i++) v.push(G_RND() * 2 - 1);
+  gCent[k] = gNorm(v);
+});
+GN.forEach(function(n){
+  if (n.type === 'page'){ n.vec = null; return; }
+  var u = [], i;
+  for (i = 0; i < G_DIM; i++) u.push(G_RND() * 2 - 1);
+  gNorm(u);
+  var v = [], j;
+  for (j = 0; j < G_DIM; j++) v.push(gCent[n.theme][j] + u[j] * G_SIGMA);
+  n.vec = gNorm(v);
+});
+/* 页节点复用所属缓存向量：页间相似度属于页向量库（另一套模型），不参与文档级语义边 */
+GN.forEach(function(n){ if (n.type === 'page') n.vec = gById[n.owner].vec; });
+function gCos(a, b){
+  var s = 0, i;
+  for (i = 0; i < G_DIM; i++) s += a.vec[i] * b.vec[i];
+  return s;
+}
+
+/* 语义相似边候选（仅文档级节点，页节点不参与） */
+var G_SEM = [];
+(function(){
+  var i, j, a, b, s;
+  for (i = 0; i < GN.length; i++){
+    a = GN[i];
+    if (a.type === 'page') continue;
+    for (j = i + 1; j < GN.length; j++){
+      b = GN[j];
+      if (b.type === 'page') continue;
+      s = gCos(a, b);
+      if (s >= 0.5) G_SEM.push({ a: a.id, b: b.id, s: s });
+    }
+  }
+  G_SEM.sort(function(x, y){ return y.s - x.s; });
+})();
+/* 语义引力对：相似度超过 0.62 即受力，与是否画线无关 */
+var G_GRAV = G_SEM.filter(function(e){ return e.s >= 0.62; });
+
+/* 显式双链 22 条（技术笔记库内密集） */
+var GB = [
+  ['wemm','rerank'],['wemm','mineru'],['wemm','pvect'],['wemm','tasklog'],['ocr','wemm'],
+  ['rerank','hybrid'],['rerank','cerank'],['rerank','chroma'],
+  ['chunk','clean'],['chunk','semchunk'],
+  ['embed','bgem3'],
+  ['mineru','pdfp'],['mineru','ocr'],['mineru','perf'],
+  ['gate','conf'],['gate','gui'],
+  ['mcp','gui'],['mcp','diag'],
+  ['tasklog','unif'],['tasklog','diag'],
+  ['chroma','unif'],
+  ['wemmmeet','weekly']
+];
+var G_OUT = {}, G_INN = {};
+GN.forEach(function(n){ G_OUT[n.id] = []; G_INN[n.id] = []; });
+GB.forEach(function(e){
+  G_OUT[e[0]].push(e[1]);
+  G_INN[e[1]].push(e[0]);
+});
+/* 归属边：缓存连 PDF 原件、页连缓存（结构性弹簧，恒在） */
+var G_OWN = [];
+GN.forEach(function(n){
+  if (n.type === 'cache') G_OWN.push({ a: n.id, b: n.owner });
+  if (n.type === 'page') G_OWN.push({ a: n.id, b: n.owner });
+});
+
+/* ---------- 管线状态（PDF → 缓存 → 页，逐级继承） ---------- */
+function gPdfStateOf(n){
+  if (n.type === 'pdf'){
+    if (n.mineru === 'failed') return 'failed';
+    if (n.mineru === 'queued' || n.mineru === 'none') return 'none';
+    return n.wemm === 'done' ? 'ok' : 'partial';
+  }
+  if (n.type === 'cache' || n.type === 'page'){
+    var pdf = n.type === 'cache' ? gById[n.owner] : gById[gById[n.owner].owner];
+    return pdf ? gPdfStateOf(pdf) : null;
+  }
+  return null;
+}
+GN.forEach(function(n){ n.pstate = gPdfStateOf(n); });
+
+/* ---------- 图层状态 ---------- */
+var gLy = { bilat:true, sem:true, own:true, page:true, cache:true, pdf:true, bounds:true, th:0.62 };
+function gVisible(n){
+  if (!n) return false;
+  if (n.type === 'page') return gLy.page;
+  if (n.type === 'cache') return gLy.cache;
+  if (n.type === 'pdf') return gLy.pdf;
+  return true;
+}
+
+/* ---------- 世界 / 相机 ---------- */
+var OFF = 6000;
+var SVGNS = 'http://www.w3.org/2000/svg';
+var G_RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+var gStage = $('#gStage'), gWorld = $('#gWorld');
+var cam = { x: 0, y: 0, k: 1 };
+function gStageRect(){ return gStage.getBoundingClientRect(); }
+function applyCam(){
+  gWorld.style.transform = 'translate(' + cam.x + 'px,' + cam.y + 'px) scale(' + cam.k + ')';
+  $('#gZoomLabel').textContent = Math.round(cam.k * 100) + '%';
+}
+function s2w(sx, sy){
+  var r = gStageRect();
+  return { x: (sx - r.left - cam.x) / cam.k, y: (sy - r.top - cam.y) / cam.k };
+}
+function clampK(k){ return Math.min(2.4, Math.max(0.3, k)); }
+function zoomAt(sx, sy, k2){
+  k2 = clampK(k2);
+  var r = gStageRect();
+  var lx = sx - r.left, ly = sy - r.top;
+  cam.x = lx - (lx - cam.x) * k2 / cam.k;
+  cam.y = ly - (ly - cam.y) * k2 / cam.k;
+  cam.k = k2;
+  applyCam();
+  requestRender();
+}
+
+/* ---------- DOM：节点与边 ---------- */
+var nodeEls = {};
+GN.forEach(function(n){
+  var el = document.createElement('div');
+  el.className = 'g-node t-' + n.type + (n.big ? ' big' : '');
+  el.dataset.id = n.id;
+  el.dataset.lib = n.lib;
+  if (n.pstate) el.dataset.state = n.pstate;
+  if (n.type === 'pdf'){
+    if (n.mineru === 'failed') el.classList.add('st-failed');
+    else if (n.mineru === 'queued' || n.mineru === 'none') el.classList.add('st-nocache');
+  }
+  el.innerHTML = '<div class="g-card"><span class="g-mark"></span><span class="g-label">' + esc(n.t) + '</span></div>';
+  $('#gNodes').appendChild(el);
+  nodeEls[n.id] = el;
+});
+function gEdgeD(a, b){
+  var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  var dx = b.x - a.x, dy = b.y - a.y;
+  return 'M' + (a.x + OFF) + ',' + (a.y + OFF)
+    + ' Q' + (mx - dy * 0.08 + OFF) + ',' + (my + dx * 0.08 + OFF)
+    + ' ' + (b.x + OFF) + ',' + (b.y + OFF);
+}
+var gBilatEls = [], gSemEls = [], gOwnEls = [];
+GB.forEach(function(e){
+  var p = document.createElementNS(SVGNS, 'path');
+  p.setAttribute('class', 'ge');
+  $('#gBilatG').appendChild(p);
+  gBilatEls.push(p);
+});
+G_SEM.forEach(function(e){
+  var p = document.createElementNS(SVGNS, 'path');
+  p.setAttribute('class', 'gs');
+  /* 透明度 = 相似度 */
+  p.setAttribute('stroke-opacity', (0.10 + Math.max(0, e.s - 0.5) * 0.85).toFixed(3));
+  $('#gSemG').appendChild(p);
+  gSemEls.push(p);
+});
+G_OWN.forEach(function(e){
+  var p = document.createElementNS(SVGNS, 'path');
+  p.setAttribute('class', 'go');
+  $('#gOwnG').appendChild(p);
+  gOwnEls.push(p);
+});
+
+/* ---------- 库边界：柔光底 + 虚线椭圆 + 玻璃标签，缓慢跟随聚落质心 ---------- */
+var G_BOUND = {
+  tech:  { rx:340, ry:270, color:'#34D399', fill:'url(#glowTech)',  cx:G_LIBS.tech.ax,  cy:G_LIBS.tech.ay  },
+  paper: { rx:330, ry:260, color:'#7DB8FF', fill:'url(#glowPaper)', cx:G_LIBS.paper.ax, cy:G_LIBS.paper.ay },
+  meet:  { rx:310, ry:250, color:'#FBBF24', fill:'url(#glowMeet)',  cx:G_LIBS.meet.ax,  cy:G_LIBS.meet.ay  }
+};
+var gBoundEls = {};
+Object.keys(G_BOUND).forEach(function(k){
+  var e = document.createElementNS(SVGNS, 'ellipse');
+  e.setAttribute('fill', G_BOUND[k].fill);
+  e.setAttribute('stroke', G_BOUND[k].color);
+  e.setAttribute('stroke-opacity', '0.25');
+  e.setAttribute('stroke-width', '1.2');
+  e.setAttribute('stroke-dasharray', '7 9');
+  $('#gBoundsG').appendChild(e);
+  gBoundEls[k] = e;
+});
+function updateBounds(){
+  var moved = false;
+  Object.keys(G_BOUND).forEach(function(k){
+    var B = G_BOUND[k];
+    var sx = 0, sy = 0, c = 0;
+    gA.forEach(function(n){
+      if (n.lib === k){ sx += n.x; sy += n.y; c++; }
+    });
+    var tx = c ? sx / c : G_LIBS[k].ax;
+    var ty = c ? sy / c : G_LIBS[k].ay;
+    var nx = B.cx + (tx - B.cx) * 0.02;
+    var ny = B.cy + (ty - B.cy) * 0.02;
+    if (Math.abs(nx - B.cx) > 0.05 || Math.abs(ny - B.cy) > 0.05){ B.cx = nx; B.cy = ny; moved = true; }
+  });
+  if (moved) requestRender();
+}
+function renderBounds(){
+  Object.keys(G_BOUND).forEach(function(k){
+    var B = G_BOUND[k];
+    var el = gBoundEls[k];
+    var tag = $('#gtag-' + k);
+    if (gLy.bounds){
+      el.style.display = '';
+      el.setAttribute('cx', (B.cx + OFF).toFixed(1));
+      el.setAttribute('cy', (B.cy + OFF).toFixed(1));
+      el.setAttribute('rx', B.rx);
+      el.setAttribute('ry', B.ry);
+      tag.style.display = '';
+      tag.style.transform = 'translate(' + B.cx.toFixed(1) + 'px,' + (B.cy - B.ry - 16).toFixed(1) + 'px) translate(-50%,-100%)';
+    } else {
+      el.style.display = 'none';
+      tag.style.display = 'none';
+    }
+  });
+}
+function updateLibCounts(){
+  Object.keys(G_LIBS).forEach(function(k){
+    var c = 0;
+    gA.forEach(function(n){ if (n.lib === k) c++; });
+    $('#gtc-' + k).textContent = c + ' 节点';
+  });
+}
+
+/* ---------- 力导向模拟 ---------- */
+function gSeed(){
+  var i = 0;
+  GN.forEach(function(n){
+    var an = G_LIBS[n.lib];
+    var ang = (i * 2.399) % (Math.PI * 2);
+    var r = n.type === 'page' ? 40 : (110 + (i % 5) * 52);
+    n.x = an.ax + Math.cos(ang) * r;
+    n.y = an.ay + Math.sin(ang) * r;
+    n.vx = 0; n.vy = 0;
+    i++;
+  });
+}
+var gA = GN.slice(); /* 活跃（可见）节点，图层开关时重算 */
+function gRefreshAct(){
+  gA = [];
+  GN.forEach(function(n){ if (gVisible(n)) gA.push(n); });
+}
+var sim = { alpha: 0, frame: 0, active: false };
+var fitOnSettle = false;
+function startSim(alpha){
+  sim.alpha = alpha || 1; sim.frame = 0; sim.active = true;
+  requestRender();
+}
+function settleSync(iter){
+  for (var i = 0; i < iter; i++){
+    sim.alpha = Math.max(0.004, 1 - i / iter);
+    simStep();
+  }
+  sim.active = false;
+}
+function simStep(){
+  var A = sim.alpha, i, j, n, m, dx, dy, d2, d, fx, fy, a, b;
+  /* 短程斥力 */
+  for (i = 0; i < gA.length; i++){
+    n = gA[i];
+    for (j = i + 1; j < gA.length; j++){
+      m = gA[j];
+      if (n.orbit || m.orbit) continue; /* 轨道牵引中的节点不受斥力 */
+      dx = n.x - m.x; dy = n.y - m.y;
+      d2 = dx * dx + dy * dy;
+      if (d2 < 1){ dx = (i % 3 + 1) * 0.6; dy = (j % 3 + 1) * 0.6; d2 = dx * dx + dy * dy; }
+      if (d2 < 640000){
+        d = Math.sqrt(d2);
+        fx = dx / d * (52000 / d2 * A);
+        fy = dy / d * (52000 / d2 * A);
+        n.vx += fx; n.vy += fy;
+        m.vx -= fx; m.vy -= fy;
+      }
+    }
+  }
+  /* 语义引力：不画线也受力 */
+  for (i = 0; i < G_GRAV.length; i++){
+    var gp = G_GRAV[i];
+    a = gById[gp.a]; b = gById[gp.b];
+    if (!gVisible(a) || !gVisible(b) || a.orbit || b.orbit) continue;
+    dx = b.x - a.x; dy = b.y - a.y;
+    d = Math.sqrt(dx * dx + dy * dy) || 1;
+    fx = dx / d * ((gp.s - 0.62) * 10 * A);
+    fy = dy / d * ((gp.s - 0.62) * 10 * A);
+    a.vx += fx; a.vy += fy;
+    b.vx -= fx; b.vy -= fy;
+  }
+  /* 双链弹簧（跟随图层开关） */
+  if (gLy.bilat){
+    for (i = 0; i < GB.length; i++){
+      a = gById[GB[i][0]]; b = gById[GB[i][1]];
+      if (!gVisible(a) || !gVisible(b) || a.orbit || b.orbit) continue;
+      dx = b.x - a.x; dy = b.y - a.y;
+      d = Math.sqrt(dx * dx + dy * dy) || 1;
+      fx = dx / d * ((d - 175) * 0.02 * A);
+      fy = dy / d * ((d - 175) * 0.02 * A);
+      a.vx += fx; a.vy += fy;
+      b.vx -= fx; b.vy -= fy;
+    }
+  }
+  /* 归属弹簧（结构性，恒在） */
+  for (i = 0; i < G_OWN.length; i++){
+    a = gById[G_OWN[i].a]; b = gById[G_OWN[i].b];
+    if (!gVisible(a) || !gVisible(b)) continue;
+    var rest = a.type === 'page' ? 26 : 85;
+    var kk = a.type === 'page' ? 0.06 : 0.05;
+    dx = b.x - a.x; dy = b.y - a.y;
+    d = Math.sqrt(dx * dx + dy * dy) || 1;
+    fx = dx / d * ((d - rest) * kk * A);
+    fy = dy / d * ((d - rest) * kk * A);
+    a.vx += fx; a.vy += fy;
+    b.vx -= fx; b.vy -= fy;
+  }
+  /* 库锚点 + 阻尼积分 */
+  for (i = 0; i < gA.length; i++){
+    n = gA[i];
+    if (n.fixed){ n.vx = 0; n.vy = 0; continue; }
+    if (n.orbit){
+      /* 轨道牵引：指向问题节点轨道位的强弹簧，抑制锚点与向心力 */
+      var ob = n.orbit;
+      var ox = (gqNode ? gqNode.x : 0) + Math.cos(ob.a) * ob.r;
+      var oy = (gqNode ? gqNode.y : 0) + Math.sin(ob.a) * ob.r;
+      n.vx = (ox - n.x) * 0.16;
+      n.vy = (oy - n.y) * 0.16;
+      n.x += n.vx; n.y += n.vy;
+      continue;
+    }
+    var an = G_LIBS[n.lib];
+    n.vx += (an.ax - n.x) * 0.0045 * A;
+    n.vy += (an.ay - n.y) * 0.0045 * A;
+    n.vx *= 0.86; n.vy *= 0.86;
+    var sp = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+    if (sp > 26){ n.vx = n.vx / sp * 26; n.vy = n.vy / sp * 26; }
+    n.x += n.vx; n.y += n.vy;
+  }
+  sim.alpha *= 0.982;
+  sim.frame++;
+  if (sim.alpha < 0.004 || sim.frame >= 360) sim.active = false;
+}
+function fitView(margin){
+  var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  gA.forEach(function(n){
+    if (n.x < minX) minX = n.x;
+    if (n.x > maxX) maxX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.y > maxY) maxY = n.y;
+  });
+  var bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
+  var r = gStageRect();
+  var k = Math.min((r.width - margin * 2) / bw, (r.height - margin * 2) / bh);
+  k = clampK(Math.min(k, 1.35));
+  cam.k = k;
+  cam.x = r.width / 2 - (minX + maxX) / 2 * k;
+  cam.y = r.height / 2 - (minY + maxY) / 2 * k;
+  applyCam();
+  requestRender();
+}
+
+/* ---------- 渲染 ---------- */
+var needRender = true;
+function requestRender(){ needRender = true; }
+function render(){
+  var i, e, a, b, p;
+  renderBounds();
+  GN.forEach(function(n){
+    nodeEls[n.id].style.transform = 'translate(' + n.x + 'px,' + n.y + 'px)';
+  });
+  if (gqNode && nodeEls.qnode){
+    nodeEls.qnode.style.transform = 'translate(' + gqNode.x + 'px,' + gqNode.y + 'px)';
+  }
+  for (i = 0; i < GB.length; i++){
+    e = GB[i]; p = gBilatEls[i];
+    a = gById[e[0]]; b = gById[e[1]];
+    if (gLy.bilat && gVisible(a) && gVisible(b)){
+      p.style.display = '';
+      p.setAttribute('d', gEdgeD(a, b));
+    } else { p.style.display = 'none'; }
+  }
+  for (i = 0; i < G_SEM.length; i++){
+    e = G_SEM[i]; p = gSemEls[i];
+    a = gById[e.a]; b = gById[e.b];
+    if (gLy.sem && e.s >= gLy.th && gVisible(a) && gVisible(b)){
+      p.style.display = '';
+      p.setAttribute('d', gEdgeD(a, b));
+    } else { p.style.display = 'none'; }
+  }
+  for (i = 0; i < G_OWN.length; i++){
+    e = G_OWN[i]; p = gOwnEls[i];
+    a = gById[e.a]; b = gById[e.b];
+    if (gLy.own && gVisible(a) && gVisible(b)){
+      p.style.display = '';
+      p.setAttribute('d', gEdgeD(a, b));
+    } else { p.style.display = 'none'; }
+  }
+  for (i = 0; i < gRedges.length; i++){
+    var rr = gRedges[i];
+    var bb = gById[rr.to];
+    if (bb && gqNode) rr.el.setAttribute('d', gEdgeD(gqNode, bb));
+  }
+}
+
+/* ---------- 主循环 ---------- */
+var gRipples = [];
+var gCamTween = null;
+function gLoop(){
+  requestAnimationFrame(gLoop);
+  var busy = false;
+  updateBounds();
+  if (sim.active){ simStep(); busy = true; }
+  else if (fitOnSettle){ fitOnSettle = false; fitView(100); }
+  if (gCamTween){ gCamTween(); busy = true; }
+  var now = performance.now();
+  for (var i = gRipples.length - 1; i >= 0; i--){
+    var rp = gRipples[i];
+    var t = (now - rp.t0) / 1500;
+    if (t >= 1){ rp.el.remove(); gRipples.splice(i, 1); continue; }
+    var e = 1 - Math.pow(1 - t, 3);
+    rp.el.setAttribute('r', 30 + e * 300);
+    rp.el.setAttribute('opacity', (0.5 * (1 - t)).toFixed(3));
+    busy = true;
+  }
+  if (panning || dragging) busy = true;
+  if (busy || needRender){ render(); needRender = false; }
+}
+
+/* ---------- 交互：拖拽 / 平移 / 缩放 ---------- */
+var panning = false, dragging = null, dragMoved = 0;
+var panStart = null, downPos = null;
+gStage.addEventListener('pointerdown', function(e){
+  if (e.button === 2) return;
+  var nodeEl = e.target.closest ? e.target.closest('.g-node') : null;
+  downPos = { x: e.clientX, y: e.clientY };
+  dragMoved = 0;
+  if (nodeEl){
+    var id = nodeEl.dataset.id;
+    var n = id === 'qnode' ? gqNode : gById[id];
+    if (n){
+      dragging = { n: n, el: nodeEl, ox: n.x, oy: n.y, px: e.clientX, py: e.clientY, q: id === 'qnode' };
+      nodeEl.classList.add('dragging');
+      gStage.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
+  }
+  panning = true;
+  panStart = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y };
+  gStage.setPointerCapture(e.pointerId);
+  gStage.style.cursor = 'grabbing';
+});
+gStage.addEventListener('pointermove', function(e){
+  if (dragging){
+    dragMoved += Math.abs(e.movementX || 0) + Math.abs(e.movementY || 0);
+    var n = dragging.n;
+    n.x = dragging.ox + (e.clientX - dragging.px) / cam.k;
+    n.y = dragging.oy + (e.clientY - dragging.py) / cam.k;
+    requestRender();
+    return;
+  }
+  if (panning){
+    cam.x = panStart.cx + (e.clientX - panStart.x);
+    cam.y = panStart.cy + (e.clientY - panStart.y);
+    applyCam();
+    requestRender();
+  }
+});
+gStage.addEventListener('pointerup', function(e){
+  if (dragging){
+    dragging.el.classList.remove('dragging');
+    if (dragMoved < 5){
+      if (!dragging.q) openGIns(dragging.el.dataset.id);
+    } else if (!G_RM && !dragging.q){
+      startSim(0.25); /* 拖完轻微回弹 */
+    }
+    dragging = null;
+  } else if (panning){
+    panning = false;
+    gStage.style.cursor = '';
+    if (downPos){
+      var moved = Math.abs(e.clientX - downPos.x) + Math.abs(e.clientY - downPos.y);
+      if (moved < 4){ closeGIns(); }
+    }
+  }
+});
+gStage.addEventListener('pointercancel', function(){
+  if (dragging){ dragging.el.classList.remove('dragging'); dragging = null; }
+  panning = false;
+  gStage.style.cursor = '';
+});
+gStage.addEventListener('wheel', function(e){
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, cam.k * Math.exp(-e.deltaY * 0.0016));
+}, { passive: false });
+gStage.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+
+$('#gzIn').addEventListener('click', function(){
+  var r = gStageRect();
+  zoomAt(r.left + r.width / 2, r.top + r.height / 2, cam.k * 1.25);
+});
+$('#gzOut').addEventListener('click', function(){
+  var r = gStageRect();
+  zoomAt(r.left + r.width / 2, r.top + r.height / 2, cam.k / 1.25);
+});
+$('#gzFit').addEventListener('click', function(){
+  if (!G_RM){
+    gA.forEach(function(n){ n.vx = (Math.random() - 0.5) * 14; n.vy = (Math.random() - 0.5) * 14; });
+    fitOnSettle = true;
+    startSim(1);
+  } else {
+    fitView(100);
+  }
+  toast('已重置取景与力导向布局');
+});
+
+/* ---------- Tooltip ---------- */
+var gTip = $('#gTip'), gTipPath = gTip.querySelector('.t-path'), gTipMeta = gTip.querySelector('.t-meta');
+var gTipPin = null;
+gStage.addEventListener('pointerover', function(e){
+  var el = e.target.closest ? e.target.closest('.g-node') : null;
+  if (!el || el === gTipPin) return;
+  gTipPin = el;
+  var id = el.dataset.id;
+  if (id === 'qnode'){
+    gTipPath.textContent = '检索 · 问题节点';
+    gTipMeta.textContent = '语义检索的辐射中心';
+  } else {
+    var n = gById[id];
+    gTipPath.textContent = gNodePath(n);
+    var stTxt = '';
+    if (n.pstate === 'partial') stTxt = ' · 有缓存 · 缺 WEMM';
+    else if (n.pstate === 'failed') stTxt = ' · OCR 失败';
+    else if (n.pstate === 'none') stTxt = (n.type === 'pdf' && n.mineru === 'queued') ? ' · OCR 排队中' : ' · 未识别 · 待 OCR';
+    gTipMeta.textContent = G_LIBS[n.lib].name + ' · ' + G_TYPE_NAME[n.type] + stTxt + (n.upd ? ' · 更新于 ' + n.upd : '');
+  }
+  gTip.classList.add('show');
+});
+gStage.addEventListener('pointermove', function(e){
+  if (!gTipPin) return;
+  gTip.style.left = e.clientX + 'px';
+  gTip.style.top = e.clientY + 'px';
+});
+gStage.addEventListener('pointerout', function(e){
+  var el = e.target.closest ? e.target.closest('.g-node') : null;
+  if (el && el === gTipPin && (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('.g-node'))){
+    gTipPin = null;
+    gTip.classList.remove('show');
+  }
+});
+function gNodePath(n){
+  if (n.type === 'page'){
+    var cache = gById[n.owner];
+    var pdf = gById[cache.owner];
+    return pdf.path + ' · 第 ' + n.pg + ' 页';
+  }
+  return n.path;
+}
+
+/* ---------- 检索 ---------- */
+var gqNode = null, gRedges = [], gSearch = null, gTimers = [], G_SEQ = 0;
+var G_DEFAULT_Q = 'WEMM 页级视觉导航是怎么实现的？';
+var G_PRESETS = {
+  'wemm 页级视觉导航是怎么实现的？': { hits: [
+    ['wemm', 0.87, '页级视觉导航把每一页渲染成图片后编码为[[页面向量]]，写入独立 collection，检索时先页后块。'],
+    ['rerank', 0.74, '检索与重排分层里，页级召回作为第一阶段粗排，[[重排器]]只对入围页面内的块精排。'],
+    ['mineru', 0.61, '扫描件经 MinerU 云端产出完整 MD 后，[[按页对齐]]生成 WEMM 索引所需的页文本。'],
+    ['c3', 0.58, '扫描课件的 MD 缓存已按页对齐，[[页库 5 页]]可直接以图搜页。'],
+    ['diary', 0.55, '今天把 WEMM 的[[页级导航]]原型跑通了，翻 PDF 像翻书一样。'],
+    ['pvect', 0.52, '页向量查询[[零写副作用]]，先页后块两段式返回。'],
+    ['unif', 0.50, '页库失败也落[[持久化终态]]，每轮真重试不丢条目。'],
+    ['wemmmeet', 0.47, '评审结论：页库独立 meta 与版本号，[[失败真重试]]，改档自动重渲染。'],
+    ['gsurvey', 0.44, '图谱检索 Survey 里[[页级视觉索引]]一节与 WEMM 思路互相印证。'],
+    ['p8', 0.41, '视觉 Transformer 综述的[[图表页]]正是页级检索的目标场景。'],
+    ['tasklog', 0.38, '问题 37/38 落地：WEMM 页级索引与检索[[全链路打通]]。'],
+    ['weekly', 0.35, '周会演示了[[视觉翻页检索]]，确认 DPI 与显存卸载策略。'],
+    ['embed', 0.32, '页向量模型与文本嵌入[[共享编码器骨干]]，显存可复用。'],
+    ['bgem3', 0.30, 'BGE-M3 的[[多粒度输出]]启发了页级表示的设计。'],
+    ['perf', 0.28, '页库渲染的[[吞吐实测]]记录在性能评审里。']
+  ]},
+  'mineru 扫描件是怎么处理的？': { hits: [
+    ['mineru', 0.89, '扫描段先 classify_extraction 分流攒批，线程池只并行[[网络 I/O]]，结果回主线程收口。'],
+    ['ocr', 0.76, '任一页无文字层即整本按[[扫描件路由]]，云端开则送 MinerU vlm 认字。'],
+    ['p9', 0.68, 'MinerU 使用手册原文：批量提交与[[断点续传]]的官方建议。'],
+    ['c9', 0.64, '使用手册的 MD 缓存已就绪，[[限速参数]]可全文检索。'],
+    ['tasklog', 0.49, '问题 35/36：云端并行批量与[[滑动窗口限速]]的落地记录。'],
+    ['perf', 0.43, '限速 45/min 下批量提交的吞吐实测与[[断点簿记]]表现。'],
+    ['survey', 0.40, '综述里把 OCR 前置称为[[文档解析层]]，是 RAG 质量的地板。'],
+    ['p3', 0.37, '整本扫描件送云端认字，产出[[一份完整 MD]]而不是半份拼接。'],
+    ['conf', 0.34, 'pdf_scan_backend 等开关全部经[[配置热加载]]生效。'],
+    ['weekly', 0.31, '周会确认扫描件[[认字质量]]达标，遗留项只剩并发数默认值。'],
+    ['pdfp', 0.29, '扫描件在提取层的判定：[[文字层缺失]]就走云端认字通道。'],
+    ['p10', 0.27, '季度汇报扫描版走[[同一条认字链路]]，页库已建。'],
+    ['c10', 0.25, '季度汇报的 MD 缓存与[[页向量]]同步产出。'],
+    ['diag', 0.23, '失败溯源面板里可以盯[[扫描件重试]]的进度。'],
+    ['gui', 0.21, '文件生效明细逐文件展示[[OCR 状态]]与失败原因。']
+  ]}
+};
+function fmtSnip(s){
+  return esc(s).replace(/\[\[([^\]]+)\]\]/g, function(_, m){ return '<mark>' + m + '</mark>'; });
+}
+function resolveGQuery(q){
+  var key = q.trim().toLowerCase();
+  var hit = G_PRESETS[key];
+  if (hit) return hit.hits.slice();
+  var pool = GN.filter(function(n){ return n.type !== 'page'; });
+  var scored = pool.map(function(n){
+    var s = 0;
+    var t = n.t.toLowerCase();
+    var sp = (n.snip || '').toLowerCase();
+    if (t.indexOf(key) >= 0) s += 3;
+    if (sp.indexOf(key) >= 0) s += 2;
+    for (var i = 0; i + 1 < key.length; i++){
+      var bi = key.slice(i, i + 2);
+      if (bi.charCodeAt(0) < 128) continue;
+      if ((t + sp).indexOf(bi) >= 0) s += 1;
+    }
+    return { id: n.id, s: s };
+  }).filter(function(x){ return x.s > 0; })
+    .sort(function(a, b){ return b.s - a.s; });
+  if (scored.length >= 3){
+    return scored.slice(0, 12).map(function(x, i){
+      return [x.id, Math.max(0.32, 0.86 - i * 0.05), ''];
+    });
+  }
+  var h = 0, i;
+  for (i = 0; i < key.length; i++){ h = (h * 31 + key.charCodeAt(i)) >>> 0; }
+  var c = h, picks = [], pl = pool.slice();
+  for (i = 0; i < 6 && pl.length; i++){
+    c = (c * 1103515245 + 12345) >>> 0;
+    picks.push(pl[c % pl.length].id);
+    pl.splice(c % pl.length, 1);
+  }
+  return picks.map(function(id, i){
+    return [id, Math.max(0.34, 0.8 - i * 0.09), ''];
+  });
+}
+function clearGLit(){
+  GN.forEach(function(n){ nodeEls[n.id].classList.remove('lit'); });
+  applyGDim();
+}
+function applyGDim(){
+  var qset = gSearch ? gSearch.hits : null;
+  GN.forEach(function(n){
+    var dim = false;
+    if (qset && !qset[n.id] && n.id !== gInsOpenId) dim = true;
+    nodeEls[n.id].classList.toggle('dim', dim);
+  });
+  var keep = {};
+  if (qset) Object.keys(qset).forEach(function(k){ keep[k] = 1; });
+  if (gqNode) keep.qnode = 1;
+  if (gInsOpenId) keep[gInsOpenId] = 1;
+  function edgeDim(a, b){
+    if (!qset) return false;
+    return !(keep[a] && keep[b]);
+  }
+  var i, e;
+  for (i = 0; i < GB.length; i++){
+    e = GB[i];
+    gBilatEls[i].classList.toggle('dim', edgeDim(e[0], e[1]));
+  }
+  for (i = 0; i < G_SEM.length; i++){
+    e = G_SEM[i];
+    gSemEls[i].classList.toggle('dim', edgeDim(e.a, e.b));
+  }
+  for (i = 0; i < G_OWN.length; i++){
+    e = G_OWN[i];
+    gOwnEls[i].classList.toggle('dim', edgeDim(e.a, e.b));
+  }
+}
+function clearGSearch(){
+  gTimers.forEach(clearTimeout); gTimers = [];
+  G_SEQ++;
+  if (gqNode){ nodeEls.qnode.remove(); nodeEls.qnode = null; gqNode = null; }
+  gRedges.forEach(function(r){ r.el.remove(); });
+  gRedges = [];
+  $('#gOrbitG').innerHTML = '';
+  $('#gRippleG').innerHTML = '';
+  gRipples = [];
+  gSearch = null;
+  GN.forEach(function(n){
+    n.orbit = null; /* 解除轨道牵引，弹回力导原位 */
+    nodeEls[n.id].classList.remove('lit');
+  });
+  clearGLit();
+  if (!G_RM) startSim(0.5);
+  requestRender();
+}
+function runSearch(q){
+  gTimers.forEach(clearTimeout); gTimers = [];
+  G_SEQ++;
+  GN.forEach(function(n){ n.orbit = null; }); /* 清除上一轮轨道牵引 */
+  if (gqNode){ nodeEls.qnode.remove(); nodeEls.qnode = null; gqNode = null; }
+  gRedges.forEach(function(r){ r.el.remove(); });
+  gRedges = [];
+  $('#gOrbitG').innerHTML = '';
+  $('#gRippleG').innerHTML = '';
+  gRipples = [];
+  gSearch = null;
+  clearGLit();
+  var hits = resolveGQuery(q).filter(function(hh){ return gVisible(gById[hh[0]]); }).slice(0, topKG);
+  if (!hits.length){ toast('没有匹配到相关节点，换个问法试试'); return; }
+  var r = gStageRect();
+  var c = s2w(r.left + r.width / 2 - 170, r.top + r.height * 0.36);
+  gqNode = { id: 'qnode', x: c.x, y: c.y, fixed: true };
+  var el = document.createElement('div');
+  el.className = 'g-node qnode';
+  el.dataset.id = 'qnode';
+  el.innerHTML = '<div class="g-card"><span class="g-mark"></span><span class="g-label">' + esc(q.trim()) + '</span><span class="q-x" role="button" aria-label="清除检索" title="回到全库全景">×</span></div>';
+  $('#gNodes').appendChild(el);
+  nodeEls.qnode = el;
+  var qx = el.querySelector('.q-x');
+  if (qx){ qx.addEventListener('click', function(ev){ ev.stopPropagation(); if (dragMoved > 5) return; clearGSearch(); }); }
+  /* 轨道虚线环：置信度越高环越靠内（Top-1 半径 90px，每档 +60px） */
+  var ringN = Math.min(3, hits.length);
+  for (var ri = 0; ri < ringN; ri++){
+    var oc = document.createElementNS(SVGNS, 'circle');
+    oc.setAttribute('class', 'g-orbit-ring');
+    oc.setAttribute('cx', (gqNode.x + OFF).toFixed(1));
+    oc.setAttribute('cy', (gqNode.y + OFF).toFixed(1));
+    oc.setAttribute('r', 90 + ri * 60);
+    oc.setAttribute('opacity', (0.20 - ri * 0.05).toFixed(3));
+    $('#gOrbitG').appendChild(oc);
+  }
+  /* 轨道位：按命中名次分层，同环节点按角度均匀分布 */
+  var orbitDefs = [];
+  (function(){
+    var rings = {};
+    hits.forEach(function(hh, i){
+      var rr = 90 + i * 60;
+      (rings[rr] = rings[rr] || []).push(i);
+    });
+    var base = 0;
+    Object.keys(rings).forEach(function(rk){
+      var arr = rings[rk];
+      arr.forEach(function(idx, j){
+        orbitDefs[idx] = { r: +rk, a: -Math.PI / 2 + base * 0.9 + (j * 2 * Math.PI) / arr.length };
+      });
+      base++;
+    });
+  })();
+  requestRender();
+  var seq = G_SEQ;
+  gSearch = { hits: {}, snips: {} };
+  hits.forEach(function(hh){
+    gSearch.hits[hh[0]] = 1;
+    gSearch.snips[hh[0]] = hh[2] || '';
+  });
+  function applyResults(){
+    if (seq !== G_SEQ) return;
+    hits.forEach(function(hh, i){
+      var delay = G_RM ? 0 : i * 90;
+      gTimers.push(setTimeout(function(){
+        if (seq !== G_SEQ) return;
+        var n = gById[hh[0]];
+        if (!n) return;
+        var nel = nodeEls[hh[0]];
+        nel.classList.add('lit');
+        var conf = nel.querySelector('.g-conf');
+        if (!conf){
+          conf = document.createElement('div');
+          conf.className = 'g-conf';
+          nel.appendChild(conf);
+        }
+        conf.textContent = hh[1].toFixed(2);
+        /* 虚线辐射边，线宽 = 置信度 */
+        var p = document.createElementNS(SVGNS, 'path');
+        p.setAttribute('class', 'gr');
+        p.setAttribute('stroke-width', (1.2 + hh[1] * 2.4).toFixed(2));
+        p.setAttribute('stroke-dasharray', '6 7');
+        $('#gRedgeG').appendChild(p);
+        gRedges.push({ to: hh[0], el: p });
+        gTimers.push(setTimeout(function(){ p.classList.add('on'); }, 30));
+        /* 依次拉入轨道：每 90ms 一个，弹簧移动到自己的轨道位 */
+        var od = orbitDefs[i];
+        if (od){
+          n.orbit = od;
+          if (G_RM){
+            n.x = (gqNode ? gqNode.x : 0) + Math.cos(od.a) * od.r;
+            n.y = (gqNode ? gqNode.y : 0) + Math.sin(od.a) * od.r;
+          } else if (!sim.active){
+            startSim(0.6);
+          }
+        }
+      }, delay));
+    });
+    applyGDim();
+  }
+  if (G_RM){
+    applyResults();
+  } else {
+    [0, 380, 760].forEach(function(d, i){
+      gTimers.push(setTimeout(function(){
+        if (seq !== G_SEQ || !gqNode) return;
+        var cir = document.createElementNS(SVGNS, 'circle');
+        cir.setAttribute('class', 'gr-c');
+        cir.setAttribute('cx', gqNode.x + OFF);
+        cir.setAttribute('cy', gqNode.y + OFF);
+        cir.setAttribute('r', 30);
+        cir.setAttribute('stroke-width', i === 2 ? 1.2 : 1.8);
+        cir.setAttribute('opacity', '0.5');
+        $('#gRippleG').appendChild(cir);
+        gRipples.push({ el: cir, t0: performance.now() });
+      }, d));
+    });
+    gTimers.push(setTimeout(applyResults, 950));
+  }
+  toast('已命中 ' + hits.length + ' 个相关节点');
+}
+var topKG = 5;
+$('#gGo').addEventListener('click', function(){
+  var q = $('#gq').value.trim();
+  if (!q){ toast('先输入一个问题'); return; }
+  runSearch(q);
+});
+$('#gq').addEventListener('keydown', function(e){
+  if (e.key === 'Enter'){
+    var q = $('#gq').value.trim();
+    if (q) runSearch(q);
+  }
+});
+$('#gTopk').addEventListener('change', function(){
+  /* 改 Top-K 重放当前问题 */
+  topKG = parseInt(this.value, 10) || 5;
+  if ($('#gq').value.trim()) runSearch($('#gq').value);
+});
+[G_DEFAULT_Q, 'MinerU 扫描件是怎么处理的？'].forEach(function(h){
+  var b = document.createElement('button');
+  b.className = 'g-chip';
+  b.type = 'button';
+  b.textContent = h;
+  b.addEventListener('click', function(){
+    $('#gq').value = h;
+    runSearch(h);
+  });
+  $('#gHints').appendChild(b);
+});
+
+/* ---------- 图层开关 ---------- */
+function updateSemCount(){
+  var c = 0, i;
+  for (i = 0; i < G_SEM.length; i++){
+    var e = G_SEM[i];
+    if (gLy.sem && e.s >= gLy.th && gVisible(gById[e.a]) && gVisible(gById[e.b])) c++;
+  }
+  $('#semCount').textContent = '阈值 ' + gLy.th.toFixed(2) + ' · 当前 ' + c + ' 条';
+}
+function updateGStatus(){
+  var ne = 0, i, e;
+  for (i = 0; i < GB.length; i++){
+    e = GB[i];
+    if (gLy.bilat && gVisible(gById[e[0]]) && gVisible(gById[e[1]])) ne++;
+  }
+  for (i = 0; i < G_SEM.length; i++){
+    e = G_SEM[i];
+    if (gLy.sem && e.s >= gLy.th && gVisible(gById[e.a]) && gVisible(gById[e.b])) ne++;
+  }
+  for (i = 0; i < G_OWN.length; i++){
+    e = G_OWN[i];
+    if (gLy.own && gVisible(gById[e.a]) && gVisible(gById[e.b])) ne++;
+  }
+  $('#gStatus').innerHTML = '<b>' + gA.length + '</b> 节点 · <b>' + ne + '</b> 边 · <b>8,306</b> 块 · CUDA RTX 4070 · BGE-M3';
+}
+function gLayerChanged(){
+  gRefreshAct();
+  GN.forEach(function(n){
+    nodeEls[n.id].style.display = gVisible(n) ? '' : 'none';
+  });
+  if (!G_RM) startSim(0.45); else { settleSync(120); fitView(100); }
+  updateSemCount();
+  updateGStatus();
+  updateLibCounts();
+  requestRender();
+}
+function bindLy(id, key){
+  $(id).addEventListener('change', function(){
+    gLy[key] = this.checked;
+    gLayerChanged();
+  });
+}
+bindLy('#lyBilat', 'bilat');
+bindLy('#lySem', 'sem');
+bindLy('#lyOwn', 'own');
+bindLy('#lyPage', 'page');
+bindLy('#lyCache', 'cache');
+bindLy('#lyPdf', 'pdf');
+/* 着色三模式：按库 / 按生效状态 / 单色 */
+var gColorMode = 'lib';
+function applyColorMode(){
+  document.body.classList.toggle('g-mono', gColorMode === 'mono');
+  document.body.classList.toggle('g-stcolor', gColorMode === 'state');
+  $('#glLibs').style.display = gColorMode === 'lib' ? '' : 'none';
+  $('#glState').style.display = gColorMode === 'state' ? '' : 'none';
+  $('#glMono').style.display = gColorMode === 'mono' ? '' : 'none';
+  $$('#gColorSeg button').forEach(function(b){
+    b.classList.toggle('on', b.getAttribute('data-cm') === gColorMode);
+  });
+}
+$('#gColorSeg').addEventListener('click', function(e){
+  var b = e.target.closest('button[data-cm]');
+  if (!b) return;
+  gColorMode = b.getAttribute('data-cm');
+  applyColorMode();
+});
+/* 库边界开关 */
+$('#lyBounds').addEventListener('change', function(){
+  gLy.bounds = this.checked;
+  requestRender();
+});
+$('#semTh').addEventListener('input', function(){
+  gLy.th = parseFloat(this.value);
+  $('#semThVal').textContent = gLy.th.toFixed(2);
+  updateSemCount();
+  updateGStatus();
+  requestRender();
+});
+$('#gInfoBtn').addEventListener('click', function(e){
+  e.stopPropagation();
+  var open = $('#gPhysics').classList.toggle('open');
+  this.classList.toggle('on', open);
+  this.setAttribute('aria-expanded', open ? 'true' : 'false');
+});
+document.addEventListener('click', function(e){
+  var ph = $('#gPhysics');
+  if (ph.classList.contains('open') && !e.target.closest('#gPhysics') && !e.target.closest('#gInfoBtn')){
+    ph.classList.remove('open');
+    var ib = $('#gInfoBtn');
+    ib.classList.remove('on');
+    ib.setAttribute('aria-expanded', 'false');
+  }
+});
+
+/* ---------- Inspector ---------- */
+var gIns = $('#gIns');
+var gInsOpenId = null;
+function giItem(id, label, sim){
+  var n = gById[id];
+  if (!n) return '';
+  return '<button class="gi-item" data-focus="' + id + '">'
+    + '<span class="g-mark" data-lib="' + n.lib + '"></span>'
+    + '<span class="nm">' + esc(label || n.t) + '</span>'
+    + (sim != null ? '<span class="gi-sim">' + sim.toFixed(2) + '</span>' : '')
+    + '<span class="arr">定位 →</span></button>';
+}
+function giLinks(arr, emptyLabel){
+  if (!arr.length) return '<div class="gi-none">' + (emptyLabel || '暂无') + '</div>';
+  return '<div class="gi-list">' + arr.map(function(id){ return giItem(id); }).join('') + '</div>';
+}
+function giSemTop(id, k){
+  var self = gById[id];
+  var arr = [];
+  GN.forEach(function(m){
+    if (m.id === id || m.type === 'page' || !gVisible(m)) return;
+    arr.push({ id: m.id, t: m.t, s: gCos(self, m) });
+  });
+  arr.sort(function(a, b){ return b.s - a.s; });
+  return '<div class="gi-list">' + arr.slice(0, k).map(function(x){
+    return giItem(x.id, x.t, x.s);
+  }).join('') + '</div>';
+}
+function gPageCount(cacheId){
+  var c = 0;
+  GN.forEach(function(n){ if (n.type === 'page' && n.owner === cacheId) c++; });
+  return c;
+}
+function gCacheOf(pdfId){
+  var found = null;
+  GN.forEach(function(n){ if (n.type === 'cache' && n.owner === pdfId) found = n.id; });
+  return found;
+}
+function openGIns(id){
+  var n = gById[id];
+  if (!n) return;
+  gInsOpenId = id;
+  GN.forEach(function(x){ nodeEls[x.id].classList.remove('sel'); });
+  nodeEls[id].classList.add('sel');
+  applyGDim();
+  $('#giMark').setAttribute('data-lib', n.lib);
+  $('#giLib').textContent = G_LIBS[n.lib].name;
+  $('#giBadge').innerHTML = '<span class="badge" style="background:var(--s3);color:var(--sec)">' + G_TYPE_NAME[n.type] + '</span>';
+  $('#giTitle').textContent = n.t;
+  $('#giPath').textContent = gNodePath(n);
+  var meta = [];
+  meta.push('更新 ' + (n.upd || gById[n.owner].upd));
+  if (n.type === 'md'){
+    var deg = G_OUT[id].length + G_INN[id].length;
+    meta.push(deg > 0 ? deg + ' 条双链' : '无显式双链');
+  }
+  if (n.type === 'cache') meta.push(n.blocks + ' 块');
+  $('#giMeta').innerHTML = meta.map(function(m){ return '<span>' + esc(m) + '</span>'; }).join('');
+  var h = '';
+  if (gSearch && gSearch.snips[id]){
+    h += '<div class="gi-sec"><h5>命中片段</h5><div class="gi-snip">' + fmtSnip(gSearch.snips[id]) + '</div></div>';
+  }
+  if (n.type === 'md'){
+    h += '<div class="gi-sec"><h5>管线</h5><div class="gi-pipe"><span class="gi-chip ok">extract v4 · local</span></div></div>';
+    h += '<div class="gi-sec"><h5>摘要</h5><div class="gi-snip">' + fmtSnip(n.snip || '') + '</div></div>';
+    if (G_OUT[id].length || G_INN[id].length){
+      h += '<div class="gi-sec"><h5>出链</h5>' + giLinks(G_OUT[id]) + '</div>';
+      h += '<div class="gi-sec"><h5>入链</h5>' + giLinks(G_INN[id]) + '</div>';
+    } else {
+      h += '<div class="gi-sec"><h5>语义近邻</h5><div class="gi-none">无显式链接。以下 Top3 来自语义向量：</div>' + giSemTop(id, 3) + '</div>';
+    }
+  } else if (n.type === 'pdf'){
+    var pipe = '<div class="gi-sec"><h5>管线</h5><div class="gi-pipe">';
+    if (n.mineru === 'done'){
+      pipe += '<span class="gi-chip ok">xsrc mineru:vlm · ' + n.pages + ' 页</span>';
+    } else if (n.mineru === 'queued'){
+      pipe += '<span class="gi-chip wait">MinerU 排队中 · 下轮自动重试</span>';
+    } else if (n.mineru === 'failed'){
+      pipe += '<div class="gi-row"><span class="gi-chip bad">失败 · ' + esc(n.failReason || '提取失败') + '</span>'
+        + '<button class="gi-link" data-retry="' + n.id + '" type="button">重试</button></div>';
+    } else {
+      pipe += '<span class="gi-chip off">未识别 · 待 OCR</span>';
+    }
+    if (n.wemm === 'done'){
+      pipe += '<span class="gi-chip ok">wemm bge-visualized:1024:144 · ' + n.pages + ' 页</span>';
+    } else if (n.mineru === 'done'){
+      pipe += '<div class="gi-row"><span class="gi-chip off">页库未建立</span>'
+        + '<button class="gi-link" data-godiag="1" type="button">前往诊断 →</button></div>';
+    }
+    pipe += '</div></div>';
+    h += pipe;
+    var cid = gCacheOf(id);
+    h += '<div class="gi-sec"><h5>关联缓存</h5>'
+      + (cid ? '<div class="gi-list">' + giItem(cid) + '</div>' : '<div class="gi-none">尚无缓存节点，等待识别完成。</div>')
+      + '</div>';
+  } else if (n.type === 'cache'){
+    h += '<div class="gi-sec"><h5>管线</h5><div class="gi-pipe"><span class="gi-chip ok">extract v4 · mineru:vlm · ' + n.blocks + ' 块</span></div></div>';
+    h += '<div class="gi-sec"><h5>来源 PDF</h5><div class="gi-list">' + giItem(n.owner) + '</div></div>';
+    var pc = gPageCount(id);
+    h += '<div class="gi-sec"><h5>WEMM 页库</h5>'
+      + (pc > 0
+        ? '<button class="gi-item" data-pages="' + id + '"><span class="g-mark" data-lib="' + n.lib + '"></span><span class="nm">' + pc + ' 页 · 定位页节点群</span><span class="arr">跳转 →</span></button>'
+        : '<div class="gi-none">该文档未建页库。</div>')
+      + '</div>';
+  } else {
+    var cache = gById[n.owner];
+    var pdf = gById[cache.owner];
+    h += '<div class="gi-sec"><h5>管线</h5><div class="gi-pipe"><span class="gi-chip ok">p.' + n.pg + ' · 1024 维 · DPI 144</span></div></div>';
+    h += '<div class="gi-sec"><h5>所属文档</h5>'
+      + '<div class="gi-kv"><span class="k">MD 缓存</span><span class="v">' + esc(cache.t) + '</span></div>'
+      + '<div class="gi-kv"><span class="k">PDF 原件</span><span class="v">' + esc(pdf.t) + '</span></div>'
+      + '<div class="gi-list">' + giItem(cache.id, '定位所属缓存') + '</div>'
+      + '</div>';
+  }
+  $('#giBody').innerHTML = h;
+  gIns.classList.add('open');
+}
+function closeGIns(){
+  gIns.classList.remove('open');
+  gInsOpenId = null;
+  GN.forEach(function(x){ nodeEls[x.id].classList.remove('sel'); });
+  applyGDim();
+}
+$('#giClose').addEventListener('click', closeGIns);
+$('#giOpen').addEventListener('click', function(){
+  toast('已在 Obsidian 中打开（原型模拟）');
+});
+$('#giBody').addEventListener('click', function(e){
+  var t = e.target.closest('[data-focus],[data-pages],[data-retry],[data-godiag]');
+  if (!t) return;
+  if (t.hasAttribute('data-retry')){
+    toast('已重新排队（原型模拟）');
+    return;
+  }
+  if (t.hasAttribute('data-godiag')){
+    closeGIns();
+    go('diag');
+    return;
+  }
+  if (t.hasAttribute('data-pages')){
+    focusPages(t.getAttribute('data-pages'));
+    return;
+  }
+  var id = t.getAttribute('data-focus');
+  var n = gById[id];
+  if (n && !gVisible(n)){
+    /* 目标被图层隐藏：先替用户重新开启对应图层 */
+    var key = n.type === 'page' ? 'page' : (n.type === 'cache' ? 'cache' : 'pdf');
+    gLy[key] = true;
+    var cb = $('#ly' + key.charAt(0).toUpperCase() + key.slice(1));
+    if (cb) cb.checked = true;
+    gLayerChanged();
+    toast('已重新开启' + G_TYPE_NAME[n.type] + '图层');
+  }
+  focusNode(id);
+  openGIns(id);
+});
+
+/* ---------- 定位居中 + 闪烁 ---------- */
+function gTweenTo(wx, wy, k){
+  var r = gStageRect();
+  var ox = gIns.classList.contains('open') ? 190 : 0;
+  var tx = (r.width - ox * 2) / 2 - wx * k;
+  var ty = r.height * 0.5 - wy * k;
+  if (G_RM){
+    cam.x = tx; cam.y = ty; cam.k = clampK(k);
+    applyCam();
+    requestRender();
+    return;
+  }
+  var from = { x: cam.x, y: cam.y, k: cam.k };
+  var t0 = performance.now();
+  gCamTween = function(){
+    var t = Math.min(1, (performance.now() - t0) / 550);
+    var e = 1 - Math.pow(1 - t, 3);
+    cam.x = from.x + (tx - from.x) * e;
+    cam.y = from.y + (ty - from.y) * e;
+    cam.k = from.k + (clampK(k) - from.k) * e;
+    applyCam();
+    requestRender();
+    if (t >= 1) gCamTween = null;
+  };
+}
+function gFlash(id){
+  var el = nodeEls[id];
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+  setTimeout(function(){ el.classList.remove('flash'); }, G_RM ? 200 : 1150);
+}
+function focusNode(id){
+  var n = gById[id];
+  if (!n) return;
+  gTweenTo(n.x, n.y, Math.max(cam.k, 0.9));
+  gFlash(id);
+}
+function focusPages(cacheId){
+  var pages = GN.filter(function(n){ return n.type === 'page' && n.owner === cacheId; });
+  if (!pages.length){ toast('该文档未建页库', true); return; }
+  if (!gLy.page){
+    gLy.page = true;
+    $('#lyPage').checked = true;
+    gLayerChanged();
+    toast('已开启页节点图层');
+  }
+  var cx = 0, cy = 0;
+  pages.forEach(function(p){ cx += p.x; cy += p.y; });
+  gTweenTo(cx / pages.length, cy / pages.length, Math.max(cam.k, 1.0));
+  pages.forEach(function(p){ gFlash(p.id); });
+}
+
+/* ---------- 状态与启动 ---------- */
+function gInit(){
+  gSeed();
+  gRefreshAct();
+  GN.forEach(function(n){ nodeEls[n.id].style.display = ''; });
+  if (G_RM){
+    settleSync(320);
+    fitView(100);
+    render();
+  } else {
+    /* 先静默预稳定并适配视口，再以低能量继续微调 */
+    settleSync(180);
+    fitView(100);
+    startSim(0.3);
+  }
+  updateSemCount();
+  updateGStatus();
+  updateLibCounts();
+  gLoop();
+  setTimeout(function(){ runSearch(G_DEFAULT_Q); }, G_RM ? 150 : 900);
+}
+gInit();
+})();
+</script>
+</body>
+</html>

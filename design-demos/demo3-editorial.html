@@ -1,0 +1,1343 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>观澜 · 语义检索（交互原型）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500&family=IBM+Plex+Mono:wght@400;500&family=Cormorant+Garamond:ital,wght@1,500&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   观澜 · Editorial Luxury 暖纸编辑级
+   色板锁定：纸底/卡面/墨字/次要/hairline + 单强调色灰苔绿
+   圆角规则：控件 10px；嵌套容器外 18px 内 13px；弹窗外 20px 内 15px
+   动效：只动 transform/opacity；cubic-bezier(0.32,0.72,0,1)
+   z-index 刻度：topbar 40 / badge 60 / reader 80 / scrim 70 / modal 100 / toast 120 / grain 200
+   ============================================================ */
+:root{
+  --paper:#FBFAF7;
+  --card:#FFFFFF;
+  --ink:#1F2328;
+  --sub:#63666B;
+  --line:#E7E4DD;
+  --line-strong:#D9D5CB;
+  --shell:#F3F0E9;
+  --accent:#4A6B57;
+  --accent-deep:#3D5A49;
+  --accent-text:#4A6B57;
+  --accent-tint:rgba(74,107,87,.10);
+  --mark:rgba(74,107,87,.14);
+  --c-high:#4A6B57;
+  --c-mid:#3A5A78;
+  --c-low:#A63D2F;
+  --err:#A63D2F;
+  --err-tint:rgba(166,61,47,.08);
+  --warn:#9A6A1F;
+  --warn-tint:rgba(154,106,31,.10);
+  --shadow-modal:0 24px 64px -16px rgba(31,35,40,.22), 0 4px 16px -4px rgba(31,35,40,.10);
+  --shadow-pop:0 8px 28px -8px rgba(31,35,40,.16);
+  --ease:cubic-bezier(.32,.72,0,1);
+  --serif:'Noto Serif SC','Songti SC',SimSun,serif;
+  --sans:'Noto Sans SC','Microsoft YaHei',sans-serif;
+  --mono:'IBM Plex Mono',Consolas,'Courier New',monospace;
+}
+[data-theme="dark"]{
+  --paper:#171B20;
+  --card:#1F242A;
+  --ink:#E8E6E0;
+  --sub:#A4A8AC;
+  --line:#2C333A;
+  --line-strong:#3A424A;
+  --shell:#14181D;
+  --accent:#4A6B57;
+  --accent-deep:#547D63;
+  --accent-text:#8FBCA1;
+  --accent-tint:rgba(143,188,161,.12);
+  --mark:rgba(143,188,161,.22);
+  --c-high:#8FBCA1;
+  --c-mid:#8FB3D0;
+  --c-low:#D08A7E;
+  --err:#C96B5C;
+  --err-tint:rgba(201,107,92,.12);
+  --warn:#C79A55;
+  --warn-tint:rgba(199,154,85,.12);
+  --shadow-modal:0 24px 64px -16px rgba(0,0,0,.55), 0 4px 16px -4px rgba(0,0,0,.35);
+  --shadow-pop:0 8px 28px -8px rgba(0,0,0,.45);
+  color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-padding-top:80px}
+body{
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:15px;
+  line-height:1.7;
+  -webkit-font-smoothing:antialiased;
+  min-height:100dvh;
+}
+::selection{background:var(--accent-tint)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+button{font-family:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,select{font-family:inherit;color:var(--ink)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* 胶片噪点：fixed + pointer-events-none，绝不挂滚动容器 */
+.grain{
+  position:fixed;inset:0;z-index:200;pointer-events:none;
+  opacity:.05;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* ---------- 顶栏 ---------- */
+.topbar{
+  position:sticky;top:0;z-index:40;height:60px;
+  display:flex;align-items:center;gap:28px;
+  padding:0 28px;
+  background:color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line);
+}
+.brand{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.brand-cn{font-family:var(--serif);font-weight:700;font-size:19px;letter-spacing:.02em}
+.brand-dot{color:var(--sub);font-size:14px}
+.brand-sub{font-family:var(--serif);font-weight:600;font-size:15px;color:var(--sub);letter-spacing:.14em}
+.brand-en{font-family:'Cormorant Garamond',var(--serif);font-style:italic;font-weight:500;font-size:14px;color:var(--accent-text);margin-left:4px;transform:translateY(-1px)}
+.topnav{display:flex;gap:4px;margin-left:8px}
+.nav-btn{
+  font-size:14px;font-weight:500;color:var(--sub);
+  padding:6px 12px;border-radius:8px;position:relative;
+  transition:color .2s var(--ease),transform .15s var(--ease);
+}
+.nav-btn:hover{color:var(--ink)}
+.nav-btn:active{transform:scale(.98)}
+.nav-btn.on{color:var(--ink)}
+.nav-btn.on::after{
+  content:"";position:absolute;left:12px;right:12px;bottom:0;height:2px;
+  background:var(--accent);border-radius:2px;
+}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+.svc{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;color:var(--sub)}
+.pulse-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:breath 2.6s var(--ease) infinite}
+@keyframes breath{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.82)}}
+.icon-btn{
+  width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+  color:var(--sub);border:1px solid transparent;
+  transition:all .2s var(--ease);
+}
+.icon-btn:hover{border-color:var(--line);color:var(--ink);background:var(--card)}
+.icon-btn:active{transform:scale(.98)}
+.icon-btn svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+
+/* ---------- 主区 ---------- */
+main{max-width:1080px;margin:0 auto;padding:44px 32px 110px}
+.view{animation:fadeUp .45s var(--ease) both}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.anim-up{animation:fadeUp .55s var(--ease) both}
+.page-h{font-family:var(--serif);font-weight:600;font-size:27px;letter-spacing:.01em;line-height:1.3}
+.page-sub{color:var(--sub);font-size:14px;margin-top:6px}
+.hairline{border:none;border-top:1px solid var(--line)}
+
+/* ---------- 控件 ---------- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  font-size:14px;font-weight:500;line-height:1;
+  padding:10px 18px;border-radius:10px;white-space:nowrap;
+  transition:transform .15s var(--ease),background .2s var(--ease),border-color .2s var(--ease),color .2s var(--ease),opacity .2s var(--ease);
+}
+.btn:active{transform:scale(.98)}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent-deep)}
+.btn-outline{border:1px solid var(--line-strong);color:var(--ink);background:var(--card)}
+.btn-outline:hover{border-color:var(--sub)}
+.btn-danger{background:var(--err);color:#fff}
+.btn-danger:hover{filter:brightness(.94)}
+.btn-ghost{color:var(--sub);padding:10px 12px}
+.btn-ghost:hover{color:var(--ink)}
+.btn-sm{padding:7px 13px;font-size:13px;border-radius:9px}
+.act{
+  font-size:13px;color:var(--sub);padding:6px 10px;border-radius:8px;
+  transition:all .18s var(--ease);
+}
+.act:hover{color:var(--accent-text);background:var(--accent-tint)}
+.act:active{transform:scale(.98)}
+
+.input,.select{
+  width:100%;background:var(--card);
+  border:1px solid var(--line-strong);border-radius:10px;
+  padding:9px 12px;font-size:14px;line-height:1.5;
+  transition:border-color .2s var(--ease),box-shadow .2s var(--ease);
+}
+.input::placeholder{color:var(--sub);opacity:.75}
+.input:focus,.select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
+.select{
+  appearance:none;-webkit-appearance:none;cursor:pointer;padding-right:34px;width:auto;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%238a8d92' stroke-width='1.5' stroke-linecap='round'/></svg>");
+  background-repeat:no-repeat;background-position:right 12px center;
+}
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+.field>label{font-size:13px;font-weight:500}
+.help{font-size:12px;color:var(--sub);line-height:1.5}
+.err-text{font-size:12px;color:var(--err);display:none}
+.field.invalid .err-text{display:block}
+.field.invalid .input{border-color:var(--err)}
+input[type="checkbox"],input[type="radio"]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
+.check-row{display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer}
+
+/* 开关 */
+.switch{position:relative;display:inline-block;width:38px;height:22px;flex:none}
+.switch input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer}
+.switch .track{position:absolute;inset:0;border-radius:999px;background:var(--line-strong);transition:background .25s var(--ease)}
+.switch .knob{
+  position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;
+  background:var(--card);box-shadow:0 1px 3px rgba(0,0,0,.2);
+  transition:transform .25s var(--ease);
+}
+.switch input:checked ~ .track{background:var(--accent)}
+.switch input:checked ~ .knob{transform:translateX(16px)}
+.switch input:focus-visible ~ .track{outline:2px solid var(--accent);outline-offset:2px}
+.sw-row{display:flex;align-items:center;gap:12px}
+.sw-label{font-size:14px}
+.sw-desc{font-size:12.5px;color:var(--sub);margin-top:2px}
+
+/* 语义提示条 */
+.note{border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.6;margin:14px 0}
+.note-warn{background:var(--warn-tint);color:var(--warn)}
+.note-err{background:var(--err-tint);color:var(--err)}
+.chip{
+  display:inline-flex;align-items:center;gap:4px;
+  font-family:var(--mono);font-size:11px;color:var(--accent-text);
+  background:var(--accent-tint);border-radius:999px;padding:2px 9px;vertical-align:2px;
+}
+
+/* ---------- 检索页 ---------- */
+.search-stage{max-width:700px;margin:0 auto;text-align:center;padding-top:36px}
+.search-lead{font-family:var(--serif);font-weight:600;font-size:38px;line-height:1.35;letter-spacing:.01em}
+.search-lead b{font-weight:700;color:var(--accent-text)}
+.search-hint{color:var(--sub);font-size:14px;margin-top:10px}
+.search-shell{
+  margin-top:30px;background:var(--shell);
+  border:1px solid var(--line);border-radius:18px;padding:6px;
+  box-shadow:0 1px 0 rgba(255,255,255,.5) inset, 0 10px 30px -18px rgba(31,35,40,.18);
+  transition:box-shadow .3s var(--ease),border-color .3s var(--ease);
+}
+[data-theme="dark"] .search-shell{box-shadow:0 10px 30px -18px rgba(0,0,0,.5)}
+.search-shell:focus-within{border-color:var(--line-strong);box-shadow:0 14px 36px -18px rgba(31,35,40,.26)}
+.search-core{
+  display:flex;align-items:center;gap:10px;
+  background:var(--card);border-radius:13px;padding:7px 7px 7px 18px;
+}
+.search-core svg{width:18px;height:18px;stroke:var(--sub);fill:none;stroke-width:1.6;stroke-linecap:round;flex:none}
+#q{flex:1;border:none;background:transparent;font-size:16px;padding:8px 0;min-width:0}
+#q:focus{outline:none}
+#q::placeholder{color:var(--sub);opacity:.7}
+.search-ctrl{
+  display:flex;justify-content:center;align-items:center;gap:26px;
+  margin-top:18px;font-size:13px;color:var(--sub);flex-wrap:wrap;
+}
+.search-ctrl .ctl{display:flex;align-items:center;gap:9px}
+.result-meta{max-width:700px;margin:34px auto 0;font-family:var(--mono);font-size:12px;color:var(--sub)}
+
+/* 骨架 */
+.skel-item{padding:26px 0;border-bottom:1px solid var(--line)}
+.sk{background:var(--line);border-radius:6px;animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+.sk.t{height:22px;width:52%}
+.sk.p{height:12px;width:38%;margin-top:10px}
+.sk.s{height:13px;width:100%;margin-top:14px}
+.sk.s2{width:88%;margin-top:7px}
+
+/* 结果条目：杂志目录式，留白 + hairline 分组，不用卡片框 */
+.result{padding:26px 0;border-bottom:1px solid var(--line)}
+.result:last-child{border-bottom:none}
+.r-topline{display:flex;align-items:baseline;gap:14px}
+.r-index{font-family:var(--mono);font-size:12px;color:var(--sub)}
+.r-score{font-family:var(--mono);font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.r-score .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.c-high{color:var(--c-high)}
+.c-mid{color:var(--c-mid)}
+.c-low{color:var(--c-low)}
+.r-title{font-family:var(--serif);font-weight:600;font-size:22px;line-height:1.4;margin-top:6px;letter-spacing:.01em}
+.r-path{font-family:var(--mono);font-size:12px;color:var(--sub);margin-top:5px;letter-spacing:-.01em}
+.r-body{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-top:6px}
+.r-actions{display:flex;gap:2px;flex:none}
+.r-body .r-snippet{flex:1;min-width:0}
+.r-snippet{
+  margin-top:12px;font-size:14.5px;line-height:1.8;color:var(--sub);
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+  cursor:pointer;letter-spacing:.005em;
+}
+.r-snippet.open{display:block;-webkit-line-clamp:unset}
+body.expand-body .r-snippet{display:block;-webkit-line-clamp:unset}
+.r-snippet mark{background:var(--mark);color:var(--ink);padding:0 2px;border-radius:3px}
+.r-clue{font-size:12px;color:var(--sub);margin-top:6px}
+.r-rel{
+  margin-top:16px;padding:14px 18px;border-left:2px solid var(--line-strong);
+  display:flex;gap:36px;flex-wrap:wrap;
+  animation:fadeUp .35s var(--ease) both;
+}
+.rel-group{min-width:180px}
+.rel-label{font-family:var(--mono);font-size:11px;color:var(--sub);letter-spacing:.08em}
+.rel-list{list-style:none;margin-top:8px;display:flex;flex-direction:column;gap:5px}
+.rel-list li{font-size:13.5px}
+.rel-list li a{color:var(--ink);text-decoration:underline dotted var(--line-strong);text-underline-offset:3px;cursor:pointer}
+.rel-list li a:hover{color:var(--accent-text);text-decoration-color:var(--accent-text)}
+.rel-empty{font-size:13px;color:var(--sub);margin-top:8px}
+.empty-state{max-width:700px;margin:46px auto 0;text-align:center;color:var(--sub);font-size:14px;padding:30px 0}
+.empty-state .try{display:flex;justify-content:center;gap:10px;margin-top:16px;flex-wrap:wrap}
+.try button{
+  font-size:13px;color:var(--sub);border:1px solid var(--line);border-radius:999px;
+  padding:7px 15px;background:var(--card);transition:all .2s var(--ease);
+}
+.try button:hover{color:var(--accent-text);border-color:var(--accent-text)}
+.try button:active{transform:scale(.98)}
+
+/* ---------- 阅读面板（Double-Bezel） ---------- */
+.scrim{
+  position:fixed;inset:0;z-index:70;background:rgba(31,35,40,.28);
+  opacity:0;pointer-events:none;transition:opacity .35s var(--ease);
+}
+.scrim.show{opacity:1;pointer-events:auto}
+.reader{
+  position:fixed;top:0;right:0;bottom:0;z-index:80;width:430px;max-width:92vw;
+  transform:translateX(106%);transition:transform .45s var(--ease);
+  background:var(--shell);border-left:1px solid var(--line);
+  padding:10px;display:flex;
+}
+.reader.open{transform:translateX(0)}
+.reader-core{
+  flex:1;background:var(--card);border-radius:13px;
+  display:flex;flex-direction:column;overflow:hidden;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.4);
+}
+[data-theme="dark"] .reader-core{box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+.reader-head{padding:20px 24px 14px;border-bottom:1px solid var(--line)}
+.reader-head-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+#rTitle{font-family:var(--serif);font-weight:600;font-size:21px;line-height:1.4}
+#rPath{font-family:var(--mono);font-size:11.5px;color:var(--sub);margin-top:6px;word-break:break-all}
+.rtoc{padding:12px 24px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:6px 16px}
+.rtoc a{font-size:12.5px;color:var(--sub);text-decoration:none;cursor:pointer}
+.rtoc a:hover{color:var(--accent-text)}
+.reader-body{flex:1;overflow-y:auto;padding:24px 26px 40px;scroll-behavior:smooth}
+.reader-body section{scroll-margin-top:16px;margin-bottom:30px}
+.reader-body h3{font-family:var(--serif);font-weight:600;font-size:16.5px;margin-bottom:10px}
+.reader-body p{font-family:var(--serif);font-size:14.5px;line-height:1.95;color:var(--ink);margin-bottom:12px;letter-spacing:.01em}
+.reader-body mark{background:var(--mark);color:inherit;padding:0 2px;border-radius:3px}
+.reader-body code{font-family:var(--mono);font-size:12.5px;background:var(--shell);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+.reader-foot{padding:14px 24px;border-top:1px solid var(--line);display:flex;justify-content:flex-end}
+
+/* ---------- 弹窗（Double-Bezel） ---------- */
+.modal-overlay{
+  position:fixed;inset:0;z-index:100;
+  display:flex;align-items:center;justify-content:center;padding:24px;
+  background:rgba(31,35,40,.32);
+  opacity:0;transition:opacity .3s var(--ease);
+}
+[data-theme="dark"] .modal-overlay{background:rgba(0,0,0,.5)}
+.modal-overlay.open{opacity:1}
+.modal-shell{
+  width:100%;background:var(--shell);border:1px solid var(--line);
+  border-radius:20px;padding:6px;box-shadow:var(--shadow-modal);
+  transform:translateY(14px) scale(.98);
+  transition:transform .35s var(--ease);
+}
+.modal-overlay.open .modal-shell{transform:none}
+.modal-inner{
+  background:var(--card);border-radius:15px;padding:28px;
+  max-height:82vh;overflow-y:auto;
+}
+.modal-title{font-family:var(--serif);font-weight:600;font-size:20px;margin-bottom:6px}
+.modal-sub{font-size:13px;color:var(--sub);margin-bottom:20px}
+.modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}
+
+/* ---------- 库 ---------- */
+.lib-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:8px}
+.lib-list{margin-top:22px}
+.lib-row{
+  display:flex;align-items:center;gap:28px;padding:24px 4px;
+  border-bottom:1px solid var(--line);
+}
+.lib-row:last-child{border-bottom:none}
+.lib-name{font-family:var(--serif);font-weight:600;font-size:19px}
+.lib-dir{font-family:var(--mono);font-size:12px;color:var(--sub);margin-top:4px}
+.lib-stats{font-family:var(--mono);font-size:13px;color:var(--sub);margin-left:auto;white-space:nowrap}
+.lib-stats b{color:var(--ink);font-weight:500}
+.lib-actions{display:flex;gap:2px;flex:none}
+
+/* ---------- 索引 ---------- */
+.idx-grid{display:grid;grid-template-columns:1fr 264px;gap:56px;margin-top:30px}
+.stage-list{border-top:1px solid var(--line)}
+.stage{display:flex;align-items:baseline;gap:16px;padding:17px 2px;border-bottom:1px solid var(--line)}
+.stage-name{font-family:var(--serif);font-weight:600;font-size:17px;color:var(--sub);transition:color .3s var(--ease)}
+.stage[data-i]::before{
+  content:counter(st,decimal-leading-zero);
+  counter-increment:st;
+  font-family:var(--mono);font-size:12px;color:var(--sub);opacity:.8;
+}
+.stage-list{counter-reset:st}
+.stage.active .stage-name{color:var(--accent-text)}
+.stage.done .stage-name{color:var(--ink)}
+.stage-state{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--sub)}
+.stage.done .stage-state{color:var(--sub)}
+.stage.active .stage-state{color:var(--accent-text)}
+.idx-bar{height:3px;background:var(--line);border-radius:2px;margin:26px 0 10px;overflow:hidden}
+.idx-bar i{display:block;height:100%;background:var(--accent);transform-origin:left;transform:scaleX(0);transition:transform .12s linear}
+.idx-time{font-family:var(--mono);font-size:12px;color:var(--sub)}
+.idx-btns{display:flex;gap:12px;margin-top:30px;align-items:center}
+.kpi{border-top:1px solid var(--line);padding:20px 0 22px}
+.kpi + .kpi{border-top:none;border-bottom:none;padding-top:0}
+.kpi-num{font-family:var(--serif);font-weight:700;font-size:36px;line-height:1.2;letter-spacing:.01em;font-variant-numeric:tabular-nums}
+.kpi-label{font-size:12.5px;color:var(--sub);margin-top:2px}
+.kpi-side{align-self:start;position:sticky;top:84px}
+
+/* ---------- 诊断 ---------- */
+.diag-sec{margin-top:44px}
+.diag-sec h3{font-family:var(--serif);font-weight:600;font-size:20px;margin-bottom:4px}
+.diag-desc{font-size:13px;color:var(--sub);margin-bottom:18px}
+.fail-row{display:grid;grid-template-columns:118px 1fr;gap:20px;padding:15px 2px;border-bottom:1px solid var(--line);align-items:baseline}
+.fail-row:last-child{border-bottom:none}
+.tag{font-family:var(--mono);font-size:11.5px;border-radius:999px;padding:2px 10px;white-space:nowrap;justify-self:start}
+.t-warn{background:var(--warn-tint);color:var(--warn)}
+.t-err{background:var(--err-tint);color:var(--err)}
+.t-sub{background:var(--shell);color:var(--sub);border:1px solid var(--line)}
+.fail-path{font-family:var(--mono);font-size:12.5px;word-break:break-all}
+.fail-guide{font-size:12.5px;color:var(--sub);margin-top:4px;line-height:1.6}
+.wemm-box{display:flex;align-items:center;gap:26px;flex-wrap:wrap;border:1px solid var(--line);border-radius:14px;padding:20px 22px;background:var(--card)}
+#wemmStatus{font-family:var(--mono);font-size:13px;color:var(--sub);min-width:180px}
+#wemmStatus.ok{color:var(--c-high)}
+#wemmStatus.err{color:var(--err)}
+.dedup-row{display:grid;grid-template-columns:1fr auto;gap:8px 24px;padding:16px 2px;border-bottom:1px solid var(--line);align-items:center}
+.dedup-row:last-child{border-bottom:none}
+.dedup-pair{font-size:13.5px;line-height:1.7}
+.dedup-pair .mono{font-size:12px;color:var(--sub)}
+.dedup-score{font-family:var(--mono);font-size:15px;font-weight:500}
+.io-row{display:flex;align-items:center;gap:18px;padding:16px 2px;border-bottom:1px solid var(--line)}
+.io-row:last-child{border-bottom:none}
+.io-row p{flex:1;font-size:13.5px;color:var(--sub)}
+.io-bar{width:120px;height:3px;background:var(--line);border-radius:2px;overflow:hidden;flex:none}
+.io-bar i{display:block;height:100%;background:var(--accent);transform:scaleX(0);transform-origin:left}
+.io-bar i.run{transition:transform 2s linear;transform:scaleX(1)}
+
+/* ---------- 设置 ---------- */
+.set-grid{display:grid;grid-template-columns:196px 1fr;gap:52px;margin-top:30px}
+.set-nav{position:sticky;top:84px;align-self:start;display:flex;flex-direction:column;gap:2px}
+.set-nav a{
+  font-size:14px;color:var(--sub);text-decoration:none;padding:8px 12px;
+  border-radius:8px;transition:all .2s var(--ease);border-left:2px solid transparent;
+}
+.set-nav a:hover{color:var(--ink)}
+.set-nav a.on{color:var(--ink);border-left-color:var(--accent);background:var(--accent-tint)}
+.set-sec{padding-bottom:36px;margin-bottom:36px;border-bottom:1px solid var(--line)}
+.set-sec:last-child{border-bottom:none}
+.set-sec h3{font-family:var(--serif);font-weight:600;font-size:19px;margin-bottom:20px}
+.set-item{display:flex;justify-content:space-between;align-items:flex-start;gap:32px;padding:13px 0}
+.set-item>.txt{max-width:420px}
+.set-item .sw-desc{margin-top:0}
+.set-ctrl{flex:none;display:flex;align-items:center;gap:12px}
+.fmt-group{display:flex;gap:16px;flex-wrap:wrap}
+.set-foot{display:flex;justify-content:flex-end;margin-top:8px}
+
+/* ---------- Toast / 角标 ---------- */
+#toasts{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);z-index:120;display:flex;flex-direction:column;align-items:center;gap:10px;pointer-events:none}
+.toast{
+  background:var(--card);border:1px solid var(--line);border-radius:11px;
+  box-shadow:var(--shadow-pop);padding:11px 18px;font-size:13.5px;color:var(--ink);
+  border-left:3px solid var(--accent);
+  opacity:0;transform:translateY(10px);
+  transition:opacity .3s var(--ease),transform .3s var(--ease);
+  max-width:80vw;
+}
+.toast.warn{border-left-color:var(--warn)}
+.toast.err{border-left-color:var(--err)}
+.toast.in{opacity:1;transform:none}
+.proto-badge{
+  position:fixed;right:16px;bottom:16px;z-index:60;
+  font-family:var(--mono);font-size:11px;color:var(--sub);
+  background:color-mix(in srgb, var(--card) 72%, transparent);
+  backdrop-filter:blur(6px);
+  border:1px solid var(--line);border-radius:9px;padding:6px 11px;
+  pointer-events:none;
+}
+
+/* ---------- 响应式 ---------- */
+@media (max-width:900px){
+  .idx-grid,.set-grid{grid-template-columns:1fr}
+  .kpi-side{position:static;display:flex;gap:36px}
+  .kpi{border-top:1px solid var(--line);padding:16px 0}
+  .set-nav{position:static;flex-direction:row;flex-wrap:wrap}
+  .lib-stats{margin-left:0}
+  .lib-row{flex-wrap:wrap;gap:10px 20px}
+  .r-body{flex-direction:column;align-items:flex-start}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none !important;transition:none !important}
+  .reader-body{scroll-behavior:auto}
+}
+</style>
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+
+<!-- 顶栏 -->
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-cn">观澜</span><span class="brand-dot">·</span><span class="brand-sub">语义检索</span><span class="brand-en">Guanlan</span>
+  </div>
+  <nav class="topnav" aria-label="主导航">
+    <button class="nav-btn on" data-view="search">检索</button>
+    <button class="nav-btn" data-view="libs">库</button>
+    <button class="nav-btn" data-view="index">索引</button>
+    <button class="nav-btn" data-view="diag">诊断</button>
+    <button class="nav-btn" data-view="set">设置</button>
+  </nav>
+  <div class="top-right">
+    <span class="svc"><span class="pulse-dot" aria-hidden="true"></span>就绪</span>
+    <button class="icon-btn" id="btnTheme" aria-label="切换夜间模式" title="夜间模式">
+      <svg id="icoMoon" viewBox="0 0 24 24"><path d="M20 13A8 8 0 1 1 11 4a6.5 6.5 0 0 0 9 9z"/></svg>
+      <svg id="icoSun" viewBox="0 0 24 24" hidden><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <!-- ============ 检索 ============ -->
+  <section class="view" id="view-search">
+    <div class="search-stage">
+      <h1 class="search-lead">在 <b>8,306</b> 个块中寻找</h1>
+      <p class="search-hint">语义检索覆盖 3 个知识库，支持自然语言提问。</p>
+      <div class="search-shell">
+        <div class="search-core">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>
+          <input id="q" type="text" placeholder="试着问：WEMM 页级视觉导航是怎么实现的？" aria-label="检索内容">
+          <button class="btn btn-primary" id="btnSearch">检索</button>
+        </div>
+      </div>
+      <div class="search-ctrl">
+        <div class="ctl">
+          <label for="selTopK">返回条数</label>
+          <select class="select" id="selTopK">
+            <option value="3">Top 3</option>
+            <option value="5" selected>Top 5</option>
+            <option value="8">Top 8</option>
+            <option value="10">Top 10</option>
+            <option value="15">Top 15</option>
+          </select>
+        </div>
+        <div class="ctl">
+          <span id="lblExpand">展开正文</span>
+          <span class="switch"><input type="checkbox" id="swExpand" aria-labelledby="lblExpand"><span class="track"></span><span class="knob"></span></span>
+        </div>
+      </div>
+    </div>
+
+    <p class="result-meta" id="resultMeta" hidden></p>
+    <div id="results" style="max-width:700px;margin:8px auto 0"></div>
+    <div class="empty-state" id="emptyState">
+      <p>还没有检索。问一个自然语言的问题，结果会像目录页一样排开。</p>
+      <div class="try">
+        <button data-q="WEMM 页级视觉导航是怎么实现的？">WEMM 页级视觉导航是怎么实现的？</button>
+        <button data-q="扫描件 PDF 是怎么走 MinerU 的？">扫描件 PDF 是怎么走 MinerU 的？</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 库 ============ -->
+  <section class="view" id="view-libs" hidden>
+    <div class="lib-head">
+      <div>
+        <h2 class="page-h">知识库</h2>
+        <p class="page-sub">3 个库已接入，共 1,894 个文件、8,306 个块。</p>
+      </div>
+      <button class="btn btn-primary" id="btnAddLib">添加库</button>
+    </div>
+    <div class="lib-list" id="libList"></div>
+  </section>
+
+  <!-- ============ 索引 ============ -->
+  <section class="view" id="view-index" hidden>
+    <h2 class="page-h">索引</h2>
+    <p class="page-sub">上轮增量索引于今天 09:12 完成，检索服务未受影响。</p>
+    <div class="idx-grid">
+      <div>
+        <div class="stage-list">
+          <div class="stage done" data-i="0"><span class="stage-name">扫描</span><span class="stage-state">完成 2.1 s</span></div>
+          <div class="stage done" data-i="1"><span class="stage-name">转换</span><span class="stage-state">完成 1.8 s</span></div>
+          <div class="stage done" data-i="2"><span class="stage-name">嵌入</span><span class="stage-state">完成 2.3 s</span></div>
+          <div class="stage done" data-i="3"><span class="stage-name">写库</span><span class="stage-state">完成 1.8 s</span></div>
+          <div class="stage done" data-i="4"><span class="stage-name">完成</span><span class="stage-state">上轮已归档</span></div>
+        </div>
+        <div class="idx-bar" aria-hidden="true"><i id="idxFill"></i></div>
+        <p class="idx-time">用时 <span id="idxElapsed">80.0 s</span>，剩余 <span id="idxEta">0.0 s</span></p>
+        <div class="idx-btns">
+          <button class="btn btn-primary" id="btnInc">增量重建</button>
+          <button class="btn btn-outline" id="btnFull">全量重建</button>
+          <button class="btn btn-ghost" id="btnStop" hidden>停止</button>
+        </div>
+      </div>
+      <div class="kpi-side">
+        <div class="kpi">
+          <p class="kpi-num">1,894</p>
+          <p class="kpi-label">已索引文件</p>
+        </div>
+        <div class="kpi">
+          <p class="kpi-num">8,306</p>
+          <p class="kpi-label">知识块总数</p>
+        </div>
+        <div class="kpi">
+          <p class="kpi-num" id="kpiTime">1分20秒</p>
+          <p class="kpi-label">上轮增量用时</p>
+        </div>
+        <div class="kpi">
+          <p class="kpi-num" style="font-size:17px;font-weight:600;line-height:1.6">CUDA RTX 4070</p>
+          <p class="kpi-label">设备 · BGE-M3</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 诊断 ============ -->
+  <section class="view" id="view-diag" hidden>
+    <h2 class="page-h">诊断</h2>
+    <p class="page-sub">索引健康度、页级视觉导航服务与数据维护。</p>
+
+    <div class="diag-sec">
+      <h3>失败溯源</h3>
+      <p class="diag-desc">7 个文件未产出检索块。scanned 终态会随每轮索引自动重试，其余终态需按处置指引处理源文件。</p>
+      <div id="failList">
+        <div class="fail-row"><span class="tag t-warn">scanned</span><div><p class="fail-path">03-Journals/attachments/课件 2026-08-12.pdf</p><p class="fail-guide">整本无文字层，已按扫描件落终态，will_retry：下轮索引自动重试；开启 MinerU 云端 OCR 后送云端识别。</p></div></div>
+        <div class="fail-row"><span class="tag t-warn">scanned</span><div><p class="fail-path">02-Areas/MinerU/扫描讲义第 3 册.pdf</p><p class="fail-guide">混合型 PDF 检出图片页，will_retry：云端开启后整本重走 vlm 认字。</p></div></div>
+        <div class="fail-row"><span class="tag t-warn">scanned</span><div><p class="fail-path">01-Collections/论文扫描合辑.pdf</p><p class="fail-guide">扫描件待云端配额，will_retry：限速窗口恢复后自动重提交。</p></div></div>
+        <div class="fail-row"><span class="tag t-err">unreadable</span><div><p class="fail-path">02-Areas/损坏文档.docx</p><p class="fail-guide">文件损坏或加密，提取器无法读取；请修复源文件后手动重建该条目。</p></div></div>
+        <div class="fail-row"><span class="tag t-sub">empty</span><div><p class="fail-path">03-Journals/2025-01-02.md</p><p class="fail-guide">正文为空，已落空终态，不产块也不参与检索。</p></div></div>
+        <div class="fail-row"><span class="tag t-sub">empty</span><div><p class="fail-path">01-Collections/模板/空白模板.md</p><p class="fail-guide">仅含模板占位符，已落空终态；若开始使用会自动重新索引。</p></div></div>
+        <div class="fail-row"><span class="tag t-err">extract-failed</span><div><p class="fail-path">02-Areas/旧版式报告.docx</p><p class="fail-guide">提取器异常退出，下轮将重试；持续失败请检查文件是否为受密码保护的旧版格式。</p></div></div>
+      </div>
+    </div>
+
+    <div class="diag-sec">
+      <h3>视觉导航 WEMM</h3>
+      <p class="diag-desc">页级视觉导航服务。开启后额外建立页向量库，供 navigate_knowledge 使用。</p>
+      <div class="wemm-box">
+        <div class="sw-row">
+          <span class="switch"><input type="checkbox" id="swWemm"><span class="track"></span><span class="knob"></span></span>
+          <div><p class="sw-label">启用 WEMM</p><p class="sw-desc">wemm_backend：off / 全局 Python 服务</p></div>
+        </div>
+        <p id="wemmStatus">未探测</p>
+        <button class="btn btn-outline btn-sm" id="btnProbe">探测服务</button>
+      </div>
+    </div>
+
+    <div class="diag-sec">
+      <h3>近似去重</h3>
+      <p class="diag-desc">MinHash+LSH 只读扫描发现 3 组高相似文件对，合并前建议先查看差异。</p>
+      <div id="dedupList">
+        <div class="dedup-row">
+          <div class="dedup-pair"><span class="mono">0.91</span>　20-Projects/Obsidian RAG/WEMM 设计.md<br><span class="mono">0.91</span>　20-Projects/Obsidian RAG/WEMM 设计（备份）.md</div>
+          <button class="btn btn-outline btn-sm btn-diff">查看差异</button>
+        </div>
+        <div class="dedup-row">
+          <div class="dedup-pair"><span class="mono">0.87</span>　02-Areas/MinerU 笔记.md<br><span class="mono">0.87</span>　01-Collections/MinerU 使用指南.md</div>
+          <button class="btn btn-outline btn-sm btn-diff">查看差异</button>
+        </div>
+        <div class="dedup-row">
+          <div class="dedup-pair"><span class="mono">0.83</span>　03-Journals/2026-08-30.md<br><span class="mono">0.83</span>　03-Journals/2026-08-31.md</div>
+          <button class="btn btn-outline btn-sm btn-diff">查看差异</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="diag-sec">
+      <h3>导出与导入</h3>
+      <p class="diag-desc">整库快照包含 meta、Chroma collection 与缓存簿记，导入前会做副本演练。</p>
+      <div class="io-row">
+        <p>导出知识库快照（约 8,306 块 + 页库）</p>
+        <div class="io-bar" aria-hidden="true"><i id="ioExport"></i></div>
+        <button class="btn btn-outline btn-sm" id="btnExport">导出</button>
+      </div>
+      <div class="io-row">
+        <p>从备份导入（覆盖前自动演练校验）</p>
+        <div class="io-bar" aria-hidden="true"><i id="ioImport"></i></div>
+        <button class="btn btn-outline btn-sm" id="btnImport">导入</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 设置 ============ -->
+  <section class="view" id="view-set" hidden>
+    <h2 class="page-h">设置</h2>
+    <p class="page-sub">长驻进程全部经 config.reload_config() 现读，保存即热生效。</p>
+    <div class="set-grid">
+      <nav class="set-nav" aria-label="设置分组">
+        <a href="#set-kb" class="on">知识库</a>
+        <a href="#set-model">模型</a>
+        <a href="#set-pdf">PDF 与云端 OCR</a>
+        <a href="#set-out">检索输出</a>
+        <a href="#set-wemm">视觉导航 WEMM</a>
+      </nav>
+      <div>
+        <div class="set-sec" id="set-kb">
+          <h3>知识库</h3>
+          <div class="set-item">
+            <div class="txt"><p class="sw-label">自动增量索引</p><p class="sw-desc">启动与文件变更后自动跑增量，Agent 触发时仍走门禁。</p></div>
+            <div class="set-ctrl"><span class="switch"><input type="checkbox" checked><span class="track"></span><span class="knob"></span></span></div>
+          </div>
+          <div class="set-item">
+            <div class="txt" style="flex:1"><label class="sw-label" for="inExclude">排除目录</label><p class="sw-desc">相对路径前缀，逗号分隔；命中即冻结不索引。</p></div>
+            <div class="set-ctrl" style="flex:1;justify-content:flex-end"><input class="input" id="inExclude" style="max-width:320px" placeholder="模板/, 归档/, .trash/"></div>
+          </div>
+        </div>
+
+        <div class="set-sec" id="set-model">
+          <h3>模型</h3>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selEmbed">嵌入模型</label><p class="sw-desc">更换后全量重建，预计 3-5 分钟。</p></div>
+            <div class="set-ctrl"><span class="chip">✓ 使用中</span><select class="select" id="selEmbed"><option selected>BGE-M3</option><option>bge-large-zh-v1.5</option><option>m3e-large</option></select></div>
+          </div>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selRerank">重排模型</label><p class="sw-desc">混合检索后的精排，关掉可省显存。</p></div>
+            <div class="set-ctrl"><span class="chip">✓ 使用中</span><select class="select" id="selRerank"><option selected>BGE-reranker-v2-m3</option><option>不启用</option></select></div>
+          </div>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selDevice">运行设备</label><p class="sw-desc">模型推理所在硬件。</p></div>
+            <div class="set-ctrl"><select class="select" id="selDevice"><option selected>CUDA RTX 4070</option><option>CPU</option></select></div>
+          </div>
+        </div>
+
+        <div class="set-sec" id="set-pdf">
+          <h3>PDF 与云端 OCR</h3>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selScan">扫描件 OCR 后端</label><p class="sw-desc">none 时扫描件落待重试终态，由 xsrc 自愈。</p></div>
+            <div class="set-ctrl">
+              <select class="select" id="selScan"><option value="none" selected>none（本地不识别）</option><option value="mineru">MinerU 云端</option></select>
+            </div>
+          </div>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selPdfText">文字层 PDF 后端</label><p class="sw-desc">可送 MinerU 换更准的版面与表格结构识别。</p></div>
+            <div class="set-ctrl"><select class="select" id="selPdfText"><option value="local" selected>local（本地直提）</option><option value="mineru">MinerU 云端</option></select></div>
+          </div>
+          <div class="set-item">
+            <div class="txt" style="flex:1"><label class="sw-label" for="inKey">MinerU API Key</label><p class="sw-desc">仅保存在本机配置文件，不写入日志。</p></div>
+            <div class="set-ctrl" style="flex:1;justify-content:flex-end"><input class="input" type="password" id="inKey" style="max-width:320px" placeholder="已配置：••••••••"></div>
+          </div>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selConc">云端并行度</label><p class="sw-desc">0 为最大吞吐，由限速闸门自动节流。</p></div>
+            <div class="set-ctrl"><select class="select" id="selConc"><option>0</option><option selected>3</option><option>1</option></select></div>
+          </div>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selRate">限速（次/分钟）</label><p class="sw-desc">滑动窗口限速，默认 45。</p></div>
+            <div class="set-ctrl"><select class="select" id="selRate"><option selected>45</option><option>30</option><option>60</option></select></div>
+          </div>
+        </div>
+
+        <div class="set-sec" id="set-out">
+          <h3>检索输出</h3>
+          <div class="set-item">
+            <div class="txt"><p class="sw-label">高亮命中片段</p><p class="sw-desc">在结果与阅读面板中标记命中的词句。</p></div>
+            <div class="set-ctrl"><span class="switch"><input type="checkbox" checked><span class="track"></span><span class="knob"></span></span></div>
+          </div>
+          <div class="set-item">
+            <div class="txt"><p class="sw-label">显示置信度小数</p><p class="sw-desc">关闭后仅按档位着色，不显示数值。</p></div>
+            <div class="set-ctrl"><span class="switch"><input type="checkbox" checked><span class="track"></span><span class="knob"></span></span></div>
+          </div>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selWeight">混合检索权重</label><p class="sw-desc">向量与 BM25 的融合比例。</p></div>
+            <div class="set-ctrl"><select class="select" id="selWeight"><option selected>向量 0.7 / BM25 0.3</option><option>向量 0.5 / BM25 0.5</option></select></div>
+          </div>
+        </div>
+
+        <div class="set-sec" id="set-wemm">
+          <h3>视觉导航 WEMM</h3>
+          <div class="set-item">
+            <div class="txt"><p class="sw-label">启用页级视觉导航</p><p class="sw-desc">与诊断页的服务开关联动生效。</p></div>
+            <div class="set-ctrl"><span class="switch"><input type="checkbox" id="swWemmSet"><span class="track"></span><span class="knob"></span></span></div>
+          </div>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selWemmModel">页向量模型</label><p class="sw-desc">改档自动重渲染并重签 xsrc。</p></div>
+            <div class="set-ctrl"><select class="select" id="selWemmModel"><option selected>BGE-M3 视觉编码</option><option>ColQwen2</option></select></div>
+          </div>
+          <div class="set-item">
+            <div class="txt"><label class="sw-label" for="selDpi">页渲染 DPI</label><p class="sw-desc">越高越清晰，页库体积越大。</p></div>
+            <div class="set-ctrl"><select class="select" id="selDpi"><option>110</option><option selected>150</option><option>200</option></select></div>
+          </div>
+        </div>
+
+        <div class="set-foot">
+          <button class="btn btn-primary" id="btnSave">保存设置</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- 阅读面板 -->
+<div class="scrim" id="readerScrim"></div>
+<aside class="reader" id="reader" aria-hidden="true" aria-label="文档阅读面板">
+  <div class="reader-core">
+    <div class="reader-head">
+      <div class="reader-head-top">
+        <div>
+          <h2 id="rTitle"></h2>
+          <p id="rPath"></p>
+        </div>
+        <button class="icon-btn" id="btnReaderClose" aria-label="关闭阅读面板">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </div>
+    <nav class="rtoc" id="rToc"></nav>
+    <div class="reader-body" id="rBody"></div>
+    <div class="reader-foot">
+      <button class="btn btn-outline btn-sm" id="btnReaderOpen">在 Obsidian 打开</button>
+    </div>
+  </div>
+</aside>
+
+<div id="toasts" aria-live="polite"></div>
+<div class="proto-badge">交互原型 · 数据为演示假数据</div>
+
+<script>
+'use strict';
+/* ================= 工具 ================= */
+var $ = function(s, r){ return (r || document).querySelector(s); };
+var $$ = function(s, r){ return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* toast 系统（2.5s） */
+function toast(msg, kind){
+  var box = $('#toasts');
+  var t = document.createElement('div');
+  t.className = 'toast' + (kind ? ' ' + kind : '');
+  t.textContent = msg;
+  box.appendChild(t);
+  requestAnimationFrame(function(){ t.classList.add('in'); });
+  setTimeout(function(){
+    t.classList.remove('in');
+    setTimeout(function(){ t.remove(); }, 320);
+  }, 2500);
+}
+
+/* 弹层栈（Esc 逐层关闭） */
+var layerStack = [];
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape' && layerStack.length){
+    var close = layerStack[layerStack.length - 1];
+    close();
+  }
+});
+
+function openModal(html, width){
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML = '<div class="modal-shell" style="max-width:' + (width || 480) + 'px"><div class="modal-inner">' + html + '</div></div>';
+  document.body.appendChild(ov);
+  requestAnimationFrame(function(){ ov.classList.add('open'); });
+  var inner = ov.querySelector('.modal-inner');
+  function close(){
+    ov.classList.remove('open');
+    var i = layerStack.indexOf(close);
+    if (i > -1) layerStack.splice(i, 1);
+    setTimeout(function(){ ov.remove(); }, 300);
+  }
+  ov.addEventListener('click', function(e){ if (e.target === ov) close(); });
+  layerStack.push(close);
+  var first = inner.querySelector('input, select, button');
+  if (first) first.focus();
+  return { el: inner, close: close };
+}
+
+/* ================= 视图切换 ================= */
+var views = { search: 'view-search', libs: 'view-libs', index: 'view-index', diag: 'view-diag', set: 'view-set' };
+$$('.nav-btn').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    $$('.nav-btn').forEach(function(b){ b.classList.toggle('on', b === btn); });
+    Object.keys(views).forEach(function(k){
+      var sec = $('#' + views[k]);
+      var show = k === btn.dataset.view;
+      sec.hidden = !show;
+      if (show && !reduceMotion){
+        sec.style.animation = 'none';
+        void sec.offsetWidth;
+        sec.style.animation = '';
+      }
+    });
+  });
+});
+
+/* 主题切换 */
+$('#btnTheme').addEventListener('click', function(){
+  var dark = document.documentElement.dataset.theme === 'dark';
+  document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+  $('#icoMoon').hidden = !dark;
+  $('#icoSun').hidden = dark;
+});
+
+/* ================= 假数据 ================= */
+var LIBS = [
+  { name: '技术笔记', dir: 'D:\\Obsidian\\技术笔记', files: '1,284', blocks: '5,731', formats: ['md', 'pdf', 'docx'], gate: true },
+  { name: '论文阅读', dir: 'D:\\Obsidian\\论文阅读', files: '412', blocks: '1,930', formats: ['md', 'pdf'], gate: true },
+  { name: '会议记录', dir: 'D:\\Obsidian\\会议记录', files: '198', blocks: '645', formats: ['md', 'docx'], gate: true }
+];
+var ALL_FMT = ['md', 'pdf', 'docx', 'txt'];
+
+var RESULTS = [
+  {
+    title: 'WEMM 设计',
+    path: '20-Projects/Obsidian RAG/WEMM 设计.md',
+    score: 0.87,
+    snippet: '<mark>页级视觉导航</mark>的思路是把「一页」而非「一个文本块」作为检索单元：页面先渲染成图像，再经视觉编码器投影为页向量，写入独立 collection。这样课件截图、扫描论文、图表笔记这类文本块检索长期失明的内容，也能被语义命中。',
+    rel: { out: ['检索与重排', 'MinerU 笔记'], in: ['TASK_LOG'] },
+    doc: [
+      { h: '设计动机', ps: ['文本块检索在课件截图、扫描论文、图表笔记上长期失明：<mark>WEMM</mark> 把「一页」当作检索单元，页面先经渲染、再经视觉编码器投影为<mark>页向量</mark>，让「看过图」的内容也能被语义命中。', '整条链路默认关闭（<code>wemm_backend=off</code>），开启后才建立页库，不影响主检索的稳定性。'] },
+      { h: '页向量与独立 collection', ps: ['页向量写入独立 collection <code>&lt;collection&gt;.wemm</code>，配独立 meta 与独立 WEMM_VERSION；终态与成功条目带 <code>xsrc=wemm:&lt;模型&gt;:&lt;维度&gt;:&lt;DPI&gt;</code> 签名，失败每轮真重试、改档自动重渲染。', 'upsert 分批进行，写库成功才落成功 meta，避免半批状态污染簿记。'] },
+      { h: '检索零写副作用', ps: ['<code>wemm_retriever.py</code> 在查询路径上零写副作用；<code>wemm_server.py</code> 全局进程懒加载模型，可选空闲卸载显存。', '长驻 MCP 进程配置一律经 <code>config.reload_config()</code> 现读，不再读 import 快照。'] },
+      { h: 'MCP 工具映射', ps: ['<code>navigate_knowledge</code> 负责<mark>页级视觉导航</mark>；<code>read_document</code> 以零触发只读缓存交付全文；<code>find_duplicates</code> 走 MinHash+LSH 只读近似去重。'] }
+    ]
+  },
+  {
+    title: '检索与重排',
+    path: '20-Projects/Obsidian RAG/检索与重排.md',
+    score: 0.74,
+    snippet: '混合检索先取向量与 BM25 两路候选，融合后交给重排模型精排。置信度按档位呈现：0.75 以上苔绿、0.5 以上墨蓝、其余赭红，只作参考不作硬门槛，最终排序以重排分为准。',
+    rel: { out: ['WEMM 设计'], in: ['TASK_LOG', 'WEMM 设计'] },
+    doc: [
+      { h: '混合检索', ps: ['向量召回负责语义，BM25 负责专有名词与编号的精确命中，两路候选融合后再进重排。默认权重向量 0.7、BM25 0.3，可在设置里调整。'] },
+      { h: '重排与置信度', ps: ['重排模型 <code>BGE-reranker-v2-m3</code> 对Top-K候选精排；置信度只作展示参考，<mark>0.75 以上苔绿、0.5 以上墨蓝、其余赭红</mark>，不设硬门槛。'] },
+      { h: '与 WEMM 的关系', ps: ['文本块检索与<mark>页级视觉导航</mark>是并行的两条召回线：前者答「哪段文字」，后者答「哪一页图」，GUI 里结果卡可内联展开关联笔记互相跳转。'] }
+    ]
+  },
+  {
+    title: 'MinerU 笔记',
+    path: '02-Areas/MinerU 笔记.md',
+    score: 0.61,
+    snippet: 'MinerU 云端 API 走并行批量：扫描段先分流攒批，线程池只并行网络 I/O，结果回主线程单线程收口。限速用滑动窗口，默认每分钟 45 次；提交错误三分类重试，中断任务断点簿记续接。',
+    rel: { out: ['WEMM 设计'], in: ['检索与重排'] },
+    doc: [
+      { h: '云端 API', ps: ['扫描件整本送 <code>MinerU</code> vlm 认字，产出一份完整 MD；文字层 PDF 也可选云端换取更准的<mark>版面与表格结构识别</mark>。'] },
+      { h: '并行批量与限速', ps: ['线程池只并行网络 I/O（<code>mineru_concurrency</code> 默认 3，0 为最大吞吐），滑动窗口限速默认每分钟 45 次；worker 不触碰 pymupdf。'] },
+      { h: '断点簿记', ps: ['中断任务记录在 <code>mineru_pending.json</code>，下轮续接不重复提交；提交错误按三分类重试。'] }
+    ]
+  },
+  {
+    title: '2026-08-30',
+    path: '03-Journals/2026-08-30.md',
+    score: 0.55,
+    snippet: '今天把 WEMM 页级导航的检索链路跑通了，查询侧确认零写副作用。顺手验证了混合型 PDF 的路由：只要有一页缺文字层，整本按扫描件处理，宁可诚实空缺也不拼接半份内容。',
+    rel: { out: ['WEMM 设计'], in: [] },
+    doc: [
+      { h: '今日进展', ps: ['把 <mark>WEMM 页级视觉导航</mark>的检索链路跑通，查询侧确认零写副作用；页库 upsert 分批收口验证通过。'] },
+      { h: '随记', ps: ['混合型 PDF 的路由符合预期：任一页无文字层即整本按扫描件处理，宁可诚实空缺，绝不产出半份拼接内容。'] }
+    ]
+  }
+];
+
+/* ================= 检索 ================= */
+var state = { topK: 5, rendered: false, relCache: {}, readerOpen: false };
+
+function scoreCls(s){ return s >= 0.75 ? 'c-high' : (s >= 0.5 ? 'c-mid' : 'c-low'); }
+
+function skeletonHTML(){
+  var h = '';
+  for (var i = 0; i < 4; i++){
+    h += '<div class="skel-item"><div class="sk t"></div><div class="sk p"></div><div class="sk s"></div><div class="sk s2"></div></div>';
+  }
+  return h;
+}
+
+function resultHTML(r, i){
+  var delay = reduceMotion ? '' : ' style="animation-delay:' + (i * 70) + 'ms"';
+  var relHTML =
+    '<div class="rel-group"><span class="rel-label">出链</span><ul class="rel-list">' +
+    r.rel.out.map(function(n){ return '<li><a data-note="' + n + '">' + n + '</a></li>'; }).join('') +
+    '</ul></div>' +
+    '<div class="rel-group"><span class="rel-label">入链</span>' +
+    (r.rel.in.length
+      ? '<ul class="rel-list">' + r.rel.in.map(function(n){ return '<li><a data-note="' + n + '">' + n + '</a></li>'; }).join('') + '</ul>'
+      : '<p class="rel-empty">暂无入链</p>') +
+    '</div>';
+  return (
+    '<article class="result anim-up"' + delay + ' data-i="' + i + '">' +
+      '<div class="r-topline">' +
+        '<span class="r-index">' + String(i + 1).padStart(2, '0') + '</span>' +
+        '<span class="r-score ' + scoreCls(r.score) + '"><span class="dot"></span>' + r.score.toFixed(2) + '</span>' +
+      '</div>' +
+      '<h3 class="r-title">' + r.title + '</h3>' +
+      '<p class="r-path">' + r.path + '</p>' +
+      '<div class="r-body">' +
+        '<p class="r-snippet" title="点击展开或收起">' + r.snippet + '</p>' +
+        '<div class="r-actions">' +
+          '<button class="act" data-act="rel">关联</button>' +
+          '<button class="act" data-act="preview">预览</button>' +
+          '<button class="act" data-act="open">在 Obsidian 打开</button>' +
+        '</div>' +
+      '</div>' +
+      '<p class="r-clue">片段默认收起 3 行，点击正文展开</p>' +
+      '<div class="r-rel" hidden>' + relHTML + '</div>' +
+    '</article>'
+  );
+}
+
+function renderResults(){
+  var box = $('#results');
+  var list = RESULTS.slice(0, state.topK);
+  box.innerHTML = list.map(resultHTML).join('');
+  $('#resultMeta').hidden = false;
+  $('#resultMeta').textContent = '共 ' + list.length + ' 条，检索用时 0.8 s';
+  $('#emptyState').style.display = 'none';
+  state.rendered = true;
+}
+
+function doSearch(){
+  var q = $('#q').value.trim();
+  if (!q){ toast('请输入要检索的内容', 'warn'); $('#q').focus(); return; }
+  $('#emptyState').style.display = 'none';
+  $('#resultMeta').hidden = true;
+  $('#results').innerHTML = skeletonHTML();
+  setTimeout(renderResults, 800);
+}
+
+$('#btnSearch').addEventListener('click', doSearch);
+$('#q').addEventListener('keydown', function(e){ if (e.key === 'Enter') doSearch(); });
+$$('.try button').forEach(function(b){
+  b.addEventListener('click', function(){ $('#q').value = b.dataset.q; doSearch(); });
+});
+$('#selTopK').addEventListener('change', function(){
+  state.topK = parseInt(this.value, 10);
+  if (state.rendered) renderResults(); /* Top-K 改变即时截断生效 */
+});
+$('#swExpand').addEventListener('change', function(){
+  document.body.classList.toggle('expand-body', this.checked);
+});
+
+/* 结果条目交互（事件委托） */
+$('#results').addEventListener('click', function(e){
+  var act = e.target.closest('[data-act]');
+  if (act){
+    var row = act.closest('.result');
+    var idx = parseInt(row.dataset.i, 10);
+    if (act.dataset.act === 'open'){ toast('已在 Obsidian 中打开（原型模拟）'); return; }
+    if (act.dataset.act === 'preview'){ openReader(idx); return; }
+    if (act.dataset.act === 'rel'){ toggleRel(row, idx, act); return; }
+  }
+  if (e.target.closest('[data-note]')){ toast('已跳转关联笔记（原型模拟）'); return; }
+  var snip = e.target.closest('.r-snippet');
+  if (snip) snip.classList.toggle('open');
+});
+
+/* 关联：首次查询后缓存 */
+function toggleRel(row, idx, btn){
+  var box = row.querySelector('.r-rel');
+  var showing = !box.hidden;
+  if (showing){ box.hidden = true; btn.textContent = '关联'; return; }
+  btn.textContent = '收起关联';
+  if (state.relCache[idx]){ box.hidden = false; return; }
+  box.innerHTML = '<p class="rel-empty">查询双链中</p>';
+  box.hidden = false;
+  setTimeout(function(){
+    state.relCache[idx] = true;
+    box.innerHTML = relContentHTML(RESULTS[idx]);
+  }, 450);
+}
+function relContentHTML(r){
+  var out = r.rel.out.map(function(n){ return '<li><a data-note="' + n + '">' + n + '</a></li>'; }).join('');
+  var inn = r.rel.in.length
+    ? '<ul class="rel-list">' + r.rel.in.map(function(n){ return '<li><a data-note="' + n + '">' + n + '</a></li>'; }).join('') + '</ul>'
+    : '<p class="rel-empty">暂无入链</p>';
+  return '<div class="rel-group"><span class="rel-label">出链</span><ul class="rel-list">' + out + '</ul></div>' +
+         '<div class="rel-group"><span class="rel-label">入链</span>' + inn + '</div>';
+}
+
+/* ================= 阅读面板 ================= */
+var reader = $('#reader');
+function openReader(idx){
+  var r = RESULTS[idx];
+  $('#rTitle').textContent = r.title;
+  $('#rPath').textContent = r.path;
+  $('#rToc').innerHTML = r.doc.map(function(s, i){
+    return '<a data-sec="' + i + '">' + s.h + '</a>';
+  }).join('');
+  $('#rBody').innerHTML = r.doc.map(function(s, i){
+    return '<section id="rsec-' + i + '"><h3>' + s.h + '</h3>' + s.ps.map(function(p){ return '<p>' + p + '</p>'; }).join('') + '</section>';
+  }).join('');
+  $('#rBody').scrollTop = 0;
+  if (!state.readerOpen) layerStack.push(closeReader);
+  reader.classList.add('open');
+  reader.setAttribute('aria-hidden', 'false');
+  $('#readerScrim').classList.add('show');
+  state.readerOpen = true;
+}
+function closeReader(){
+  if (!state.readerOpen) return;
+  reader.classList.remove('open');
+  reader.setAttribute('aria-hidden', 'true');
+  $('#readerScrim').classList.remove('show');
+  state.readerOpen = false;
+  var i = layerStack.indexOf(closeReader);
+  if (i > -1) layerStack.splice(i, 1);
+}
+$('#btnReaderClose').addEventListener('click', closeReader);
+$('#readerScrim').addEventListener('click', closeReader);
+$('#rToc').addEventListener('click', function(e){
+  var a = e.target.closest('[data-sec]');
+  if (!a) return;
+  var sec = $('#rsec-' + a.dataset.sec);
+  if (sec) sec.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+});
+$('#btnReaderOpen').addEventListener('click', function(){ toast('已在 Obsidian 中打开（原型模拟）'); });
+
+/* ================= 库 ================= */
+function renderLibs(){
+  $('#libList').innerHTML = LIBS.map(function(l, i){
+    return (
+      '<div class="lib-row" data-i="' + i + '">' +
+        '<div><h3 class="lib-name">' + l.name + '</h3><p class="lib-dir">' + l.dir + '</p></div>' +
+        '<div class="lib-stats"><b>' + l.files + '</b> 文件 / <b>' + l.blocks + '</b> 块</div>' +
+        '<div class="lib-actions">' +
+          '<button class="act" data-libact="config">配置</button>' +
+          '<button class="act" data-libact="remove">移除</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }).join('');
+}
+renderLibs();
+
+$('#libList').addEventListener('click', function(e){
+  var b = e.target.closest('[data-libact]');
+  if (!b) return;
+  var i = parseInt(b.closest('.lib-row').dataset.i, 10);
+  if (b.dataset.libact === 'config') openConfig(i);
+  else openRemove(i);
+});
+
+$('#btnAddLib').addEventListener('click', function(){
+  var m = openModal(
+    '<h3 class="modal-title">添加库</h3>' +
+    '<p class="modal-sub">新库首次索引默认只处理文本类格式，二进制格式需在门禁中批准。</p>' +
+    '<div class="field" id="fName"><label for="libName">库名称</label><input class="input" id="libName" placeholder="例如：项目档案"><p class="err-text">请填写库名称</p></div>' +
+    '<div class="field" id="fDir"><label for="libDir">本地路径</label><input class="input" id="libDir" placeholder="例如：D:\\Obsidian\\项目档案"><p class="err-text">请填写本地路径</p></div>' +
+    '<div class="modal-foot"><button class="btn btn-ghost" data-x>取消</button><button class="btn btn-primary" id="libSave">添加</button></div>'
+  );
+  m.el.querySelector('[data-x]').addEventListener('click', m.close);
+  m.el.querySelector('#libSave').addEventListener('click', function(){
+    var name = m.el.querySelector('#libName').value.trim();
+    var dir = m.el.querySelector('#libDir').value.trim();
+    var ok = true;
+    m.el.querySelector('#fName').classList.toggle('invalid', !name);
+    m.el.querySelector('#fDir').classList.toggle('invalid', !dir);
+    if (!name || !dir) return;
+    LIBS.push({ name: name, dir: dir, files: '0', blocks: '0', formats: ['md'], gate: true });
+    renderLibs();
+    m.close();
+    toast('库「' + name + '」已添加，等待首轮索引');
+  });
+});
+
+function openConfig(i){
+  var l = LIBS[i];
+  var checks = ALL_FMT.map(function(f){
+    return '<label class="check-row"><input type="checkbox" data-fmt="' + f + '"' + (l.formats.indexOf(f) > -1 ? ' checked' : '') + '> .' + f + '</label>';
+  }).join('');
+  var m = openModal(
+    '<h3 class="modal-title">配置「' + l.name + '」</h3>' +
+    '<p class="modal-sub">' + l.dir + '</p>' +
+    '<div class="field"><label>索引格式</label><div class="fmt-group">' + checks + '</div><p class="help">新增格式或改切块逻辑会触发 META_VERSION 重建。</p></div>' +
+    '<div class="set-item" style="padding:14px 0 0">' +
+      '<div class="txt"><p class="sw-label">Agent 门禁</p><p class="sw-desc">Agent 触发的索引仅处理已批准格式，未授权二进制文件被冻结。</p></div>' +
+      '<div class="set-ctrl"><span class="switch"><input type="checkbox" id="cfgGate"' + (l.gate ? ' checked' : '') + '><span class="track"></span><span class="knob"></span></span></div>' +
+    '</div>' +
+    '<div class="note note-warn" id="cfgWarn" hidden>AI Agent 将无法自动索引该库的二进制文件，需手动批准后才会进入队列。</div>' +
+    '<div class="modal-foot"><button class="btn btn-ghost" data-x>取消</button><button class="btn btn-primary" id="cfgSave">保存</button></div>'
+  );
+  var warn = m.el.querySelector('#cfgWarn');
+  warn.hidden = l.gate;
+  m.el.querySelector('#cfgGate').addEventListener('change', function(){ warn.hidden = this.checked; });
+  m.el.querySelector('[data-x]').addEventListener('click', m.close);
+  m.el.querySelector('#cfgSave').addEventListener('click', function(){
+    l.formats = $$('[data-fmt]', m.el).filter(function(c){ return c.checked; }).map(function(c){ return c.dataset.fmt; });
+    l.gate = m.el.querySelector('#cfgGate').checked;
+    m.close();
+    toast('「' + l.name + '」配置已保存');
+  });
+}
+
+function openRemove(i){
+  var l = LIBS[i];
+  var m = openModal(
+    '<h3 class="modal-title">移除「' + l.name + '」</h3>' +
+    '<p class="modal-sub">两种移除方式，选择后不可撤销的项会再次确认。</p>' +
+    '<label class="check-row" style="padding:9px 0"><input type="radio" name="rmode" value="reg" checked> 仅注销（保留源文件与索引数据，可随时重新接入）</label>' +
+    '<label class="check-row" style="padding:9px 0"><input type="radio" name="rmode" value="del" id="rDel"> <span style="color:var(--err)">注销并删除数据（删除 Chroma collection、meta 与缓存，源文件保留）</span></label>' +
+    '<label class="check-row" id="rConfirmRow" style="padding:9px 0 0 24px;opacity:.45;pointer-events:none"><input type="checkbox" id="rConfirm" disabled> 我确认不可恢复</label>' +
+    '<div class="modal-foot"><button class="btn btn-ghost" data-x>取消</button><button class="btn btn-primary" id="rGo">确认移除</button></div>'
+  );
+  var rDel = m.el.querySelector('#rDel');
+  var rConfirm = m.el.querySelector('#rConfirm');
+  var row = m.el.querySelector('#rConfirmRow');
+  var go = m.el.querySelector('#rGo');
+  m.el.addEventListener('change', function(){
+    var del = rDel.checked;
+    row.style.opacity = del ? '1' : '.45';
+    row.style.pointerEvents = del ? 'auto' : 'none';
+    rConfirm.disabled = !del;
+    if (!del) rConfirm.checked = false;
+    go.classList.toggle('btn-danger', del && rConfirm.checked);
+    go.classList.toggle('btn-primary', !(del && rConfirm.checked));
+  });
+  m.el.querySelector('[data-x]').addEventListener('click', m.close);
+  go.addEventListener('click', function(){
+    if (rDel.checked && !rConfirm.checked){ toast('请先勾选「我确认不可恢复」', 'warn'); return; }
+    var del = rDel.checked;
+    LIBS.splice(i, 1);
+    renderLibs();
+    m.close();
+    toast(del ? '已注销并删除数据（原型模拟）' : '已注销「' + l.name + '」，数据已保留');
+  });
+}
+
+/* ================= 索引 ================= */
+var STAGE_DUR = ['2.1 s', '1.8 s', '2.3 s', '1.8 s'];
+var idxTimer = null, idxStart = 0;
+var stages = $$('#view-index .stage');
+
+function setStage(i, cls, text){
+  var st = stages[i];
+  st.classList.remove('active', 'done');
+  if (cls) st.classList.add(cls);
+  st.querySelector('.stage-state').textContent = text;
+}
+function resetStages(){
+  for (var i = 0; i < 4; i++) setStage(i, 'done', '完成 ' + STAGE_DUR[i]);
+  setStage(4, 'done', '上轮已归档');
+  $('#idxFill').style.transform = 'scaleX(1)';
+  $('#idxElapsed').textContent = '80.0 s';
+  $('#idxEta').textContent = '0.0 s';
+}
+
+$('#btnInc').addEventListener('click', function(){
+  var inc = this, full = $('#btnFull'), stop = $('#btnStop');
+  inc.disabled = true; full.disabled = true; stop.hidden = false;
+  for (var i = 0; i < 5; i++) setStage(i, null, '等待');
+  $('#idxFill').style.transform = 'scaleX(0)';
+  idxStart = Date.now();
+  idxTimer = setInterval(function(){
+    var el = Date.now() - idxStart;
+    var p = Math.min(el / 8000, 1);
+    $('#idxFill').style.transform = 'scaleX(' + p + ')';
+    $('#idxElapsed').textContent = (el / 1000).toFixed(1) + ' s';
+    $('#idxEta').textContent = Math.max(0, (8000 - el) / 1000).toFixed(1) + ' s';
+    var cur = Math.min(3, Math.floor(p * 4));
+    for (var i = 0; i < 4; i++){
+      if (i < cur) setStage(i, 'done', '完成 ' + STAGE_DUR[i]);
+      else if (i === cur) setStage(i, 'active', '进行中');
+      else setStage(i, null, '等待');
+    }
+    setStage(4, null, '等待');
+    if (p >= 1){
+      clearInterval(idxTimer); idxTimer = null;
+      resetStages();
+      inc.disabled = false; full.disabled = false; stop.hidden = true;
+      $('#kpiTime').textContent = '8.0 秒';
+      toast('增量索引完成，3 个块更新');
+    }
+  }, 100);
+});
+$('#btnStop').addEventListener('click', function(){
+  if (idxTimer){ clearInterval(idxTimer); idxTimer = null; }
+  resetStages();
+  $('#btnInc').disabled = false; $('#btnFull').disabled = false; this.hidden = true;
+  toast('已停止，索引状态已复位', 'warn');
+});
+$('#btnFull').addEventListener('click', function(){
+  var rows = LIBS.map(function(l){ return '<div class="fail-row" style="grid-template-columns:1fr auto"><p class="fail-path">' + l.name + '</p><span class="dedup-score">' + l.blocks + ' 块</span></div>'; }).join('');
+  var m = openModal(
+    '<h3 class="modal-title">全量重建</h3>' +
+    '<p class="modal-sub">清空现有块后按当前 META_VERSION 重建全部库。</p>' +
+    '<div class="stage-list" style="border-top:1px solid var(--line)">' + rows + '</div>' +
+    '<p class="help" style="margin-top:12px">合计约 8,306 块，预计 3-5 分钟（RTX 4070）。</p>' +
+    '<div class="note note-err">重建期间检索可用性会下降，完成后自动恢复；中断可断点续跑。</div>' +
+    '<div class="modal-foot"><button class="btn btn-ghost" data-x>取消</button><button class="btn btn-danger" id="fullGo">确认全量重建</button></div>',
+    500
+  );
+  m.el.querySelector('[data-x]').addEventListener('click', m.close);
+  m.el.querySelector('#fullGo').addEventListener('click', function(){
+    m.close();
+    toast('全量重建已开始（原型模拟）');
+  });
+});
+
+/* ================= 诊断 ================= */
+$('#swWemm').addEventListener('change', function(){
+  $('#wemmStatus').textContent = '未探测';
+  $('#wemmStatus').className = '';
+});
+$('#btnProbe').addEventListener('click', function(){
+  var btn = this, st = $('#wemmStatus');
+  btn.disabled = true; btn.textContent = '探测中'; st.textContent = '探测中'; st.className = '';
+  setTimeout(function(){
+    btn.disabled = false; btn.textContent = '探测服务';
+    if ($('#swWemm').checked){ st.textContent = '已加载 · VRAM 2.1GB'; st.className = 'ok'; }
+    else { st.textContent = '服务未运行'; st.className = 'err'; }
+  }, 900);
+});
+$$('.btn-diff').forEach(function(b){
+  b.addEventListener('click', function(){ toast('已打开差异对比（原型模拟）'); });
+});
+function runIO(barId, btnId, msg){
+  var bar = $('#' + barId), btn = $('#' + btnId);
+  if (btn.disabled) return;
+  btn.disabled = true;
+  bar.classList.remove('run'); void bar.offsetWidth;
+  bar.classList.add('run');
+  setTimeout(function(){
+    bar.classList.remove('run');
+    bar.style.transform = 'scaleX(0)';
+    btn.disabled = false;
+    toast(msg);
+  }, 2000);
+}
+$('#btnExport').addEventListener('click', function(){ runIO('ioExport', 'btnExport', '导出完成（原型模拟）'); });
+$('#btnImport').addEventListener('click', function(){ runIO('ioImport', 'btnImport', '导入完成，校验 39 项全部通过（原型模拟）'); });
+
+/* ================= 设置 ================= */
+$$('.set-nav a').forEach(function(a){
+  a.addEventListener('click', function(e){
+    e.preventDefault();
+    $$('.set-nav a').forEach(function(x){ x.classList.toggle('on', x === a); });
+    var t = $(a.getAttribute('href'));
+    if (t) t.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+  });
+});
+$('#swWemmSet').addEventListener('change', function(){
+  $('#swWemm').checked = this.checked;
+});
+
+/* 扫描后端切 MinerU 云端：必须先弹第三方上传同意弹窗 */
+var selScan = $('#selScan'), scanConsented = false;
+selScan.addEventListener('change', function(){
+  if (this.value !== 'mineru' || scanConsented) return;
+  var prev = 'none';
+  var m = openModal(
+    '<h3 class="modal-title">第三方服务上传确认</h3>' +
+    '<p class="modal-sub">启用 MinerU 云端 OCR 前，请确认以下事项。</p>' +
+    '<p style="font-size:14px;line-height:1.8">扫描件页面图像将上传至第三方服务 MinerU 进行识别处理。上传内容经网络传输并由云端暂存，请确认你了解并同意后再启用。</p>' +
+    '<div class="modal-foot"><button class="btn btn-ghost" id="cNo">取消</button><button class="btn btn-primary" id="cYes">同意并启用</button></div>'
+  );
+  m.el.querySelector('#cNo').addEventListener('click', function(){
+    selScan.value = prev; /* 取消回退下拉值 */
+    m.close();
+  });
+  m.el.querySelector('#cYes').addEventListener('click', function(){
+    scanConsented = true;
+    m.close();
+    toast('已启用 MinerU 云端 OCR');
+  });
+});
+
+$('#btnSave').addEventListener('click', function(){
+  toast('已保存，配置已热读生效');
+});
+</script>
+</body>
+</html>

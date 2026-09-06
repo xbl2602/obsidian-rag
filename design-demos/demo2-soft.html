@@ -1,0 +1,1548 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Obsidian RAG · Soft Structuralism</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ============ Tokens ============ */
+:root{
+  --canvas:#F4F5F7;
+  --card:#FFFFFF;
+  --subtle:#FAFBFC;
+  --ink:#181B20;
+  --ink2:#6B7280;
+  --hairline:#E5E7EB;
+  --accent:#0B815A;
+  --accent-contrast:#FFFFFF;
+  --accent-soft:rgba(11,129,90,.10);
+  --danger:#C2402A;
+  --danger-soft:rgba(194,64,42,.09);
+  --warn:#B45309;
+  --warn-soft:rgba(180,83,9,.10);
+  --info:#2563EB;
+  --info-soft:rgba(37,99,235,.10);
+  --mark:rgba(11,129,90,.16);
+  --ring:0 0 0 1px rgba(16,24,40,.06);
+  --shadow-1:0 1px 2px rgba(16,24,40,.04),0 8px 24px rgba(16,24,40,.06);
+  --shadow-2:0 2px 4px rgba(16,24,40,.06),0 16px 40px rgba(16,24,40,.11);
+  --scrim:rgba(24,27,32,.42);
+  --toast-bg:#22262C;
+  --toast-ink:#F2F4F6;
+  --ease:cubic-bezier(.32,.72,0,1);
+  --r-shell:22px;
+  --r-core:16px;
+  --r-btn:10px;
+  --sans:'Noto Sans SC',-apple-system,'Segoe UI',sans-serif;
+  --disp:'Sora','Noto Sans SC',sans-serif;
+  --mono:'IBM Plex Mono','Sora',ui-monospace,monospace;
+}
+html[data-theme="dark"]{
+  --canvas:#16181C;
+  --card:#1E2126;
+  --subtle:#22262C;
+  --ink:#E8EAED;
+  --ink2:#A0A7B1;
+  --hairline:#2D3138;
+  --accent:#2EB986;
+  --accent-contrast:#06231A;
+  --accent-soft:rgba(46,185,134,.13);
+  --danger:#E5684F;
+  --danger-soft:rgba(229,104,79,.13);
+  --warn:#E09A4A;
+  --warn-soft:rgba(224,154,74,.13);
+  --info:#6C9BF0;
+  --info-soft:rgba(108,155,240,.13);
+  --mark:rgba(46,185,134,.24);
+  --ring:0 0 0 1px rgba(255,255,255,.07);
+  --shadow-1:0 1px 2px rgba(0,0,0,.28),0 8px 24px rgba(0,0,0,.32);
+  --shadow-2:0 2px 4px rgba(0,0,0,.32),0 16px 40px rgba(0,0,0,.44);
+  --scrim:rgba(6,8,10,.58);
+  --toast-bg:#F2F4F6;
+  --toast-ink:#181B20;
+}
+/* ============ Base ============ */
+*{margin:0;padding:0;box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{
+  font-family:var(--sans);
+  background:var(--canvas);
+  color:var(--ink);
+  font-size:15px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  transition:background .35s var(--ease),color .35s var(--ease);
+}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit;}
+input,select{font-family:inherit;font-size:14px;color:var(--ink);}
+::selection{background:var(--accent-soft);}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums;}
+.wrap{max-width:1120px;margin:0 auto;padding:0 32px;}
+button{transition:transform .18s var(--ease),box-shadow .25s var(--ease),background .2s var(--ease),color .2s var(--ease),border-color .2s var(--ease),opacity .2s var(--ease);}
+button:active{transform:scale(.98);}
+button:disabled{cursor:not-allowed;opacity:.5;transform:none;}
+
+/* ============ Nav ============ */
+.nav{
+  position:sticky;top:0;z-index:60;height:56px;
+  background:var(--card);border-bottom:1px solid var(--hairline);
+}
+.nav-inner{max-width:1120px;margin:0 auto;padding:0 32px;height:100%;display:flex;align-items:center;gap:24px;}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--disp);font-weight:700;font-size:15px;letter-spacing:-.01em;}
+.brand-mark{width:22px;height:22px;border-radius:7px;background:var(--ink);position:relative;flex:none;}
+.brand-mark::after{content:"";position:absolute;inset:6px;border-radius:3px;background:var(--accent);}
+.brand-sub{font-family:var(--mono);font-size:10.5px;color:var(--ink2);font-weight:400;letter-spacing:.04em;margin-left:2px;}
+.nav-tabs{display:flex;gap:4px;margin:0 auto;}
+.nav-tabs button{
+  padding:7px 16px;border-radius:999px;font-size:13.5px;font-weight:500;color:var(--ink2);
+}
+.nav-tabs button:hover{color:var(--ink);background:var(--subtle);}
+.nav-tabs button.on{color:var(--ink);background:var(--canvas);box-shadow:var(--ring);}
+.icon-btn{
+  width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  color:var(--ink2);box-shadow:var(--ring);background:var(--card);
+}
+.icon-btn:hover{color:var(--ink);transform:translateY(-1px);box-shadow:var(--shadow-1);}
+.icon-btn svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+html[data-theme="dark"] .i-sun{display:none;}
+html:not([data-theme="dark"]) .i-moon{display:none;}
+
+/* ============ Views & reveal ============ */
+main{min-height:calc(100dvh - 56px);}
+.view{display:none;padding-bottom:96px;}
+.view.active{display:block;}
+.view .reveal{opacity:0;}
+.view.in .reveal{animation:fadeUp .55s var(--ease) both;animation-delay:calc(var(--d,0)*60ms);}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:translateY(0);}}
+
+.view-head{padding:44px 0 26px;}
+.view-head h2{font-family:var(--disp);font-size:26px;font-weight:700;letter-spacing:-.02em;line-height:1.2;}
+.view-head p{color:var(--ink2);font-size:13.5px;margin-top:6px;}
+.view-head .head-row{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+
+/* ============ Buttons ============ */
+.btn{
+  display:inline-flex;align-items:center;gap:7px;height:38px;padding:0 18px;
+  border-radius:var(--r-btn);font-size:13.5px;font-weight:500;white-space:nowrap;
+}
+.btn-primary{background:var(--accent);color:var(--accent-contrast);box-shadow:0 1px 2px rgba(16,24,40,.08),0 6px 16px rgba(11,129,90,.18);}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 2px 4px rgba(16,24,40,.08),0 10px 24px rgba(11,129,90,.24);}
+.btn-outline{background:var(--card);box-shadow:var(--ring);}
+.btn-outline:hover{transform:translateY(-1px);box-shadow:var(--shadow-1);}
+.btn-danger{background:var(--danger);color:#fff;}
+.btn-danger:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(194,64,42,.25);}
+.btn-danger-o{background:var(--card);color:var(--danger);box-shadow:inset 0 0 0 1px rgba(194,64,42,.35);}
+.btn-danger-o:hover{background:var(--danger-soft);}
+.btn-ghost{height:30px;padding:0 10px;border-radius:8px;font-size:13px;color:var(--ink2);}
+.btn-ghost:hover{color:var(--ink);background:var(--subtle);}
+.btn-sm{height:32px;padding:0 13px;font-size:12.5px;}
+
+/* ============ Cards / Double-Bezel ============ */
+.shell{
+  background:var(--card);border-radius:var(--r-shell);box-shadow:var(--shadow-1),var(--ring);
+  padding:8px;transition:box-shadow .3s var(--ease),transform .3s var(--ease);
+}
+.shell:hover{box-shadow:var(--shadow-2),var(--ring);}
+.core{background:var(--subtle);border-radius:var(--r-core);padding:22px 24px;height:100%;}
+.card-flat{
+  background:var(--card);border-radius:18px;box-shadow:var(--shadow-1),var(--ring);
+  transition:transform .3s var(--ease),box-shadow .3s var(--ease);
+}
+.card-flat:hover{transform:translateY(-1px);box-shadow:var(--shadow-2),var(--ring);}
+
+/* ============ Search ============ */
+#view-search{padding-bottom:120px;padding-top:84px;}
+#view-search.docked{padding-top:0;}
+.tagline{
+  text-align:center;font-family:var(--mono);font-size:12px;color:var(--ink2);
+  letter-spacing:.06em;margin-bottom:22px;transition:opacity .4s var(--ease);
+}
+.dock-wrap{transition:padding .4s var(--ease);}
+#view-search.docked .tagline{display:none;}
+#view-search.docked .dock-wrap{position:sticky;top:68px;z-index:40;padding:8px 0 14px;background:linear-gradient(var(--canvas) 78%,transparent);}
+.island{
+  display:flex;align-items:center;gap:8px;background:var(--card);
+  border-radius:18px;height:56px;padding:0 9px 0 18px;max-width:680px;margin:0 auto;
+  box-shadow:var(--shadow-1),var(--ring);
+  transition:max-width .45s var(--ease),height .45s var(--ease),border-radius .45s var(--ease),box-shadow .3s var(--ease);
+}
+.island:focus-within{box-shadow:0 0 0 2px var(--accent),var(--shadow-2);transform:translateY(-1px);}
+#view-search.docked .island{max-width:720px;height:48px;border-radius:14px;}
+.island-ico{width:18px;height:18px;flex:none;color:var(--ink2);}
+.island-ico svg{width:100%;height:100%;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;}
+#searchInput{
+  flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:15px;
+}
+#searchInput::placeholder{color:#9CA3AF;}
+.topk{position:relative;flex:none;}
+.topk-btn{
+  display:flex;align-items:center;gap:6px;height:34px;padding:0 10px 0 12px;border-radius:9px;
+  font-family:var(--mono);font-size:12px;color:var(--ink2);box-shadow:var(--ring);
+}
+.topk-btn:hover{color:var(--ink);}
+.topk-btn svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.topk-pop{
+  position:absolute;right:0;top:calc(100% + 8px);background:var(--card);border-radius:12px;
+  box-shadow:var(--shadow-2),var(--ring);padding:5px;min-width:110px;z-index:5;
+  opacity:0;transform:translateY(-4px);pointer-events:none;transition:opacity .22s var(--ease),transform .22s var(--ease);
+}
+.topk-pop.open{opacity:1;transform:translateY(0);pointer-events:auto;}
+.topk-pop button{
+  display:flex;width:100%;justify-content:space-between;align-items:center;padding:7px 10px;
+  border-radius:8px;font-family:var(--mono);font-size:12.5px;color:var(--ink2);
+}
+.topk-pop button:hover{background:var(--subtle);color:var(--ink);}
+.topk-pop button.on{color:var(--accent);background:var(--accent-soft);}
+.island-go{
+  height:38px;padding:0 20px;border-radius:11px;background:var(--accent);color:var(--accent-contrast);
+  font-size:13.5px;font-weight:500;flex:none;
+}
+.island-go:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(11,129,90,.28);}
+.island-meta{
+  max-width:680px;margin:12px auto 0;display:flex;align-items:center;gap:14px;
+  font-size:12.5px;color:var(--ink2);transition:max-width .45s var(--ease);
+}
+#view-search.docked .island-meta{max-width:720px;}
+.switch-line{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;}
+.hint-chips{display:flex;gap:8px;margin-left:auto;}
+.hint-chip{
+  font-size:12px;color:var(--ink2);padding:4px 11px;border-radius:999px;box-shadow:var(--ring);background:var(--card);
+}
+.hint-chip:hover{color:var(--accent);border-color:transparent;box-shadow:0 0 0 1px var(--accent-soft);}
+
+/* switch */
+.sw{width:36px;height:21px;border-radius:999px;background:var(--hairline);position:relative;flex:none;transition:background .25s var(--ease);}
+.sw span{position:absolute;top:2.5px;left:2.5px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.25);transition:transform .25s var(--ease);}
+.sw.on{background:var(--accent);}
+.sw.on span{transform:translateX(15px);}
+html[data-theme="dark"] .sw span{background:#D7DBE0;}
+
+/* ============ Results ============ */
+.results{max-width:720px;margin:0 auto;}
+.results-head{
+  display:flex;align-items:baseline;gap:12px;padding:6px 4px 14px;
+  font-family:var(--mono);font-size:12px;color:var(--ink2);
+}
+.results-head b{color:var(--ink);font-weight:500;}
+/* skeleton */
+.skel{display:none;flex-direction:column;gap:14px;}
+.skel.on{display:flex;}
+.sk-card{background:var(--card);border-radius:18px;box-shadow:var(--shadow-1),var(--ring);padding:18px 20px;animation:pulse 1.3s ease-in-out infinite alternate;}
+.sk-card:nth-child(2){animation-delay:.12s;}
+.sk-card:nth-child(3){animation-delay:.24s;}
+.sk-card:nth-child(4){animation-delay:.36s;}
+@keyframes pulse{from{opacity:.45;}to{opacity:.9;}}
+.sk-line{height:11px;border-radius:6px;background:var(--hairline);}
+.sk-path{width:42%;margin-bottom:14px;}
+.sk-badge{width:52px;height:18px;border-radius:999px;background:var(--hairline);position:absolute;right:20px;top:19px;}
+.sk-card{position:relative;}
+.sk-line + .sk-line{margin-top:9px;}
+.sk-l1{width:94%;}.sk-l2{width:88%;}.sk-l3{width:55%;}
+/* result card */
+.rlist{display:none;flex-direction:column;gap:14px;}
+.rlist.on{display:flex;}
+.rcard{padding:18px 20px;position:relative;}
+.rcard .reveal-in{animation:fadeUp .5s var(--ease) both;animation-delay:calc(var(--d,0)*70ms);}
+.r-top{display:flex;align-items:center;gap:12px;margin-bottom:9px;}
+.r-rank{font-family:var(--mono);font-size:12px;color:#9CA3AF;flex:none;}
+.r-path{font-family:var(--mono);font-size:12px;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.badge{flex:none;font-family:var(--mono);font-size:11px;font-weight:500;padding:2.5px 9px;border-radius:999px;}
+.b-high{background:var(--accent-soft);color:var(--accent);}
+.b-mid{background:var(--info-soft);color:var(--info);}
+.b-low{background:var(--warn-soft);color:var(--warn);}
+.r-snippet{font-size:14px;color:#3D4450;line-height:1.75;}
+html[data-theme="dark"] .r-snippet{color:#C3C8CF;}
+.r-snippet.clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+.r-actions{display:flex;align-items:center;gap:4px;margin-top:10px;}
+.r-actions .sep{flex:1;}
+.r-links{
+  display:none;margin-top:14px;padding:14px 16px;background:var(--subtle);border-radius:12px;
+  grid-template-columns:1fr 1fr;gap:6px 18px;
+}
+.r-links.on{display:grid;animation:fadeUp .35s var(--ease) both;}
+.r-links h5{font-size:11px;color:var(--ink2);font-weight:500;letter-spacing:.05em;margin-bottom:7px;}
+.link-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.lchip{font-size:12px;padding:3.5px 10px;border-radius:999px;background:var(--card);box-shadow:var(--ring);color:var(--ink);}
+.lchip:hover{color:var(--accent);box-shadow:0 0 0 1px var(--accent-soft);}
+mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px;}
+
+/* ============ Reading panel ============ */
+.read-panel{
+  position:fixed;top:0;right:0;height:100dvh;width:420px;max-width:100vw;z-index:80;
+  background:var(--card);box-shadow:-16px 0 48px rgba(16,24,40,.14);
+  transform:translateX(105%);transition:transform .45s var(--ease);
+  display:flex;flex-direction:column;
+}
+.read-panel.open{transform:translateX(0);}
+.rp-head{padding:20px 24px 14px;border-bottom:1px solid var(--hairline);}
+.rp-top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.rp-kicker{font-family:var(--mono);font-size:11px;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.rp-close{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--ink2);flex:none;}
+.rp-close:hover{background:var(--subtle);color:var(--ink);}
+.rp-close svg{width:15px;height:15px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;}
+.rp-title{font-family:var(--disp);font-size:19px;font-weight:700;letter-spacing:-.01em;margin-top:10px;line-height:1.35;}
+.rp-meta{display:flex;align-items:center;gap:10px;margin-top:10px;}
+.rp-anchors{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;}
+.rp-anchor{font-size:12px;padding:4px 11px;border-radius:999px;background:var(--subtle);color:var(--ink2);box-shadow:var(--ring);}
+.rp-anchor:hover{color:var(--accent);box-shadow:0 0 0 1px var(--accent-soft);}
+.rp-body{flex:1;overflow-y:auto;padding:20px 24px 40px;}
+.rp-body section{margin-bottom:26px;scroll-margin-top:12px;}
+.rp-body h4{font-size:14.5px;font-weight:700;margin-bottom:8px;}
+.rp-body p{font-size:13.5px;color:#3D4450;line-height:1.85;}
+html[data-theme="dark"] .rp-body p{color:#C3C8CF;}
+.rp-foot{padding:12px 24px;border-top:1px solid var(--hairline);display:flex;gap:10px;align-items:center;}
+.rp-foot .btn{flex:1;justify-content:center;}
+
+/* ============ Libraries ============ */
+.lib-list{display:flex;flex-direction:column;gap:14px;max-width:860px;}
+.lib-card{display:flex;align-items:center;gap:22px;padding:20px 24px;}
+.lib-icon{width:42px;height:42px;border-radius:12px;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;flex:none;color:var(--accent);}
+.lib-icon svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+.lib-main{flex:1;min-width:0;}
+.lib-name{font-weight:700;font-size:15px;}
+.lib-path{font-family:var(--mono);font-size:11.5px;color:var(--ink2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.lib-stats{display:flex;gap:26px;flex:none;text-align:right;}
+.lib-stat .v{font-family:var(--disp);font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.01em;}
+.lib-stat .k{font-size:11px;color:var(--ink2);margin-top:1px;}
+.lib-acts{display:flex;gap:8px;flex:none;}
+.lib-gate{font-size:11px;color:var(--warn);margin-top:5px;display:none;}
+.lib-gate.on{display:block;}
+@media (max-width:960px){.lib-stats{display:none;}}
+
+/* ============ Index ============ */
+.idx-grid{display:grid;grid-template-columns:7fr 5fr;gap:18px;align-items:start;}
+.idx-kpis{display:flex;gap:40px;margin:26px 0 8px;flex-wrap:wrap;}
+.kpi .kpi-num{font-family:var(--disp);font-size:44px;font-weight:700;letter-spacing:-.03em;line-height:1.05;font-variant-numeric:tabular-nums;}
+.kpi .kpi-label{font-size:11px;color:var(--ink2);margin-top:5px;}
+.stepper{display:flex;align-items:center;gap:0;margin:20px 0 6px;}
+.st{display:flex;align-items:center;flex:1;min-width:0;}
+.st:last-child{flex:0 0 auto;}
+.st-node{display:flex;flex-direction:column;align-items:center;gap:7px;flex:none;}
+.st-dot{width:11px;height:11px;border-radius:50%;background:var(--card);box-shadow:inset 0 0 0 1.5px var(--hairline);transition:all .3s var(--ease);}
+.st-label{font-size:11.5px;color:var(--ink2);white-space:nowrap;transition:color .3s;}
+.st-line{flex:1;height:2px;background:var(--hairline);margin:0 8px 18px;position:relative;border-radius:2px;overflow:hidden;}
+.st-line i{position:absolute;inset:0;background:var(--accent);transform:scaleX(0);transform-origin:left;transition:transform .3s linear;}
+.st.done .st-dot{background:var(--accent);box-shadow:none;}
+.st.done .st-line i{transform:scaleX(1);}
+.st.active .st-dot{background:var(--accent);box-shadow:0 0 0 4px var(--accent-soft);}
+.st.active .st-label{color:var(--accent);font-weight:500;}
+.st.done .st-label{color:var(--ink);}
+.prog-track{height:5px;border-radius:99px;background:var(--hairline);overflow:hidden;margin:16px 0 10px;}
+.prog-track i{display:block;height:100%;border-radius:99px;background:var(--accent);transform:scaleX(0);transform-origin:left;transition:transform .12s linear;}
+.run-meta{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11.5px;color:var(--ink2);}
+.idx-actions{display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;}
+#btnStop{display:none;}
+#btnStop.show{display:inline-flex;}
+.status-line{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink2);margin-top:18px;}
+.dot-live{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:breath 2.4s ease-in-out infinite;flex:none;}
+@keyframes breath{0%,100%{opacity:1;}50%{opacity:.3;}}
+.scope-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 2px;}
+.scope-row + .scope-row{border-top:1px solid var(--hairline);}
+.scope-name{font-size:13.5px;font-weight:500;}
+.scope-path{font-family:var(--mono);font-size:10.5px;color:var(--ink2);margin-top:2px;}
+.scope-blocks{font-family:var(--mono);font-size:12px;color:var(--ink2);}
+.chk{width:17px;height:17px;accent-color:var(--accent);cursor:pointer;}
+.col-stack{display:flex;flex-direction:column;gap:18px;}
+.mini-h{font-size:13px;font-weight:700;margin-bottom:4px;}
+.mini-sub{font-size:12px;color:var(--ink2);margin-bottom:12px;}
+.srv-rows{display:flex;flex-direction:column;gap:9px;font-family:var(--mono);font-size:11.5px;}
+.srv-rows div{display:flex;justify-content:space-between;color:var(--ink2);}
+.srv-rows b{color:var(--ink);font-weight:500;}
+@media (max-width:960px){.idx-grid{grid-template-columns:1fr;}.idx-kpis{gap:28px;}}
+
+/* ============ Diagnostics ============ */
+.diag-grid{display:grid;grid-template-columns:7fr 5fr;gap:18px;align-items:start;}
+.fail-table{width:100%;border-collapse:collapse;}
+.fail-table th{
+  text-align:left;font-size:11px;font-weight:500;color:var(--ink2);
+  padding:2px 8px 10px 0;letter-spacing:.04em;
+}
+.fail-table td{padding:11px 8px 11px 0;border-top:1px solid var(--hairline);vertical-align:top;}
+.fail-path{font-family:var(--mono);font-size:11.5px;color:var(--ink);word-break:break-all;}
+.fail-note{font-size:11.5px;color:var(--ink2);margin-top:3px;}
+.st-badge{display:inline-block;font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:999px;white-space:nowrap;}
+.sb-retry{background:var(--warn-soft);color:var(--warn);}
+.sb-err{background:var(--danger-soft);color:var(--danger);}
+.sb-flat{background:var(--hairline);color:var(--ink2);}
+.wemm-state{font-size:12.5px;margin-top:14px;display:flex;align-items:center;gap:8px;min-height:22px;}
+.wemm-state.err{color:var(--danger);}
+.wemm-state.ok{color:var(--accent);}
+.wemm-state .spin{width:13px;height:13px;border:2px solid var(--hairline);border-top-color:var(--accent);border-radius:50%;animation:rot .8s linear infinite;}
+@keyframes rot{to{transform:rotate(360deg);}}
+.dd-row{padding:13px 2px;}
+.dd-row + .dd-row{border-top:1px solid var(--hairline);}
+.dd-paths{font-family:var(--mono);font-size:11.5px;line-height:1.7;}
+.dd-paths span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dd-foot{display:flex;align-items:center;justify-content:space-between;margin-top:7px;}
+.dd-sim{font-family:var(--mono);font-size:11.5px;color:var(--warn);}
+.xi-btns{display:flex;gap:10px;margin-bottom:4px;}
+.xi-prog{height:4px;border-radius:99px;background:var(--hairline);overflow:hidden;margin-top:12px;opacity:0;transition:opacity .3s;}
+.xi-prog.show{opacity:1;}
+.xi-prog i{display:block;height:100%;background:var(--accent);transform:scaleX(0);transform-origin:left;}
+@media (max-width:960px){.diag-grid{grid-template-columns:1fr;}}
+
+/* ============ Settings ============ */
+.set-grid{display:grid;grid-template-columns:220px 1fr;gap:32px;align-items:start;}
+.set-nav{position:sticky;top:76px;display:flex;flex-direction:column;gap:2px;}
+.set-nav button{
+  text-align:left;padding:9px 14px;border-radius:10px;font-size:13.5px;color:var(--ink2);
+}
+.set-nav button:hover{color:var(--ink);background:var(--subtle);}
+.set-nav button.on{color:var(--ink);background:var(--card);box-shadow:var(--ring),var(--shadow-1);}
+.set-form{display:flex;flex-direction:column;gap:18px;max-width:640px;}
+.set-sec{padding:6px 26px 22px;}
+.set-sec h3{font-family:var(--disp);font-size:16px;font-weight:700;letter-spacing:-.01em;padding:18px 0 4px;}
+.set-row{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:15px 0;}
+.set-row + .set-row{border-top:1px solid var(--hairline);}
+.set-label{font-size:13.5px;font-weight:500;}
+.set-help{font-size:12px;color:var(--ink2);margin-top:3px;max-width:380px;}
+.set-ctl{flex:none;display:flex;align-items:center;gap:10px;}
+.selwrap{position:relative;}
+.selwrap svg{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:12px;height:12px;stroke:var(--ink2);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;}
+.sel{
+  appearance:none;-webkit-appearance:none;height:36px;padding:0 32px 0 12px;border-radius:10px;
+  background:var(--card);box-shadow:var(--ring);border:none;cursor:pointer;font-size:13px;min-width:150px;
+}
+.sel:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+.chip{
+  display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:500;
+  padding:3.5px 10px;border-radius:999px;background:var(--accent-soft);color:var(--accent);
+}
+.chip-plain{background:var(--hairline);color:var(--ink2);}
+.pw-wrap{position:relative;display:flex;align-items:center;}
+.pw{
+  height:36px;width:210px;border:none;border-radius:10px;background:var(--card);
+  box-shadow:var(--ring);padding:0 64px 0 12px;font-family:var(--mono);font-size:12.5px;outline:none;
+}
+.pw:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+.pw-eye{position:absolute;right:6px;font-size:11.5px;color:var(--ink2);padding:4px 8px;border-radius:7px;}
+.pw-eye:hover{color:var(--ink);background:var(--subtle);}
+.num-in{height:36px;width:86px;border:none;border-radius:10px;background:var(--card);box-shadow:var(--ring);padding:0 12px;font-family:var(--mono);font-size:13px;outline:none;}
+.save-bar{display:flex;justify-content:flex-end;padding-top:6px;}
+@media (max-width:960px){.set-grid{grid-template-columns:1fr;}.set-nav{position:static;flex-direction:row;flex-wrap:wrap;}}
+
+/* ============ Modal ============ */
+#modalRoot{position:fixed;inset:0;z-index:100;display:none;}
+#modalRoot.open{display:block;}
+.scrim{position:absolute;inset:0;background:var(--scrim);animation:fadeIn .25s var(--ease) both;}
+@keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
+.modal-outer{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;pointer-events:none;}
+.modal-shell{
+  pointer-events:auto;width:480px;max-width:100%;max-height:calc(100dvh - 64px);overflow-y:auto;
+  background:var(--card);border-radius:var(--r-shell);box-shadow:var(--shadow-2);padding:8px;
+  animation:popIn .4s var(--ease) both;
+}
+@keyframes popIn{from{opacity:0;transform:translateY(16px) scale(.98);}to{opacity:1;transform:none;}}
+.modal-core{background:var(--subtle);border-radius:var(--r-core);padding:24px 26px;}
+.modal-core h3{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:-.01em;}
+.m-sub{font-size:13px;color:var(--ink2);margin-top:6px;}
+.m-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:22px;}
+.field{margin-top:16px;}
+.field label{display:block;font-size:12.5px;font-weight:500;margin-bottom:6px;}
+.field label em{font-style:normal;color:var(--danger);}
+.in{
+  width:100%;height:38px;border:none;border-radius:10px;background:var(--card);
+  box-shadow:var(--ring);padding:0 12px;outline:none;font-size:13.5px;
+}
+.in:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+.in.bad{outline:2px solid var(--danger);outline-offset:1px;}
+.err-t{display:none;font-size:11.5px;color:var(--danger);margin-top:5px;}
+.err-t.on{display:block;}
+.amber{
+  display:none;margin-top:16px;padding:11px 14px;border-radius:10px;
+  background:var(--warn-soft);color:var(--warn);font-size:12.5px;line-height:1.6;
+}
+.amber.on{display:block;animation:fadeUp .3s var(--ease) both;}
+.danger-box{
+  margin-top:14px;padding:12px 14px;border-radius:10px;background:var(--danger-soft);
+  animation:fadeUp .3s var(--ease) both;
+}
+.danger-box p{font-size:12.5px;color:var(--danger);line-height:1.6;}
+.ack-line{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12.5px;cursor:pointer;user-select:none;}
+.opt-row{
+  display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:10px;
+  background:var(--card);box-shadow:var(--ring);margin-top:10px;cursor:pointer;
+}
+.opt-row input{accent-color:var(--accent);margin-top:3px;cursor:pointer;}
+.opt-row .t{font-size:13.5px;font-weight:500;}
+.opt-row .d{font-size:12px;color:var(--ink2);margin-top:2px;}
+.opt-row.danger-sel{box-shadow:inset 0 0 0 1px rgba(194,64,42,.4);}
+.rb-list{margin-top:12px;}
+.rb-row{display:flex;justify-content:space-between;align-items:center;padding:9px 2px;font-size:13px;}
+.rb-row + .rb-row{border-top:1px solid var(--hairline);}
+.rb-row .mono{font-size:12px;color:var(--ink2);}
+.warn-note{
+  margin-top:14px;padding:11px 14px;border-radius:10px;background:var(--warn-soft);
+  color:var(--warn);font-size:12.5px;line-height:1.65;
+}
+.fmt-chks{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;}
+.fmt-chk{
+  display:flex;align-items:center;gap:7px;padding:7px 13px;border-radius:999px;background:var(--card);
+  box-shadow:var(--ring);font-family:var(--mono);font-size:12px;cursor:pointer;user-select:none;
+}
+.fmt-chk input{accent-color:var(--accent);cursor:pointer;}
+
+/* ============ Toast & badge ============ */
+#toastWrap{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:120;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;}
+.toast{
+  background:var(--toast-bg);color:var(--toast-ink);font-size:13px;padding:10px 18px;border-radius:12px;
+  box-shadow:0 8px 30px rgba(16,24,40,.25);opacity:0;transform:translateY(10px);
+  transition:opacity .3s var(--ease),transform .3s var(--ease);max-width:80vw;
+}
+.toast.show{opacity:1;transform:translateY(0);}
+.proto-badge{
+  position:fixed;right:18px;bottom:16px;z-index:50;pointer-events:none;
+  font-size:11px;color:#F2F4F6;background:rgba(24,27,32,.55);backdrop-filter:blur(6px);
+  padding:6px 13px;border-radius:999px;letter-spacing:.02em;
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none !important;transition:none !important;}
+  html{scroll-behavior:auto;}
+}
+</style>
+</head>
+<body>
+
+<!-- ================= NAV ================= -->
+<header class="nav">
+  <div class="nav-inner">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"></div>
+      Obsidian RAG
+      <span class="brand-sub">SOFT</span>
+    </div>
+    <nav class="nav-tabs" id="navTabs" aria-label="主导航">
+      <button data-view="search" class="on">检索</button>
+      <button data-view="libraries">库</button>
+      <button data-view="index">索引</button>
+      <button data-view="diagnostics">诊断</button>
+      <button data-view="settings">设置</button>
+    </nav>
+    <button class="icon-btn" id="themeBtn" aria-label="切换深色模式" title="切换主题">
+      <svg class="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
+      <svg class="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+<!-- ================= 检索 ================= -->
+<section class="view active" id="view-search">
+  <div class="dock-wrap reveal" style="--d:0">
+      <p class="tagline">SEMANTIC SEARCH / HYBRID RETRIEVAL / BGE-M3 RERANK</p>
+      <div class="island">
+        <span class="island-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg></span>
+        <input id="searchInput" type="text" placeholder="检索你的知识库，例如：WEMM 页级索引如何工作" aria-label="语义检索">
+        <div class="topk">
+          <button class="topk-btn" id="topkBtn" aria-haspopup="listbox" aria-expanded="false">
+            Top-K <b id="topkVal">5</b>
+            <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <div class="topk-pop" id="topkPop" role="listbox"></div>
+        </div>
+        <button class="island-go" id="goBtn">检索</button>
+      </div>
+      <div class="island-meta">
+        <span class="switch-line"><span class="sw" id="swExpand" role="switch" aria-checked="false" tabindex="0"><span></span></span>展开正文</span>
+        <div class="hint-chips">
+          <button class="hint-chip" data-q="WEMM 页级索引如何工作">WEMM 页级索引</button>
+          <button class="hint-chip" data-q="混合检索的融合策略">混合检索融合策略</button>
+        </div>
+      </div>
+    </div>
+
+  <div class="results" id="resultsArea">
+    <div class="skel" id="skel">
+      <div class="sk-card"><div class="sk-line sk-path"></div><div class="sk-badge"></div><div class="sk-line sk-l1"></div><div class="sk-line sk-l2"></div><div class="sk-line sk-l3"></div></div>
+      <div class="sk-card"><div class="sk-line sk-path"></div><div class="sk-badge"></div><div class="sk-line sk-l1"></div><div class="sk-line sk-l2"></div><div class="sk-line sk-l3"></div></div>
+      <div class="sk-card"><div class="sk-line sk-path"></div><div class="sk-badge"></div><div class="sk-line sk-l1"></div><div class="sk-line sk-l2"></div><div class="sk-line sk-l3"></div></div>
+      <div class="sk-card"><div class="sk-line sk-path"></div><div class="sk-badge"></div><div class="sk-line sk-l1"></div><div class="sk-line sk-l2"></div><div class="sk-line sk-l3"></div></div>
+    </div>
+    <div class="results-head" id="resultsHead" style="display:none">
+      <b id="resCount"></b><span id="resTime"></span>
+    </div>
+    <div class="rlist" id="rlist"></div>
+  </div>
+</section>
+
+<!-- ================= 库 ================= -->
+<section class="view" id="view-libraries">
+  <div class="wrap">
+    <div class="view-head reveal" style="--d:0">
+      <div class="head-row">
+        <div>
+          <h2>知识库</h2>
+          <p>3 个库已注册，共 1,894 个文件、8,306 个知识块。</p>
+        </div>
+        <button class="btn btn-primary" id="addLibBtn">添加库</button>
+      </div>
+    </div>
+    <div class="lib-list" id="libList"></div>
+  </div>
+</section>
+
+<!-- ================= 索引 ================= -->
+<section class="view" id="view-index">
+  <div class="wrap">
+    <div class="view-head reveal" style="--d:0">
+      <h2>索引</h2>
+      <p>多格式提取、嵌入与写库的统一流水线视图。</p>
+    </div>
+    <div class="idx-grid">
+      <div class="shell reveal" style="--d:1">
+        <div class="core">
+          <div class="stepper" id="stepper">
+            <div class="st" data-stage="0"><div class="st-node"><span class="st-dot"></span><span class="st-label">扫描</span></div><div class="st-line"><i></i></div></div>
+            <div class="st" data-stage="1"><div class="st-node"><span class="st-dot"></span><span class="st-label">转换</span></div><div class="st-line"><i></i></div></div>
+            <div class="st" data-stage="2"><div class="st-node"><span class="st-dot"></span><span class="st-label">嵌入</span></div><div class="st-line"><i></i></div></div>
+            <div class="st" data-stage="3"><div class="st-node"><span class="st-dot"></span><span class="st-label">写库</span></div><div class="st-line"><i></i></div></div>
+            <div class="st" data-stage="4"><div class="st-node"><span class="st-dot"></span><span class="st-label">完成</span></div></div>
+          </div>
+          <div class="prog-track"><i id="progFill"></i></div>
+          <div class="run-meta">
+            <span id="runElapsed">已用 0.0s</span>
+            <span id="runEta">空闲</span>
+          </div>
+          <div class="idx-kpis">
+            <div class="kpi"><div class="kpi-num">1,894</div><div class="kpi-label">索引文件</div></div>
+            <div class="kpi"><div class="kpi-num">8,306</div><div class="kpi-label">知识块</div></div>
+            <div class="kpi"><div class="kpi-num">1分20秒</div><div class="kpi-label">上次全量耗时</div></div>
+          </div>
+          <div class="idx-actions">
+            <button class="btn btn-primary" id="btnIncr">增量重建</button>
+            <button class="btn btn-outline" id="btnFull">全量重建</button>
+            <button class="btn btn-danger-o" id="btnStop">停止</button>
+          </div>
+          <div class="status-line"><span class="dot-live" aria-hidden="true"></span><span id="runStatus">索引服务运行中 · 上次增量 2026-09-05 09:12</span></div>
+        </div>
+      </div>
+      <div class="col-stack">
+        <div class="shell reveal" style="--d:2">
+          <div class="core">
+            <div class="mini-h">本轮范围</div>
+            <div class="mini-sub">勾选的库参与下一次重建。</div>
+            <div id="scopeList"></div>
+          </div>
+        </div>
+        <div class="shell reveal" style="--d:3">
+          <div class="core">
+            <div class="mini-h">服务状态</div>
+            <div class="mini-sub">长驻进程经 config.reload_config() 现读配置。</div>
+            <div class="srv-rows">
+              <div><span>嵌入模型</span><b>BGE-M3</b></div>
+              <div><span>计算设备</span><b id="srvDevice">CUDA</b></div>
+              <div><span>Chroma 集合</span><b>kb_main_v9</b></div>
+              <div><span>META / EXTRACT</span><b>9 / 4</b></div>
+              <div><span>WEMM 后端</span><b id="srvWemm">off</b></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 诊断 ================= -->
+<section class="view" id="view-diagnostics">
+  <div class="wrap">
+    <div class="view-head reveal" style="--d:0">
+      <h2>诊断</h2>
+      <p>失败溯源、WEMM 状态、近似去重与备份迁移。</p>
+    </div>
+    <div class="diag-grid">
+      <div class="shell reveal" style="--d:1">
+        <div class="core">
+          <div class="mini-h">失败溯源</div>
+          <div class="mini-sub">全部失败均已落持久化终态，不会每轮误判 stale。</div>
+          <table class="fail-table">
+            <thead><tr><th style="width:52%">文件</th><th style="width:22%">终态</th><th>处置指引</th></tr></thead>
+            <tbody>
+              <tr><td><div class="fail-path">40-PDF-Scan/手写课堂笔记 2019.pdf</div><div class="fail-note">扫描件，等待 MinerU 队列，断点簿记中</div></td><td><span class="st-badge sb-retry">scanned · will_retry</span></td><td class="fail-note">开启云端后自动续传</td></tr>
+              <tr><td><div class="fail-path">40-PDF-Scan/合同扫描件 第3卷.pdf</div><div class="fail-note">整本混合型 PDF，按扫描件路由</div></td><td><span class="st-badge sb-retry">scanned · will_retry</span></td><td class="fail-note">下一轮真重试</td></tr>
+              <tr><td><div class="fail-path">40-PDF-Scan/学位论文附录 图版.pdf</div><div class="fail-note">限速闸门节流，滑动窗口排队</div></td><td><span class="st-badge sb-retry">scanned · will_retry</span></td><td class="fail-note">降低 mineru_rate 可加速</td></tr>
+              <tr><td><div class="fail-path">20-Projects/损坏的分块记录.md</div><div class="fail-note">UTF-16 编码异常，无法解码</div></td><td><span class="st-badge sb-err">unreadable</span></td><td class="fail-note">转存为 UTF-8 后重建</td></tr>
+              <tr><td><div class="fail-path">10-Templates/空白模板.md</div><div class="fail-note">无可索引正文</div></td><td><span class="st-badge sb-flat">empty</span></td><td class="fail-note">正常终态，无需处理</td></tr>
+              <tr><td><div class="fail-path">90-Archive/占位索引页.md</div><div class="fail-note">仅含 frontmatter</div></td><td><span class="st-badge sb-flat">empty</span></td><td class="fail-note">正常终态，无需处理</td></tr>
+              <tr><td><div class="fail-path">30-Reports/年度总结.docx</div><div class="fail-note">OOXML 结构损坏，解压失败</div></td><td><span class="st-badge sb-err">extract-failed</span></td><td class="fail-note">另存后重新索引</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="col-stack">
+        <div class="shell reveal" style="--d:2">
+          <div class="core">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+              <div>
+                <div class="mini-h">WEMM 页级视觉导航</div>
+                <div class="mini-sub" style="margin-bottom:0;">独立 collection，页向量独立签名。</div>
+              </div>
+              <span class="sw" id="swWemmDiag" role="switch" aria-checked="false" tabindex="0" aria-label="WEMM 后端"><span></span></span>
+            </div>
+            <div class="wemm-state" id="wemmState"></div>
+            <div style="margin-top:12px;"><button class="btn btn-outline btn-sm" id="probeBtn">探测服务</button></div>
+          </div>
+        </div>
+        <div class="shell reveal" style="--d:3">
+          <div class="core">
+            <div class="mini-h">近似去重</div>
+            <div class="mini-sub">MinHash + LSH，只读分析，不改动库。</div>
+            <div class="dd-row">
+              <div class="dd-paths"><span>20-Projects/Obsidian RAG/检索管道.md</span><span>10-Notes/检索管道 旧稿.md</span></div>
+              <div class="dd-foot"><span class="dd-sim">相似度 0.91</span><button class="btn-ghost" data-dd="1">查看差异</button></div>
+            </div>
+            <div class="dd-row">
+              <div class="dd-paths"><span>30-Journal/2026-08-14 索引修复.md</span><span>30-Journal/2026-08-15 索引修复续.md</span></div>
+              <div class="dd-foot"><span class="dd-sim">相似度 0.87</span><button class="btn-ghost" data-dd="2">查看差异</button></div>
+            </div>
+            <div class="dd-row">
+              <div class="dd-paths"><span>40-PDF/MinerU 接入记录.md</span><span>20-Projects/MinerU 备忘.md</span></div>
+              <div class="dd-foot"><span class="dd-sim">相似度 0.83</span><button class="btn-ghost" data-dd="3">查看差异</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="shell reveal" style="--d:4">
+          <div class="core">
+            <div class="mini-h">导出 / 导入</div>
+            <div class="mini-sub">导出含 meta、Chroma 副本与提取缓存。</div>
+            <div class="xi-btns">
+              <button class="btn btn-outline btn-sm" id="btnExport">导出备份</button>
+              <button class="btn btn-outline btn-sm" id="btnImport">导入备份</button>
+            </div>
+            <div class="xi-prog" id="xiProg"><i id="xiFill"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 设置 ================= -->
+<section class="view" id="view-settings">
+  <div class="wrap">
+    <div class="view-head reveal" style="--d:0">
+      <h2>设置</h2>
+      <p>保存后长驻进程经 reload_config 热读生效，无需重启。</p>
+    </div>
+    <div class="set-grid">
+      <nav class="set-nav reveal" style="--d:1" id="setNav">
+        <button data-sec="s-kb" class="on">知识库</button>
+        <button data-sec="s-model">模型</button>
+        <button data-sec="s-pdf">PDF 与云端 OCR</button>
+        <button data-sec="s-ret">检索输出</button>
+        <button data-sec="s-wemm">视觉导航 WEMM</button>
+      </nav>
+      <div class="set-form reveal" style="--d:2">
+        <div class="shell"><div class="core set-sec" id="s-kb">
+          <h3>知识库</h3>
+          <div class="set-row">
+            <div><div class="set-label">默认检索范围</div><div class="set-help">GUI 检索与 MCP search_knowledge 的默认库。</div></div>
+            <div class="set-ctl"><div class="selwrap"><select class="sel"><option>全部库</option><option selected>主知识库</option><option>论文库</option><option>会议记录库</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">Agent 触发索引门禁</div><div class="set-help">开启后 Agent 仅能索引文本类与已批准格式，未授权二进制文件冻结。</div></div>
+            <div class="set-ctl"><span class="sw on" data-sw="gate" role="switch" aria-checked="true" tabindex="0"><span></span></span></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">Agent 已批准格式</div><div class="set-help">批准一次长期有效，可在库配置中按库撤销。</div></div>
+            <div class="set-ctl fmt-chks" style="margin-top:0;">
+              <label class="fmt-chk"><input type="checkbox" checked>md</label>
+              <label class="fmt-chk"><input type="checkbox" checked>pdf</label>
+              <label class="fmt-chk"><input type="checkbox" checked>docx</label>
+              <label class="fmt-chk"><input type="checkbox">txt</label>
+            </div>
+          </div>
+        </div></div>
+
+        <div class="shell"><div class="core set-sec" id="s-model">
+          <h3>模型</h3>
+          <div class="set-row">
+            <div><div class="set-label">嵌入模型</div><div class="set-help">更换后需全量重建。</div></div>
+            <div class="set-ctl">
+              <div class="selwrap"><select class="sel" id="selEmbed"><option selected>BGE-M3</option><option>bge-large-zh-v1.5</option><option>text-embedding-3-small</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div>
+              <span class="chip">✓ 使用中</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">重排模型</div><div class="set-help">只作用于融合后的候选，关闭可降低时延。</div></div>
+            <div class="set-ctl">
+              <div class="selwrap"><select class="sel"><option selected>BGE reranker v2-m3</option><option>关闭</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div>
+              <span class="chip">✓ 使用中</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">计算设备</div><div class="set-help">CUDA 不可用时自动回退 CPU。</div></div>
+            <div class="set-ctl"><div class="selwrap"><select class="sel" id="selDevice"><option selected>CUDA</option><option>CPU</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          </div>
+        </div></div>
+
+        <div class="shell"><div class="core set-sec" id="s-pdf">
+          <h3>PDF 与云端 OCR</h3>
+          <div class="set-row">
+            <div><div class="set-label">扫描件 OCR 后端</div><div class="set-help">MinerU 云端 vlm 认字，混合型 PDF 整本按扫描件路由。</div></div>
+            <div class="set-ctl"><div class="selwrap"><select class="sel" id="selScan"><option selected>不启用</option><option value="mineru">MinerU 云端 vlm</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">文字层 PDF 后端</div><div class="set-help">可选送 MinerU 换取更准的版面与表格结构识别。</div></div>
+            <div class="set-ctl"><div class="selwrap"><select class="sel" id="selText"><option selected>本地 pymupdf</option><option value="mineru">MinerU 云端</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">云端并发</div><div class="set-help">0 为最大吞吐，限速闸门自动节流；1 为串行回退。</div></div>
+            <div class="set-ctl"><div class="selwrap"><select class="sel"><option>1（串行）</option><option>2</option><option selected>3</option><option>0（最大吞吐）</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">每分钟提交上限</div><div class="set-help">滑动窗口限速，默认 45。</div></div>
+            <div class="set-ctl"><input class="num-in" type="number" value="45" min="1" max="600" aria-label="每分钟提交上限"></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">MinerU API Key</div><div class="set-help">仅保存在本机配置，不写入日志。</div></div>
+            <div class="set-ctl">
+              <div class="pw-wrap"><input class="pw" id="pwKey" type="password" value="mu-live-8f3a2c91bd74e620" aria-label="MinerU API Key"><button class="pw-eye" id="pwEye" type="button">显示</button></div>
+            </div>
+          </div>
+        </div></div>
+
+        <div class="shell"><div class="core set-sec" id="s-ret">
+          <h3>检索输出</h3>
+          <div class="set-row">
+            <div><div class="set-label">默认 Top-K</div><div class="set-help">检索页可在单次查询中临时覆盖。</div></div>
+            <div class="set-ctl"><div class="selwrap"><select class="sel" id="selTopk"><option>3</option><option selected>5</option><option>8</option><option>10</option><option>15</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">置信度徽章</div><div class="set-help">0.75 以上翡翠、0.5 以上蓝、其余橙。</div></div>
+            <div class="set-ctl"><span class="sw on" data-sw="badges" role="switch" aria-checked="true" tabindex="0"><span></span></span></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">关联笔记内联展开</div><div class="set-help">结果卡内直接查看双链出链与入链。</div></div>
+            <div class="set-ctl"><span class="sw on" data-sw="links" role="switch" aria-checked="true" tabindex="0"><span></span></span></div>
+          </div>
+        </div></div>
+
+        <div class="shell"><div class="core set-sec" id="s-wemm">
+          <h3>视觉导航 WEMM</h3>
+          <div class="set-row">
+            <div><div class="set-label">WEMM 后端</div><div class="set-help">启用后需单独启动 wemm_server，页向量写入独立 collection。</div></div>
+            <div class="set-ctl"><span class="sw" id="swWemmSet" data-sw="wemm" role="switch" aria-checked="false" tabindex="0"><span></span></span></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">页渲染 DPI</div><div class="set-help">改档自动重渲染，xsrc 签名随档位更新。</div></div>
+            <div class="set-ctl"><div class="selwrap"><select class="sel"><option>96</option><option selected>144</option><option>192</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          </div>
+          <div class="set-row">
+            <div><div class="set-label">页向量模型</div><div class="set-help">切换后页库全量重建。</div></div>
+            <div class="set-ctl"><div class="selwrap"><select class="sel"><option selected>jina-clip-v2</option><option>colqwen2</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          </div>
+        </div></div>
+
+        <div class="save-bar">
+          <button class="btn btn-primary" id="saveBtn">保存更改</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<!-- ================= Reading panel ================= -->
+<aside class="read-panel" id="readPanel" aria-label="文档预览">
+  <div class="rp-head">
+    <div class="rp-top">
+      <span class="rp-kicker mono" id="rpPath"></span>
+      <button class="rp-close" id="rpClose" aria-label="关闭预览"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="rp-title" id="rpTitle"></div>
+    <div class="rp-meta" id="rpMeta"></div>
+    <div class="rp-anchors" id="rpAnchors"></div>
+  </div>
+  <div class="rp-body" id="rpBody"></div>
+  <div class="rp-foot">
+    <button class="btn btn-outline" id="rpOpenObs">在 Obsidian 打开</button>
+    <button class="btn btn-primary" id="rpClose2">关闭预览</button>
+  </div>
+</aside>
+
+<div id="modalRoot"></div>
+<div id="toastWrap" aria-live="polite"></div>
+<div class="proto-badge">交互原型 · 数据为演示假数据</div>
+
+<script>
+"use strict";
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const escReg = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const fmt = n => n.toLocaleString("en-US");
+
+/* ============ Global state ============ */
+const state = {
+  topk: 5,
+  query: "",
+  expandAll: false,
+  cardStates: [],
+  searched: false,
+  wemmOn: false,
+  ocrConsent: false,
+  st: null
+};
+
+/* ============ Fake data ============ */
+const DOCS = [
+  {
+    path: "20-Projects/Obsidian RAG/混合检索与重排.md",
+    title: "混合检索与重排",
+    score: 0.88,
+    snippet: "检索层采用 BM25 关键字召回与 BGE-M3 稠密向量召回双路并行，各自取回候选后在融合层按加权倒数排名合并，再交给重排模型做精细化打分。关键字路负责专有名词与代码标识符的精确命中，向量路负责同义改写与跨语言语义匹配，两路互补使单一召回缺陷不会直接传导到最终结果。",
+    sections: [
+      ["召回双路", "BM25 分词器对中文启用 jieba 预切分，索引侧与查询侧保持同一份词表；向量路由 Chroma 承载，检索参数随库规模自适应。混合检索的意义在于两路错误分布不同，融合后互相补位。"],
+      ["融合与截断", "两路候选按倒数排名融合，Top-K 截断发生在重排之前，重排只处理融合后的前 24 条，把端到端时延控制在 300ms 内。截断过紧会丢掉排名靠后但重排能救回的候选。"],
+      ["重排与置信度", "重排分数经线性映射折算为 0 到 1 的置信度，0.75 以上标记为高置信，用于前端徽章与 Agent 引用策略。低置信结果仍然展示，只是视觉降权。"]
+    ],
+    out: ["BGE-M3 模型卡.md", "Chroma 集合规划.md", "切块与清洗策略.md"],
+    inn: ["检索管道复盘.md", "问题 22 记录.md"]
+  },
+  {
+    path: "20-Projects/Obsidian RAG/WEMM 页级视觉导航.md",
+    title: "WEMM 页级视觉导航",
+    score: 0.83,
+    snippet: "WEMM 把 PDF 与扫描件按页渲染成图像，用页级视觉模型生成页向量，写入独立 collection。检索时可以先命中最相关的页，再回溯到原文档位置，适合课件、图纸这类版面信息比正文更重要的材料。页库带独立版本签名，改档自动重渲染。",
+    sections: [
+      ["页级索引", "页渲染 DPI 默认 144，页向量与主库文本块分属两个 collection，各自的终态与成功条目携带 xsrc 签名，写库成功才落成功 meta。"],
+      ["查询路径", "wemm_retriever 查询零写副作用，navigate_knowledge 返回最相关的页集合，read_document 以零触发只读缓存交付全文。"],
+      ["失败语义", "页库失败每轮真重试，与主库终态机制解耦；服务未运行时导航工具静默降级为纯文本检索。"]
+    ],
+    out: ["wemm_server 部署.md", "页向量模型对比.md"],
+    inn: ["问题 37 记录.md", "课件检索实践.md"]
+  },
+  {
+    path: "10-Notes/BGE-M3 嵌入实践.md",
+    title: "BGE-M3 嵌入实践",
+    score: 0.68,
+    snippet: "BGE-M3 在中英混合语料上表现稳定，8192 的上下文窗口让长笔记可以少切几刀。实测批量编码 512 条 300 字左右的块，CUDA 上耗时约 11 秒。嵌入前统一做清洗：去零宽字符、折叠连续空行、剥离 frontmatter。",
+    sections: [
+      ["批量大小的取舍", "批量越大吞吐越高，但显存峰值随之上升；在 8GB 卡上 64 是安全值，超了会触发驱动层的隐式同步。"],
+      ["清洗对召回的影响", "不清洗直接嵌入时，frontmatter 关键词会污染块语义，实测相同查询的 Top-1 命中率下降约 6 个百分点。"]
+    ],
+    out: ["嵌入批量测试数据.md"],
+    inn: ["混合检索与重排.md", "切块与清洗策略.md"]
+  },
+  {
+    path: "30-Journal/2026-08-14 一致性自愈排查.md",
+    title: "一致性自愈排查记录",
+    score: 0.57,
+    snippet: "今天排查了一个幽灵块问题：meta 期望块数与 Chroma 实际块数不一致时，系统自动转全量重建，但全终态库（0 等于 0）不该触发这个分支。根因是判空基准用了原始 dict 而不是真实条目数，修掉之后连续三轮索引无重建。",
+    sections: [
+      ["根因", "被裁剪的条目仍留在内存 dict 里，导致空库被误判为有内容，期望与实际永远对不齐。"],
+      ["修复", "判空基准改为过滤后的真实条目列表，并在索引成功路径统一补 current_rels。"]
+    ],
+    out: ["统一终态设计.md"],
+    inn: ["问题 08 记录.md"]
+  },
+  {
+    path: "40-PDF/MinerU 云端接入记录.md",
+    title: "MinerU 云端接入记录",
+    score: 0.49,
+    snippet: "扫描件经 MinerU 云端 vlm 认字产出一份完整 MD，本地只做提交、簿记与收口。滑动窗口限速默认每分钟 45 次提交，中断任务写入 pending 簿记文件，下一轮续接不重复提交。API Key 只进配置，错误消息只含类型与摘要。",
+    sections: [
+      ["提交与重试", "提交错误三分类：限流、网络、内容拒绝；前两类指数退避重试，内容拒绝直接落失败终态。"],
+      ["断点簿记", "pending 文件记录任务 id 与原始指纹，重复提交前先比对指纹，避免同一扫描件进两次队列。"]
+    ],
+    out: ["扫描件路由规则.md"],
+    inn: ["MinerU 接入复盘.md"]
+  },
+  {
+    path: "10-Notes/切块与清洗策略.md",
+    title: "切块与清洗策略",
+    score: 0.42,
+    snippet: "按标题层级切块，块上限 900 字符，重叠 80。表格整块保留不切，代码块跟随最近的标题。清洗规则保持极简：零宽字符、连续空行、乱码控制符。改切块逻辑必须递增 META_VERSION，否则旧块不会失效。",
+    sections: [
+      ["为什么不用滑窗切块", "滑窗切块会产生大量语义重复的块，检索时同一段内容占据多个名额，稀释了 Top-K 的多样性。"]
+    ],
+    out: ["META_VERSION 说明.md"],
+    inn: ["BGE-M3 嵌入实践.md"]
+  }
+];
+
+let LIBS = [
+  { name: "主知识库", path: "D:\\Vault\\Main", files: 1204, blocks: 5412, last: "2026-09-05 09:12", formats: ["md", "pdf", "docx"], agent: true },
+  { name: "论文库", path: "D:\\Vault\\Papers", files: 486, blocks: 2103, last: "2026-09-04 22:47", formats: ["md", "pdf"], agent: true },
+  { name: "会议记录库", path: "D:\\Vault\\Meetings", files: 204, blocks: 791, last: "2026-09-03 18:05", formats: ["md", "docx"], agent: false }
+];
+
+/* ============ Layers (Esc stack) ============ */
+const layers = [];
+function addLayer(closeFn) { layers.push(closeFn); }
+function makeCloser(fn) {
+  const wrapped = () => {
+    const i = layers.indexOf(wrapped);
+    if (i > -1) layers.splice(i, 1);
+    fn();
+  };
+  return wrapped;
+}
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && layers.length) layers[layers.length - 1]();
+});
+
+/* ============ Toast ============ */
+function toast(msg) {
+  const w = $("#toastWrap");
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  w.appendChild(t);
+  requestAnimationFrame(() => t.classList.add("show"));
+  setTimeout(() => {
+    t.classList.remove("show");
+    setTimeout(() => t.remove(), 320);
+  }, 2500);
+}
+
+/* ============ View switching ============ */
+function switchView(name) {
+  $$(".view").forEach(v => { v.classList.remove("in", "active"); });
+  $$("#navTabs button").forEach(b => b.classList.toggle("on", b.dataset.view === name));
+  const v = $("#view-" + name);
+  v.classList.add("active");
+  void v.offsetWidth;
+  v.classList.add("in");
+}
+$("#navTabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-view]");
+  if (b) switchView(b.dataset.view);
+});
+switchView("search");
+
+/* ============ Theme ============ */
+$("#themeBtn").addEventListener("click", () => {
+  const h = document.documentElement;
+  h.dataset.theme = h.dataset.theme === "dark" ? "light" : "dark";
+});
+
+/* ============ Generic switches ============ */
+document.addEventListener("click", e => {
+  const sw = e.target.closest(".sw");
+  if (!sw) return;
+  sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") !== "true");
+  sw.classList.toggle("on", sw.getAttribute("aria-checked") === "true");
+  sw.dispatchEvent(new CustomEvent("swchange", { bubbles: true }));
+});
+document.addEventListener("keydown", e => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.classList && e.target.classList.contains("sw")) {
+    e.preventDefault();
+    e.target.click();
+  }
+});
+
+/* 展开正文 */
+$(".switch-line").addEventListener("click", e => {
+  if (!e.target.closest(".sw")) $(".switch-line .sw").click();
+});
+$("#swExpand").addEventListener("swchange", () => {
+  state.expandAll = $("#swExpand").getAttribute("aria-checked") === "true";
+  state.cardStates = DOCS.map(() => null);
+  if (state.searched && $("#rlist").classList.contains("on")) renderCards();
+});
+
+/* ============ Top-K dropdown ============ */
+const TOPKS = [3, 5, 8, 10, 15];
+function renderTopkPop() {
+  $("#topkPop").innerHTML = TOPKS.map(k =>
+    `<button role="option" data-k="${k}" class="${k === state.topk ? "on" : ""}">Top-K ${k}${k === state.topk ? " ✓" : ""}</button>`
+  ).join("");
+}
+renderTopkPop();
+const topkClose = makeCloser(() => {
+  $("#topkPop").classList.remove("open");
+  $("#topkBtn").setAttribute("aria-expanded", "false");
+});
+$("#topkBtn").addEventListener("click", e => {
+  e.stopPropagation();
+  const pop = $("#topkPop");
+  const opening = !pop.classList.contains("open");
+  pop.classList.toggle("open", opening);
+  $("#topkBtn").setAttribute("aria-expanded", String(opening));
+  if (opening) addLayer(topkClose); else topkClose();
+});
+$("#topkPop").addEventListener("click", e => {
+  const b = e.target.closest("button[data-k]");
+  if (!b) return;
+  state.topk = parseInt(b.dataset.k, 10);
+  $("#topkVal").textContent = state.topk;
+  $("#selTopk").value = String(state.topk);
+  renderTopkPop();
+  topkClose();
+  if (state.searched && $("#rlist").classList.contains("on")) renderCards();
+});
+document.addEventListener("click", e => {
+  if (!e.target.closest(".topk") && $("#topkPop").classList.contains("open")) topkClose();
+});
+
+/* ============ Search ============ */
+function dockIsland() {
+  $("#view-search").classList.add("docked");
+}
+function showSkeleton() {
+  $("#skel").classList.add("on");
+  $("#rlist").classList.remove("on");
+  $("#resultsHead").style.display = "none";
+}
+function doSearch() {
+  const q = $("#searchInput").value.trim();
+  if (!q) { toast("请输入检索内容"); $("#searchInput").focus(); return; }
+  state.query = q;
+  state.searched = true;
+  state.cardStates = DOCS.map(() => null);
+  dockIsland();
+  showSkeleton();
+  clearTimeout(state.st);
+  state.st = setTimeout(renderCards, 800);
+}
+$("#goBtn").addEventListener("click", doSearch);
+$("#searchInput").addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+$$(".hint-chip").forEach(c => c.addEventListener("click", () => {
+  $("#searchInput").value = c.dataset.q;
+  doSearch();
+}));
+
+function badgeCls(s) { return s >= 0.75 ? "b-high" : s >= 0.5 ? "b-mid" : "b-low"; }
+function hi(text) {
+  const out = esc(text);
+  const terms = state.query.split(/\s+/).filter(t => t.length > 1).map(escReg).sort((a, b) => b.length - a.length);
+  if (!terms.length) return out;
+  try {
+    return out.replace(new RegExp("(" + terms.join("|") + ")", "gi"), "<mark>$1</mark>");
+  } catch (_) { return out; }
+}
+function effExpanded(i) {
+  return state.cardStates[i] !== null ? state.cardStates[i] : state.expandAll;
+}
+function renderCards() {
+  $("#skel").classList.remove("on");
+  const list = DOCS.slice(0, state.topk);
+  const head = $("#resultsHead");
+  head.style.display = "flex";
+  $("#resCount").textContent = `结果 ${list.length} 条`;
+  $("#resTime").textContent = `Top-K ${state.topk} · 用时 ${(0.62 + Math.random() * 0.26).toFixed(2)}s`;
+  const rl = $("#rlist");
+  rl.innerHTML = list.map((d, i) => {
+    const exp = effExpanded(i);
+    return `
+    <article class="card-flat rcard" style="--d:${i}">
+      <div class="reveal-in">
+        <div class="r-top">
+          <span class="r-rank">${String(i + 1).padStart(2, "0")}</span>
+          <span class="r-path" title="${esc(d.path)}">${esc(d.path)}</span>
+          <span class="badge ${badgeCls(d.score)}">${d.score.toFixed(2)}</span>
+        </div>
+        <p class="r-snippet ${exp ? "" : "clamp"}">${hi(d.snippet)}</p>
+        <div class="r-actions">
+          <button class="btn-ghost" data-act="expand" data-i="${i}">${exp ? "收起" : "展开"}</button>
+          <button class="btn-ghost" data-act="links" data-i="${i}">关联 ${d.out.length + d.inn.length}</button>
+          <button class="btn-ghost" data-act="preview" data-i="${i}">预览</button>
+          <span class="sep"></span>
+          <button class="btn-ghost" data-act="open" data-i="${i}">在 Obsidian 打开</button>
+        </div>
+        <div class="r-links" id="links-${i}">
+          <div><h5>出链</h5><div class="link-chips">${d.out.map(n => `<button class="lchip" data-act="open" data-i="${i}">${esc(n)}</button>`).join("")}</div></div>
+          <div><h5>入链</h5><div class="link-chips">${d.inn.map(n => `<button class="lchip" data-act="open" data-i="${i}">${esc(n)}</button>`).join("")}</div></div>
+        </div>
+      </div>
+    </article>`;
+  }).join("");
+  rl.classList.add("on");
+}
+$("#rlist").addEventListener("click", e => {
+  const b = e.target.closest("[data-act]");
+  if (!b) return;
+  const i = parseInt(b.dataset.i, 10);
+  const act = b.dataset.act;
+  if (act === "expand") {
+    state.cardStates[i] = !effExpanded(i);
+    renderCards();
+  } else if (act === "links") {
+    const p = $("#links-" + i);
+    p.classList.toggle("on");
+  } else if (act === "preview") {
+    openPreview(i);
+  } else if (act === "open") {
+    toast("已在 Obsidian 中打开（原型模拟）");
+  }
+});
+
+/* ============ Reading panel ============ */
+let rpCloseFn = null;
+function openPreview(i) {
+  const d = DOCS[i];
+  $("#rpPath").textContent = d.path;
+  $("#rpTitle").textContent = d.title;
+  $("#rpMeta").innerHTML = `<span class="badge ${badgeCls(d.score)}">${d.score.toFixed(2)}</span><span class="mono" style="font-size:11.5px;color:var(--ink2)">块 ${i + 1} / ${d.sections.length} 节命中</span>`;
+  $("#rpAnchors").innerHTML = d.sections.map((s, k) =>
+    `<button class="rp-anchor" data-sec="${k}">${esc(s[0])}</button>`
+  ).join("");
+  $("#rpBody").innerHTML = d.sections.map((s, k) =>
+    `<section id="sec-${k}"><h4>${esc(s[0])}</h4><p>${hi(s[1])}</p></section>`
+  ).join("");
+  const panel = $("#readPanel");
+  if (!panel.classList.contains("open")) {
+    panel.classList.add("open");
+    rpCloseFn = makeCloser(closePreview);
+    addLayer(rpCloseFn);
+  }
+  $("#rpBody").scrollTop = 0;
+}
+function closePreview() {
+  $("#readPanel").classList.remove("open");
+}
+$("#rpClose").addEventListener("click", () => { if (rpCloseFn) rpCloseFn(); });
+$("#rpClose2").addEventListener("click", () => { if (rpCloseFn) rpCloseFn(); });
+$("#rpOpenObs").addEventListener("click", () => toast("已在 Obsidian 中打开（原型模拟）"));
+$("#rpAnchors").addEventListener("click", e => {
+  const b = e.target.closest("[data-sec]");
+  if (!b) return;
+  const sec = $("#rpBody #sec-" + b.dataset.sec);
+  if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+/* ============ Modal system ============ */
+function openModal(html) {
+  const root = $("#modalRoot");
+  root.innerHTML = `<div class="scrim"></div><div class="modal-outer"><div class="modal-shell" role="dialog" aria-modal="true"><div class="modal-core">${html}</div></div></div>`;
+  root.classList.add("open");
+  const close = makeCloser(() => {
+    root.classList.remove("open");
+    root.innerHTML = "";
+  });
+  root.querySelector(".scrim").addEventListener("click", close);
+  addLayer(close);
+  return close;
+}
+
+/* ---- 库：添加 ---- */
+$("#addLibBtn").addEventListener("click", () => {
+  openModal(`
+    <h3>添加知识库</h3>
+    <p class="m-sub">注册一个 Vault 子目录作为独立库，各自维护 meta 与集合。</p>
+    <div class="field"><label>名称 <em>*</em></label><input class="in" id="fName" placeholder="例如：项目归档库"><p class="err-t" id="eName">名称不能为空</p></div>
+    <div class="field"><label>路径 <em>*</em></label><input class="in mono" id="fPath" placeholder="D:\\Vault\\Archive" style="font-size:12.5px"><p class="err-t" id="ePath">路径不能为空</p></div>
+    <div class="field"><label>描述（可选）</label><input class="in" placeholder="一句话说明库的用途"></div>
+    <div class="m-actions">
+      <button class="btn btn-outline" data-close>取消</button>
+      <button class="btn btn-primary" id="mkLib">创建</button>
+    </div>
+  `);
+  $$("#modalRoot [data-close]").forEach(b => b.addEventListener("click", () => layers[layers.length - 1]()));
+  $("#mkLib").addEventListener("click", () => {
+    const name = $("#fName").value.trim();
+    const path = $("#fPath").value.trim();
+    let ok = true;
+    $("#fName").classList.toggle("bad", !name); $("#eName").classList.toggle("on", !name);
+    $("#fPath").classList.toggle("bad", !path); $("#ePath").classList.toggle("on", !path);
+    if (!name || !path) return;
+    LIBS.push({ name, path, files: 0, blocks: 0, last: "尚未索引", formats: ["md"], agent: true });
+    renderLibs(); renderScope();
+    layers[layers.length - 1]();
+    toast(`已添加「${name}」，首轮索引后生效`);
+  });
+});
+
+/* ---- 库：列表渲染 ---- */
+function renderLibs() {
+  $("#libList").innerHTML = LIBS.map((l, i) => `
+    <article class="card-flat lib-card" style="--d:${i}">
+      <div class="lib-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5v13zM4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg></div>
+      <div class="lib-main">
+        <div class="lib-name">${esc(l.name)}</div>
+        <div class="lib-path">${esc(l.path)}</div>
+        <div class="lib-gate ${l.agent ? "" : "on"}">Agent 门禁已关闭，二进制文件不参与 Agent 触发的索引</div>
+      </div>
+      <div class="lib-stats">
+        <div class="lib-stat"><div class="v">${fmt(l.files)}</div><div class="k">文件</div></div>
+        <div class="lib-stat"><div class="v">${fmt(l.blocks)}</div><div class="k">块</div></div>
+        <div class="lib-stat"><div class="v" style="font-size:13px;line-height:1.9">${esc(l.last)}</div><div class="k">最近索引</div></div>
+      </div>
+      <div class="lib-acts">
+        <button class="btn btn-outline btn-sm" data-lib-cfg="${i}">配置</button>
+        <button class="btn btn-outline btn-sm" data-lib-rm="${i}">移除</button>
+      </div>
+    </article>
+  `).join("");
+}
+$("#libList").addEventListener("click", e => {
+  const c = e.target.closest("[data-lib-cfg]");
+  const r = e.target.closest("[data-lib-rm]");
+  if (c) openLibConfig(parseInt(c.dataset.libCfg, 10));
+  if (r) openLibRemove(parseInt(r.dataset.libRm, 10));
+});
+
+/* ---- 库：配置 ---- */
+function openLibConfig(i) {
+  const l = LIBS[i];
+  openModal(`
+    <h3>${esc(l.name)} · 配置</h3>
+    <p class="m-sub mono" style="font-size:11.5px">${esc(l.path)}</p>
+    <div class="field" style="margin-top:20px;"><label>参与索引的格式</label>
+      <div class="fmt-chks">
+        ${["md", "pdf", "docx", "txt"].map(f => `<label class="fmt-chk"><input type="checkbox" data-fmt="${f}" ${l.formats.includes(f) ? "checked" : ""}>${f}</label>`).join("")}
+      </div>
+    </div>
+    <div class="field">
+      <div class="opt-row" style="margin-top:14px;">
+        <span class="sw ${l.agent ? "on" : ""}" id="cfgGate" role="switch" aria-checked="${l.agent}" tabindex="0"><span></span></span>
+        <div><div class="t">Agent 索引门禁</div><div class="d">关闭后，Agent 触发的索引跳过该库全部二进制文件</div></div>
+      </div>
+      <div class="amber ${l.agent ? "" : "on"}" id="gateAmber">AI Agent 将无法自动索引该库的二进制文件</div>
+    </div>
+    <div class="m-actions">
+      <button class="btn btn-outline" data-close>取消</button>
+      <button class="btn btn-primary" id="cfgSave">保存</button>
+    </div>
+  `);
+  $$("#modalRoot [data-close]").forEach(b => b.addEventListener("click", () => layers[layers.length - 1]()));
+  $("#cfgGate").addEventListener("swchange", () => {
+    const on = $("#cfgGate").getAttribute("aria-checked") === "true";
+    $("#gateAmber").classList.toggle("on", !on);
+  });
+  $("#cfgSave").addEventListener("click", () => {
+    l.formats = $$("#modalRoot [data-fmt]").filter(c => c.checked).map(c => c.dataset.fmt);
+    l.agent = $("#cfgGate").getAttribute("aria-checked") === "true";
+    renderLibs();
+    layers[layers.length - 1]();
+    toast("库配置已保存（原型模拟）");
+  });
+}
+
+/* ---- 库：移除 ---- */
+function openLibRemove(i) {
+  const l = LIBS[i];
+  openModal(`
+    <h3>移除「${esc(l.name)}」</h3>
+    <p class="m-sub">选择移除方式。注销仅解除索引注册，原始文件不受影响。</p>
+    <label class="opt-row"><input type="radio" name="rm" value="unreg" checked>
+      <div><div class="t">仅注销</div><div class="d">保留 Chroma 集合与提取缓存，之后可重新注册</div></div></label>
+    <label class="opt-row" id="optPurge"><input type="radio" name="rm" value="purge">
+      <div><div class="t" style="color:var(--danger)">注销并删除数据</div><div class="d">删除该库的 Chroma 集合与提取缓存</div></div></label>
+    <div class="danger-box" id="purgeWarn" hidden>
+      <p>将删除 ${fmt(l.blocks)} 个块及其全部提取缓存，此操作不可恢复。</p>
+      <label class="ack-line"><input type="checkbox" class="chk" id="purgeAck">我确认不可恢复</label>
+    </div>
+    <div class="m-actions">
+      <button class="btn btn-outline" data-close>取消</button>
+      <button class="btn btn-danger" id="rmGo" disabled>移除</button>
+    </div>
+  `);
+  $$("#modalRoot [data-close]").forEach(b => b.addEventListener("click", () => layers[layers.length - 1]()));
+  const rmGo = $("#rmGo"), warn = $("#purgeWarn"), ack = $("#purgeAck"), optPurge = $("#optPurge");
+  $$('input[name="rm"]').forEach(r => r.addEventListener("change", () => {
+    const purge = $('input[name="rm"]:checked').value === "purge";
+    warn.hidden = !purge;
+    optPurge.classList.toggle("danger-sel", purge);
+    rmGo.disabled = purge ? !ack.checked : false;
+  }));
+  ack.addEventListener("change", () => { rmGo.disabled = !ack.checked; });
+  rmGo.disabled = false; /* 默认选中「仅注销」，直接可确认 */
+  rmGo.addEventListener("click", () => {
+    const purge = $('input[name="rm"]:checked').value === "purge";
+    LIBS.splice(i, 1);
+    renderLibs(); renderScope();
+    layers[layers.length - 1]();
+    toast(purge ? `已注销并删除「${l.name}」的数据（原型模拟）` : `已注销「${l.name}」，数据已保留（原型模拟）`);
+  });
+}
+
+/* ============ 索引 ============ */
+const STAGE_RANGES = [[0, .14], [.14, .38], [.38, .72], [.72, .96], [.96, 1.001]];
+let runTimer = null;
+function renderScope() {
+  $("#scopeList").innerHTML = LIBS.map((l, i) => `
+    <div class="scope-row">
+      <div><div class="scope-name">${esc(l.name)}</div><div class="scope-path">${esc(l.path)}</div></div>
+      <span class="scope-blocks">${fmt(l.blocks)} 块</span>
+      <input type="checkbox" class="chk" checked aria-label="包含 ${esc(l.name)}">
+    </div>
+  `).join("") || '<p class="mini-sub" style="margin:8px 0 0;">尚无注册库。</p>';
+}
+function setStageUI(p) {
+  $$("#stepper .st").forEach((st, k) => {
+    const [a, b] = STAGE_RANGES[k];
+    st.classList.toggle("done", p >= b - 1e-6);
+    st.classList.toggle("active", p >= a && p < b - 1e-6);
+  });
+  $("#progFill").style.transform = `scaleX(${Math.min(p, 1)})`;
+}
+function resetRunUI() {
+  setStageUI(0);
+  $("#runElapsed").textContent = "已用 0.0s";
+  $("#runEta").textContent = "空闲";
+}
+function startRun(kind) {
+  if (runTimer) return;
+  const t0 = performance.now(), dur = 8000;
+  $("#btnIncr").disabled = true;
+  $("#btnFull").disabled = true;
+  $("#btnStop").classList.add("show");
+  $("#runStatus").textContent = kind === "full" ? "全量重建中，缓存已忽略" : "增量重建中，仅处理变更文件";
+  $("#runEta").textContent = "预计剩余 8.0s";
+  runTimer = setInterval(() => {
+    const el = (performance.now() - t0) / 1000;
+    const p = Math.min(el / (dur / 1000), 1);
+    setStageUI(p);
+    $("#runElapsed").textContent = `已用 ${el.toFixed(1)}s`;
+    $("#runEta").textContent = p >= 1 ? "收口" : `预计剩余 ${(dur / 1000 - el).toFixed(1)}s`;
+    if (p >= 1) finishRun(kind);
+  }, 80);
+}
+function finishRun(kind) {
+  clearInterval(runTimer); runTimer = null;
+  setStageUI(1);
+  $("#runElapsed").textContent = "已用 8.0s";
+  $("#runEta").textContent = "完成";
+  $("#runStatus").textContent = "索引服务运行中 · 上次增量 2026-09-05 09:12";
+  $("#btnIncr").disabled = false;
+  $("#btnFull").disabled = false;
+  $("#btnStop").classList.remove("show");
+  toast(kind === "full" ? "全量重建完成（原型模拟）" : "增量重建完成（原型模拟）");
+}
+$("#btnIncr").addEventListener("click", () => startRun("incr"));
+$("#btnFull").addEventListener("click", () => {
+  openModal(`
+    <h3>确认全量重建</h3>
+    <p class="m-sub">将忽略全部缓存，对下列库重新执行扫描、转换、嵌入与写库。</p>
+    <div class="rb-list">
+      ${LIBS.map(l => `<div class="rb-row"><span>${esc(l.name)}</span><span class="mono">${fmt(l.blocks)} 块</span></div>`).join("")}
+      <div class="rb-row"><span style="font-weight:700">合计</span><span class="mono" style="color:var(--ink)">约 ${fmt(LIBS.reduce((a, b) => a + b.blocks, 0))} 块</span></div>
+    </div>
+    <p class="m-sub" style="margin-top:12px;">预计 3-5 分钟，视 MinerU 队列而定。</p>
+    <div class="warn-note">重建期间检索可用性会短暂下降，完成后自动恢复。</div>
+    <div class="m-actions">
+      <button class="btn btn-outline" data-close>取消</button>
+      <button class="btn btn-danger" id="goFull">确认全量重建</button>
+    </div>
+  `);
+  $$("#modalRoot [data-close]").forEach(b => b.addEventListener("click", () => layers[layers.length - 1]()));
+  $("#goFull").addEventListener("click", () => {
+    layers[layers.length - 1]();
+    switchView("index");
+    startRun("full");
+  });
+});
+$("#btnStop").addEventListener("click", () => {
+  if (!runTimer) return;
+  clearInterval(runTimer); runTimer = null;
+  resetRunUI();
+  $("#btnIncr").disabled = false;
+  $("#btnFull").disabled = false;
+  $("#btnStop").classList.remove("show");
+  $("#runStatus").textContent = "索引服务运行中 · 上次增量 2026-09-05 09:12";
+  toast("已停止并复位（原型模拟）");
+});
+
+/* ============ 诊断 ============ */
+$("#probeBtn").addEventListener("click", () => {
+  const st = $("#wemmState");
+  st.className = "wemm-state";
+  st.innerHTML = '<span class="spin" aria-hidden="true"></span>探测中…';
+  $("#probeBtn").disabled = true;
+  setTimeout(() => {
+    $("#probeBtn").disabled = false;
+    if (!state.wemmOn) {
+      st.className = "wemm-state err";
+      st.textContent = "服务未运行 · 请先在设置中启用 WEMM 后端并启动 wemm_server";
+    } else {
+      st.className = "wemm-state ok";
+      st.textContent = "已加载 · VRAM 2.1GB · 模型 jina-clip-v2";
+    }
+  }, 1200);
+});
+$$("#view-diagnostics [data-dd]").forEach(b =>
+  b.addEventListener("click", () => toast(`差异对比已生成（原型模拟，组 ${b.dataset.dd}）`))
+);
+function xiRun(btn, done) {
+  const prog = $("#xiProg"), fill = $("#xiFill");
+  btn.disabled = true;
+  prog.classList.add("show");
+  let p = 0;
+  const iv = setInterval(() => {
+    p += 0.05;
+    fill.style.transform = `scaleX(${Math.min(p, 1)})`;
+    if (p >= 1) {
+      clearInterval(iv);
+      setTimeout(() => {
+        prog.classList.remove("show");
+        fill.style.transform = "scaleX(0)";
+        btn.disabled = false;
+        done();
+      }, 260);
+    }
+  }, 100);
+}
+$("#btnExport").addEventListener("click", e => xiRun(e.target, () => toast("已导出到 data/backups/2026-09-05.zip（原型模拟）")));
+$("#btnImport").addEventListener("click", e => xiRun(e.target, () => toast("导入完成，已校验 8,306 块（原型模拟）")));
+
+/* WEMM 开关（诊断与设置双向同步） */
+function syncWemm() {
+  const on = state.wemmOn;
+  ["#swWemmDiag", "#swWemmSet"].forEach(s => {
+    const el = $(s);
+    el.classList.toggle("on", on);
+    el.setAttribute("aria-checked", String(on));
+  });
+  $("#srvWemm").textContent = on ? "jina-clip-v2 · 144 DPI" : "off";
+  if (!on) { $("#wemmState").className = "wemm-state"; $("#wemmState").textContent = ""; }
+}
+$("#swWemmDiag").addEventListener("swchange", () => { state.wemmOn = $("#swWemmDiag").getAttribute("aria-checked") === "true"; syncWemm(); });
+$("#swWemmSet").addEventListener("swchange", () => { state.wemmOn = $("#swWemmSet").getAttribute("aria-checked") === "true"; syncWemm(); });
+
+/* ============ 设置 ============ */
+$("#setNav").addEventListener("click", e => {
+  const b = e.target.closest("button[data-sec]");
+  if (!b) return;
+  $$("#setNav button").forEach(x => x.classList.toggle("on", x === b));
+  const sec = $("#" + b.dataset.sec);
+  if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+$("#pwEye").addEventListener("click", () => {
+  const pw = $("#pwKey");
+  const show = pw.type === "password";
+  pw.type = show ? "text" : "password";
+  $("#pwEye").textContent = show ? "隐藏" : "显示";
+});
+$("#selDevice").addEventListener("change", () => { $("#srvDevice").textContent = $("#selDevice").value; });
+$("#saveBtn").addEventListener("click", () => toast("已保存，配置已热读生效"));
+
+/* 云端 OCR 同意弹窗 */
+function requireConsent(sel, label) {
+  sel.addEventListener("focus", () => { sel._prev = sel.value; });
+  sel.addEventListener("change", () => {
+    if (sel.value !== "mineru" || state.ocrConsent) { sel._prev = sel.value; return; }
+    const revert = () => { sel.value = sel._prev || sel.options[0].value; };
+    const close = openModal(`
+      <h3>启用 ${label}</h3>
+      <p class="m-sub" style="margin-top:10px;">启用后，待解析文档的原始字节将上传至第三方服务 MinerU（mineru.net）进行处理，解析结果回传本机。</p>
+      <p class="m-sub">文件内容将离开本机。请确认待处理文档不包含敏感或涉密信息。</p>
+      <div class="m-actions">
+        <button class="btn btn-outline" id="cNo">取消</button>
+        <button class="btn btn-primary" id="cYes">同意并启用</button>
+      </div>
+    `);
+    $("#cNo").addEventListener("click", () => { revert(); close(); });
+    $("#cYes").addEventListener("click", () => {
+      state.ocrConsent = true;
+      sel._prev = sel.value;
+      close();
+      toast("已同意第三方上传条款，云端后端已启用");
+    });
+  });
+}
+requireConsent($("#selScan"), "MinerU 云端 OCR");
+requireConsent($("#selText"), "MinerU 云端解析");
+
+/* ============ Init ============ */
+renderLibs();
+renderScope();
+resetRunUI();
+</script>
+</body>
+</html>

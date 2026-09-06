@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Obsidian RAG · 数据行密屏</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ===== Tokens（与 demo2 同源皮肤） ===== */
+:root{
+  --canvas:#F4F5F7;
+  --cols:12px minmax(130px,1.1fr) 2.2fr minmax(170px,1.3fr) 58px 82px 44px;
+  --surface:#FFFFFF;
+  --surface-2:#FAFBFC;
+  --ink:#181B20;
+  --ink2:#6B7280;
+  --ink3:#9AA1AB;
+  --hairline:#E5E7EB;
+  --accent:#0B815A;
+  --accent-ink:#086648;
+  --accent-soft:rgba(11,129,90,.10);
+  --sel:rgba(11,129,90,.06);
+  --mark:rgba(11,129,90,.16);
+  --info:#2563EB;
+  --warn:#B45309;
+  --danger:#C2402A;
+  --toast-bg:#22262C;
+  --toast-ink:#F2F4F6;
+  --shadow-1:0 1px 2px rgba(16,24,40,.05),0 6px 20px rgba(16,24,40,.07);
+  --ease:cubic-bezier(.32,.72,0,1);
+  --rowh:40px;
+  --sans:'Noto Sans SC',-apple-system,'Segoe UI',sans-serif;
+  --disp:'Sora','Noto Sans SC',sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,'Sora',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  font-family:var(--sans);font-size:13px;color:var(--ink);
+  background:var(--canvas);overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+button{font-family:inherit;font-size:inherit;color:inherit;background:none;border:none;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--accent);outline-offset:-1px;
+}
+mark{background:var(--mark);color:var(--accent-ink);border-radius:2px;padding:0 1px;font-weight:500}
+
+/* ===== 壳：过滤条 / 主区 / 状态栏 ===== */
+#app{height:100%;display:flex;flex-direction:column}
+
+/* ---- 顶部过滤条 48px：唯一输入 ---- */
+#filterbar{
+  height:48px;flex:none;display:flex;align-items:center;gap:10px;
+  padding:0 14px;background:var(--canvas);
+  border-bottom:1px solid var(--hairline);
+  overflow-x:auto;scrollbar-width:none;
+}
+#filterbar::-webkit-scrollbar{display:none}
+.searchbox{
+  flex:0 1 260px;min-width:170px;display:flex;align-items:center;gap:7px;
+  background:var(--surface);border:1px solid var(--hairline);border-radius:6px;
+  height:30px;padding:0 10px;transition:border-color .15s var(--ease);
+}
+.searchbox:focus-within{border-color:var(--accent)}
+.searchbox .glyph{color:var(--accent);font-size:14px;line-height:1;flex:none;font-family:var(--mono)}
+#q{
+  flex:1;min-width:0;border:none;outline:none;background:none;
+  font-family:var(--sans);font-size:13px;color:var(--ink);
+}
+#q::placeholder{color:var(--ink3)}
+.fgroup{display:flex;align-items:center;gap:0;flex:none}
+.fgroup .flabel{font-size:11px;color:var(--ink3);margin-right:6px;white-space:nowrap}
+.chip{
+  flex:none;font-size:11.5px;line-height:1;color:var(--ink2);
+  padding:6px 9px;border-radius:6px;white-space:nowrap;
+  transition:background .15s var(--ease),color .15s var(--ease);
+}
+.chip:hover{background:rgba(16,24,40,.05);color:var(--ink)}
+.chip.on{background:var(--accent-soft);color:var(--accent-ink);font-weight:500}
+.vsep{width:1px;height:20px;background:var(--hairline);margin:0 4px;flex:none}
+select#topk{
+  flex:none;font-family:var(--mono);font-size:11.5px;color:var(--ink);
+  background:var(--surface);border:1px solid var(--hairline);border-radius:6px;
+  height:28px;padding:0 6px;cursor:pointer;
+}
+.swrap{display:flex;align-items:center;gap:6px;flex:none;white-space:nowrap;cursor:pointer;user-select:none}
+.swrap .slabel{font-size:11.5px;color:var(--ink2)}
+.sw{
+  width:26px;height:15px;border-radius:8px;background:#D3D7DC;position:relative;flex:none;
+  transition:background .18s var(--ease);
+}
+.sw::after{
+  content:'';position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.25);
+  transition:transform .18s var(--ease);
+}
+.swrap[aria-checked="true"] .sw{background:var(--accent)}
+.swrap[aria-checked="true"] .sw::after{transform:translateX(11px)}
+
+/* ---- 主区：行区 + 预览分屏 ---- */
+#main{flex:1;display:flex;min-height:0;background:var(--surface)}
+
+/* 行区 */
+#rowspane{flex:1;min-width:0;display:flex;flex-direction:column}
+#thead{
+  flex:none;height:28px;display:grid;align-items:center;gap:12px;
+  grid-template-columns:var(--cols);
+  padding:0 14px;border-bottom:1px solid var(--hairline);background:var(--surface-2);
+}
+#thead .hcell{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;color:var(--ink3);
+  text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+button.hcell{cursor:pointer;transition:color .15s var(--ease)}
+button.hcell:hover{color:var(--ink2)}
+button.hcell.active{color:var(--accent-ink);font-weight:500}
+.hcell .arr{font-size:9px;margin-left:2px}
+#tbody{flex:1;overflow-y:auto;overflow-x:auto;min-height:0}
+#tbodyinner{min-width:780px}
+.row{
+  height:var(--rowh);display:grid;align-items:center;gap:12px;
+  grid-template-columns:var(--cols);
+  padding:0 14px;border-bottom:1px solid var(--hairline);
+  cursor:pointer;transition:background .12s var(--ease);
+}
+.row:hover{background:var(--surface-2)}
+.row.sel{
+  background:var(--sel);
+  box-shadow:inset 2px 0 0 var(--accent);
+}
+.ldot{width:7px;height:7px;border-radius:50%;flex:none}
+.rtitle{font-size:13px;font-weight:500;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rsnip{font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rpath{font-family:var(--mono);font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rconf{font-family:var(--mono);font-size:12px;display:flex;align-items:center;gap:6px;justify-content:flex-end;white-space:nowrap}
+.cdot{width:6px;height:6px;border-radius:50%;flex:none}
+.rdate{font-family:var(--mono);font-size:11.5px;color:var(--ink2);white-space:nowrap}
+.rblocks{font-family:var(--mono);font-size:11.5px;color:var(--ink2);text-align:right;white-space:nowrap}
+.empty{
+  padding:48px 20px;text-align:center;color:var(--ink3);font-size:12.5px;
+}
+
+/* 预览分屏 40% */
+#pv{
+  width:40%;flex:none;min-width:0;border-left:1px solid var(--hairline);
+  display:flex;flex-direction:column;background:var(--surface);outline:none;
+}
+#pv.collapsed{display:none}
+.pvhead{
+  flex:none;padding:14px 18px 12px;border-bottom:1px solid var(--hairline);
+}
+.pvhead .pvtop{display:flex;align-items:flex-start;gap:10px}
+.pvhead h2{
+  font-family:var(--disp);font-size:16px;font-weight:600;letter-spacing:-.01em;
+  line-height:1.3;flex:1;min-width:0;word-break:break-all;
+}
+.pvbtn{
+  flex:none;font-size:11.5px;color:var(--ink2);border:1px solid var(--hairline);
+  border-radius:6px;padding:5px 10px;white-space:nowrap;
+  transition:all .15s var(--ease);background:var(--surface);
+}
+.pvbtn:hover{color:var(--ink);border-color:#D3D7DC}
+.pvbtn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.pvbtn.primary:hover{background:var(--accent-ink);border-color:var(--accent-ink);color:#fff}
+.pvpath{font-family:var(--mono);font-size:11px;color:var(--ink3);margin-top:6px;word-break:break-all}
+.pvmeta{display:flex;align-items:center;gap:10px;margin-top:9px;flex-wrap:wrap}
+.pvmeta .m{font-family:var(--mono);font-size:11px;color:var(--ink2);display:flex;align-items:center;gap:5px;white-space:nowrap}
+.badge{
+  font-family:var(--sans);font-size:10.5px;padding:2px 7px;border-radius:4px;font-weight:500;
+}
+.badge.scan{background:rgba(180,83,9,.10);color:var(--warn)}
+.badge.fail{background:rgba(194,64,42,.09);color:var(--danger)}
+#pvbody{flex:1;overflow-y:auto;padding:16px 18px;min-height:0}
+#pvbody p{font-size:13px;line-height:1.75;color:#3D434B;margin:0 0 12px}
+#pvbody p.hit{color:var(--ink)}
+.pvmore{font-family:var(--mono);font-size:11px;color:var(--ink3);padding:4px 0 0}
+#pvlinks{flex:none;border-top:1px solid var(--hairline);padding:10px 18px 12px;background:var(--surface-2)}
+.lkgroup{display:flex;align-items:baseline;gap:8px;min-height:24px}
+.lkgroup + .lkgroup{margin-top:5px}
+.lklabel{flex:none;font-size:11px;color:var(--ink3);width:30px}
+.lkitems{display:flex;flex-wrap:wrap;gap:2px 14px;min-width:0}
+.lk{
+  font-size:12px;color:var(--accent-ink);padding:2px 0;text-align:left;
+  border-bottom:1px solid transparent;transition:border-color .15s var(--ease);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px;
+}
+.lk:hover{border-bottom-color:var(--accent)}
+.lk .arr{font-family:var(--mono);font-size:10.5px;color:var(--ink3);margin-right:4px}
+.lknone{font-size:11.5px;color:var(--ink3)}
+
+/* 预览收起后的右缘竖轨 */
+#pvrail{
+  width:30px;flex:none;border-left:1px solid var(--hairline);background:var(--surface-2);
+  display:none;flex-direction:column;align-items:center;padding-top:10px;gap:8px;
+}
+#pvrail.show{display:flex}
+#pvrail .railbtn{
+  width:22px;height:22px;border-radius:6px;border:1px solid var(--hairline);
+  background:var(--surface);color:var(--ink2);font-size:12px;line-height:1;
+  display:flex;align-items:center;justify-content:center;transition:all .15s var(--ease);
+}
+#pvrail .railbtn:hover{color:var(--accent-ink);border-color:var(--accent)}
+#pvrail .railtxt{
+  writing-mode:vertical-rl;font-size:11px;color:var(--ink3);letter-spacing:.2em;user-select:none;
+}
+
+/* ---- 底部状态栏 28px ---- */
+#statusbar{
+  height:28px;flex:none;display:flex;align-items:center;gap:16px;
+  padding:0 14px;background:var(--canvas);border-top:1px solid var(--hairline);
+  font-family:var(--mono);font-size:11px;color:var(--ink2);
+  white-space:nowrap;overflow:hidden;
+}
+#statusbar .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+#statusbar b{font-weight:500;color:var(--ink)}
+#statusbar .sep{color:var(--ink3)}
+.dens{display:flex;align-items:center;flex:none}
+.dens button{
+  font-family:var(--mono);font-size:10.5px;color:var(--ink3);
+  padding:3px 7px;border:1px solid var(--hairline);background:var(--surface);
+  transition:all .15s var(--ease);
+}
+.dens button:first-child{border-radius:5px 0 0 5px}
+.dens button:last-child{border-radius:0 5px 5px 0;border-left:none}
+.dens button + button{border-left:none}
+.dens button.on{background:var(--accent-soft);color:var(--accent-ink);font-weight:500}
+.keys{flex:none;color:var(--ink3)}
+.keys kbd{
+  font-family:var(--mono);font-size:10px;color:var(--ink2);
+  background:var(--surface);border:1px solid var(--hairline);border-bottom-width:2px;
+  border-radius:4px;padding:1px 4px;margin:0 1px;
+}
+
+/* ---- Toast ---- */
+#toasts{
+  position:fixed;left:50%;bottom:44px;transform:translateX(-50%);
+  display:flex;flex-direction:column;align-items:center;gap:8px;z-index:60;pointer-events:none;
+}
+.toast{
+  background:var(--toast-bg);color:var(--toast-ink);font-size:12.5px;
+  padding:9px 16px;border-radius:8px;box-shadow:var(--shadow-1);
+  animation:tin .22s var(--ease);
+}
+.toast.out{opacity:0;transform:translateY(6px);transition:all .25s var(--ease)}
+@keyframes tin{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+/* ---- 角标 ---- */
+#corner{
+  position:fixed;right:12px;bottom:38px;z-index:50;pointer-events:none;
+  font-family:var(--mono);font-size:10.5px;color:rgba(24,27,32,.42);
+  background:rgba(244,245,247,.6);padding:2px 8px;border-radius:6px;
+  backdrop-filter:blur(2px);
+}
+
+/* ---- 1080px：预览收起可用 ---- */
+@media (max-width:1080px){
+  .searchbox{flex-basis:200px}
+}
+
+/* ---- 动效降级 ---- */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- 顶部过滤条：唯一输入，输入即筛 -->
+  <header id="filterbar">
+    <div class="searchbox">
+      <span class="glyph">⌕</span>
+      <input id="q" type="text" placeholder="过滤标题 / 路径 / 正文，输入即筛" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="fgroup" id="libchips">
+      <span class="flabel">库</span>
+      <button class="chip on" data-lib="all">全部</button>
+      <button class="chip" data-lib="tech">技术笔记</button>
+      <button class="chip" data-lib="paper">论文阅读</button>
+      <button class="chip" data-lib="meet">会议记录</button>
+    </div>
+    <div class="fgroup" id="fmtchips">
+      <span class="flabel">格式</span>
+      <button class="chip on" data-fmt="md">md</button>
+      <button class="chip on" data-fmt="pdf">pdf</button>
+      <button class="chip on" data-fmt="docx">docx</button>
+    </div>
+    <div class="fgroup" id="stchips">
+      <span class="flabel">状态</span>
+      <button class="chip on" data-st="all">全部</button>
+      <button class="chip" data-st="scan">含扫描件</button>
+      <button class="chip" data-st="fail">有失败项</button>
+    </div>
+    <div class="vsep"></div>
+    <select id="topk" title="命中行数上限" aria-label="Top-K 命中行数上限">
+      <option value="3">K=3</option>
+      <option value="5">K=5</option>
+      <option value="8">K=8</option>
+      <option value="10">K=10</option>
+      <option value="15" selected>K=15</option>
+    </select>
+    <div class="swrap" id="swExpand" role="switch" aria-checked="false" tabindex="0">
+      <span class="slabel">展开正文</span><span class="sw"></span>
+    </div>
+    <div class="swrap" id="swSem" role="switch" aria-checked="true" tabindex="0">
+      <span class="slabel">语义检索</span><span class="sw"></span>
+    </div>
+  </header>
+
+  <!-- 主区：行区 + 预览分屏 -->
+  <div id="main">
+    <section id="rowspane">
+      <div id="thead">
+        <span class="hcell" aria-hidden="true"></span>
+        <span class="hcell">标题</span>
+        <span class="hcell">命中摘要</span>
+        <span class="hcell">路径</span>
+        <button class="hcell" data-key="score">置信度<span class="arr"></span></button>
+        <button class="hcell" data-key="date">更新日期<span class="arr"></span></button>
+        <button class="hcell" data-key="blocks">块数<span class="arr"></span></button>
+      </div>
+      <div id="tbody">
+        <div id="tbodyinner" role="listbox" aria-label="检索结果行"></div>
+      </div>
+    </section>
+
+    <aside id="pv" tabindex="-1" aria-label="预览分屏">
+      <div class="pvhead">
+        <div class="pvtop">
+          <h2 id="pvTitle"></h2>
+          <button class="pvbtn primary" id="btnOpen">在 Obsidian 打开</button>
+          <button class="pvbtn" id="btnCollapse" title="收起预览分屏">收起 »</button>
+        </div>
+        <div class="pvpath" id="pvPath"></div>
+        <div class="pvmeta" id="pvMeta"></div>
+      </div>
+      <div id="pvbody"></div>
+      <div id="pvlinks">
+        <div class="lkgroup">
+          <span class="lklabel">出链</span>
+          <div class="lkitems" id="pvOut"></div>
+        </div>
+        <div class="lkgroup">
+          <span class="lklabel">入链</span>
+          <div class="lkitems" id="pvIn"></div>
+        </div>
+      </div>
+    </aside>
+
+    <div id="pvrail">
+      <button class="railbtn" id="btnExpand" title="展开预览分屏">«</button>
+      <span class="railtxt">预览</span>
+    </div>
+  </div>
+
+  <!-- 底部状态栏 -->
+  <footer id="statusbar">
+    <span class="grow"><b id="statRows">15 行</b> / 1,894 文件<span class="sep"> · </span>8,306 块<span class="sep"> · </span>过滤耗时 <span id="statTime">0.003s</span><span class="sep"> · </span>CUDA RTX 4070<span class="sep"> · </span>BGE-M3</span>
+    <span class="dens" role="group" aria-label="行密度">
+      <button data-h="32">32</button><button data-h="40" class="on">40</button><button data-h="52">52</button>
+    </span>
+    <span class="keys"><kbd>↑</kbd><kbd>↓</kbd> 选择 <kbd>Enter</kbd> 预览 <kbd>Ctrl+↵</kbd> 打开 <kbd>/</kbd> 过滤 <kbd>Esc</kbd> 清空</span>
+  </footer>
+</div>
+
+<div id="toasts"></div>
+<div id="corner">交互原型 · 数据为演示假数据</div>
+
+<script>
+/* ================= 假数据 ================= */
+const LIB = {
+  tech:  {name:'技术笔记', dot:'#1F242B'},
+  paper: {name:'论文阅读', dot:'#0B815A'},
+  meet:  {name:'会议记录', dot:'#A05A2C'}
+};
+
+const DATA = [
+  {
+    id:'wemm', lib:'tech', ext:'md', title:'WEMM 设计',
+    path:'D:\\Vault\\20-Projects\\Obsidian RAG\\WEMM 设计.md',
+    score:0.87, date:'2026-09-02', blocks:48, scanned:false, failed:false,
+    body:[
+      'WEMM 的目标是为扫描件与图文课件提供页级视觉导航：每页渲染成图像后嵌入页向量，写入独立 collection，检索时先语义定位到页，再回读文档全文交付。',
+      '页向量与文本块向量分离存储，meta 带版本签名，改档自动重渲染；upsert 分批提交，写库成功才落成功 meta，避免出现半写状态。',
+      'MCP 侧提供 navigate_knowledge 与 read_document：前者返回页级定位，后者零触发只读缓存交付全文，检索器保持无写副作用。'
+    ],
+    out:['检索与重排','MinerU 笔记'], in:['TASK_LOG','2026-08-30']
+  },
+  {
+    id:'rerank', lib:'tech', ext:'md', title:'检索与重排',
+    path:'D:\\Vault\\20-Projects\\Obsidian RAG\\检索与重排.md',
+    score:0.74, date:'2026-08-28', blocks:36, scanned:false, failed:false,
+    body:[
+      '混合检索的第一层是召回：BGE-M3 稠密向量与 BM25 关键词各取候选，随后进入重排阶段统一打分。',
+      '重排器只对小候选集精算，延迟可控；分数归一后与向量相似度加权融合，置信度阈值用于筛掉低质量命中。',
+      '调参经验：候选集 50、保留 top 8 时长问题的答案覆盖率最高，再大只增加延迟不增加命中。'
+    ],
+    out:['Embedding 基准测试'], in:['WEMM 设计','ICLR2026_review.pdf']
+  },
+  {
+    id:'mineru', lib:'tech', ext:'md', title:'MinerU 笔记',
+    path:'D:\\Vault\\02-Areas\\MinerU 笔记.md',
+    score:0.61, date:'2026-08-25', blocks:29, scanned:false, failed:false,
+    body:[
+      'MinerU 云端 API 负责扫描件 OCR：整本 PDF 提交后返回结构化 Markdown，表格与公式的还原度明显优于本地 OCR。',
+      '并行批量提交走线程池，滑动窗口限速默认每分钟 45 次；提交错误分三类重试，断点簿记保证中断续接不重复提交。',
+      '混合型 PDF 整本按扫描件路由：宁可诚实空缺，也不产出文字页直提加图片页丢失的拼接内容。'
+    ],
+    out:['TASK_LOG'], in:['WEMM 设计','周会纪要_2026-08-26.docx']
+  },
+  {
+    id:'j0830', lib:'meet', ext:'md', title:'2026-08-30',
+    path:'D:\\Vault\\03-Journals\\2026-08-30.md',
+    score:0.55, date:'2026-08-30', blocks:12, scanned:false, failed:false,
+    body:[
+      '下午评审了 WEMM 页级索引方案，确认页向量独立 collection 与独立版本号，检索器保持零写副作用。',
+      '扫描件限速讨论：默认每分钟 45 次够用，云端并发 3 稳定，后续观察失败率再调。',
+      '杂项：GUI 文件生效明细面板走 gui/store 只读函数，不直写库。'
+    ],
+    out:['WEMM 设计'], in:[]
+  },
+  {
+    id:'tasklog', lib:'tech', ext:'md', title:'TASK_LOG',
+    path:'D:\\Vault\\20-Projects\\Obsidian RAG\\TASK_LOG.md',
+    score:0.48, date:'2026-09-04', blocks:87, scanned:false, failed:false,
+    body:[
+      '问题 37、38 落地 WEMM 页级视觉导航，问题 39 统一长驻进程配置现读，问题 40 交付 GUI 文件生效明细面板。',
+      '每个问题按叙事记录：背景、方案取舍、回归测试全绿才算完成；索引集成测试一律用隔离环境，绝不碰真实模型与库。'
+    ],
+    out:['WEMM 设计','Chroma 运维手册'], in:['MinerU 笔记']
+  },
+  {
+    id:'iclr', lib:'paper', ext:'pdf', title:'ICLR2026_review.pdf',
+    path:'D:\\Vault\\论文阅读\\ICLR2026_review.pdf',
+    score:0.71, date:'2026-08-18', blocks:142, scanned:false, failed:false,
+    body:[
+      'Review 指出当前 RAG 系统在多跳问题上仍依赖重排质量，提出 confidence-aware fusion 作为对照基线。',
+      '实验在三个开放域基准上进行：混合检索相对纯稠密平均提升 6.2 个百分点，其中重排贡献占一半以上。',
+      '局限：评测语料以英文为主，中文个人笔记场景需要自建基准才有说服力。'
+    ],
+    out:['检索与重排'], in:['NeurIPS2025_notes.pdf']
+  },
+  {
+    id:'survey', lib:'paper', ext:'pdf', title:'RAG_Agent_Survey_2026.pdf',
+    path:'D:\\Vault\\论文阅读\\RAG_Agent_Survey_2026.pdf',
+    score:0.66, date:'2026-08-12', blocks:203, scanned:true, failed:false,
+    body:[
+      '本综述梳理 Agent 与检索结合的三条范式：检索作为工具调用、检索增强规划、外部记忆库。',
+      '扫描件经 MinerU vlm 认字还原为结构化 Markdown，公式与图表标题基本完整，页级向量可定位到具体章节。'
+    ],
+    out:[], in:[]
+  },
+  {
+    id:'w0826', lib:'meet', ext:'docx', title:'周会纪要_2026-08-26.docx',
+    path:'D:\\Vault\\会议记录\\周会纪要_2026-08-26.docx',
+    score:0.52, date:'2026-08-26', blocks:18, scanned:false, failed:false,
+    body:[
+      '周会确认索引门禁语义：Agent 触发的索引只处理文本类与已批准格式，未授权二进制文件冻结保留条目与块，批准一次长期有效、可撤销。',
+      '同步 MinerU 云端批量进度：断点簿记上线后，中断任务下一轮续接，不重复提交。'
+    ],
+    out:['MinerU 笔记'], in:['2026-08-30']
+  },
+  {
+    id:'slides', lib:'paper', ext:'pdf', title:'扫描课件_分布式系统.pdf',
+    path:'D:\\Vault\\论文阅读\\扫描课件_分布式系统.pdf',
+    score:0.58, date:'2026-07-30', blocks:96, scanned:true, failed:true,
+    body:[
+      'PPT 文字页与手写扫描页混装，文字层覆盖不全，整本按扫描件路由送云端 OCR。',
+      '第 14、22 页 OCR 置信度过低，标记为失败页待重跑；其余页面已产出完整 Markdown。'
+    ],
+    out:[], in:[]
+  },
+  {
+    id:'chroma', lib:'tech', ext:'md', title:'Chroma 运维手册',
+    path:'D:\\Vault\\20-Projects\\Obsidian RAG\\Chroma 运维手册.md',
+    score:0.44, date:'2026-08-20', blocks:31, scanned:false, failed:false,
+    body:[
+      'Chroma 持久化目录按库分离，页级库以独立后缀存放；导出导入演练走副本，不碰真库。',
+      '一致性自愈：meta 期望块数与实际不符时自动转全量重建，全终态库不触发。'
+    ],
+    out:[], in:['TASK_LOG']
+  },
+  {
+    id:'j0901', lib:'meet', ext:'md', title:'2026-09-01',
+    path:'D:\\Vault\\03-Journals\\2026-09-01.md',
+    score:0.39, date:'2026-09-01', blocks:9, scanned:false, failed:false,
+    body:[
+      '早上跑通导出导入演练，39 个检查项全过，真实检索加载模型约 40 秒。',
+      '下午整理 GUI 状态栏口径：行数、文件数、块数与过滤耗时的展示规则。'
+    ],
+    out:[], in:[]
+  },
+  {
+    id:'emb', lib:'tech', ext:'md', title:'Embedding 基准测试',
+    path:'D:\\Vault\\20-Projects\\Obsidian RAG\\Embedding 基准测试.md',
+    score:0.69, date:'2026-08-22', blocks:24, scanned:false, failed:false,
+    body:[
+      '对比 BGE-M3 与旧模型在中文笔记上的召回：top5 命中率从 0.71 提升到 0.83。',
+      '嵌入维度 1024，页向量库与文本库分开统计存储占用；长笔记切块后平均块长 420 字。'
+    ],
+    out:[], in:['检索与重排']
+  },
+  {
+    id:'neurips', lib:'paper', ext:'pdf', title:'NeurIPS2025_notes.pdf',
+    path:'D:\\Vault\\论文阅读\\NeurIPS2025_notes.pdf',
+    score:0.63, date:'2026-08-05', blocks:118, scanned:false, failed:false,
+    body:[
+      '这篇讲 late-interaction 重排：token 级匹配对长文档段落定位比交叉编码器省算力。',
+      '开源实现可作重排器备选，延迟约为交叉编码器的 0.6 倍，中文效果待验证。'
+    ],
+    out:['ICLR2026_review.pdf'], in:[]
+  },
+  {
+    id:'gui', lib:'meet', ext:'docx', title:'GUI 原型评审.docx',
+    path:'D:\\Vault\\会议记录\\GUI 原型评审.docx',
+    score:0.47, date:'2026-08-15', blocks:15, scanned:false, failed:false,
+    body:[
+      '评审意见：检索语义在 GUI 里淡化为过滤，输入即筛，不要 loading 态。',
+      '数据行方案胜出：零卡片，信息密度即效率，键盘操作是一等公民。'
+    ],
+    out:['Flet 桌面端笔记'], in:[]
+  },
+  {
+    id:'flet', lib:'tech', ext:'md', title:'Flet 桌面端笔记',
+    path:'D:\\Vault\\20-Projects\\Obsidian RAG\\Flet 桌面端笔记.md',
+    score:0.57, date:'2026-08-10', blocks:21, scanned:false, failed:false,
+    body:[
+      'Flet 进程治理只走统一停止脚本，单杀 PID 会留下孤儿进程。',
+      'GUI 是零侵入观察者：不加载模型、不直写向量库，数据全部走只读函数。'
+    ],
+    out:[], in:['GUI 原型评审.docx']
+  }
+];
+
+/* ================= 状态 ================= */
+const state = {
+  q:'', lib:'all', fmts:new Set(['md','pdf','docx']), st:'all',
+  k:15, expand:false, semantic:true,
+  sortKey:'score', sortDir:'desc',
+  selId:null, pvOpen:true, shown:[]
+};
+
+const $ = s => document.querySelector(s);
+const tbody = $('#tbodyinner');
+const pv = $('#pv');
+
+/* ================= 工具 ================= */
+function escHtml(s){
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escRe(s){ return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+function terms(){
+  return state.q.trim().split(/\s+/).filter(Boolean);
+}
+function mark(text, ts){
+  const safe = escHtml(text);
+  if(!ts.length) return safe;
+  const re = new RegExp('(' + ts.map(escRe).join('|') + ')', 'gi');
+  return safe.replace(re, '<mark>$1</mark>');
+}
+function rowText(r){
+  return (r.title + '\n' + r.path + '\n' + r.body.join('\n')).toLowerCase();
+}
+function snippetFor(r, ts){
+  const text = r.body.join(' ');
+  for(const t of ts){
+    const i = text.toLowerCase().indexOf(t.toLowerCase());
+    if(i >= 0){
+      const s = Math.max(0, i - 42);
+      return (s > 0 ? '…' : '') + text.slice(s, i + t.length + 72) + '…';
+    }
+  }
+  const s0 = text.length > 110 ? text.slice(0, 110) + '…' : text;
+  return s0;
+}
+function confClass(v){ return v >= 0.75 ? 'var(--accent)' : (v >= 0.5 ? 'var(--info)' : '#D97706'); }
+function findByTitle(t){ return DATA.find(r => r.title === t); }
+
+/* ================= 过滤 + 排序 ================= */
+function filtered(){
+  const ts = terms();
+  const q = state.q.trim().toLowerCase();
+  let rows = DATA.filter(r => {
+    if(state.lib !== 'all' && r.lib !== state.lib) return false;
+    if(!state.fmts.has(r.ext)) return false;
+    if(state.st === 'scan' && !r.scanned) return false;
+    if(state.st === 'fail' && !r.failed) return false;
+    if(q){
+      const hay = rowText(r);
+      return q.split(/\s+/).every(t => hay.includes(t));
+    }
+    return true;
+  });
+  const dir = state.sortDir === 'asc' ? 1 : -1;
+  rows.sort((a, b) => (a[state.sortKey] > b[state.sortKey] ? dir : a[state.sortKey] < b[state.sortKey] ? -dir : 0));
+  return rows.slice(0, state.k);
+}
+
+/* ================= 渲染：行区 ================= */
+function renderRows(){
+  const ts = terms();
+  const rows = filtered();
+  state.shown = rows;
+  $('#statRows').textContent = rows.length + ' 行';
+  $('#statTime').textContent = (0.0016 + rows.length * 0.00009 + (state.q ? 0.0004 : 0)).toFixed(3) + 's';
+
+  // 表头箭头
+  document.querySelectorAll('#thead button.hcell').forEach(b => {
+    const on = b.dataset.key === state.sortKey;
+    b.classList.toggle('active', on);
+    b.querySelector('.arr').textContent = on ? (state.sortDir === 'asc' ? '↑' : '↓') : '';
+  });
+
+  if(!rows.length){
+    tbody.innerHTML = '<div class="empty">没有匹配的行。修改过滤词，或清除右侧过滤条件。</div>';
+    state.selId = null;
+    renderPreview();
+    return;
+  }
+  // 选中行若被筛掉，回落到第一行
+  if(!rows.some(r => r.id === state.selId)) state.selId = rows[0].id;
+
+  tbody.innerHTML = rows.map(r => {
+    const c = confClass(r.score);
+    return '<div class="row' + (r.id === state.selId ? ' sel' : '') + '" role="option" aria-selected="' +
+      (r.id === state.selId) + '" data-id="' + r.id + '">' +
+      '<span class="ldot" style="background:' + LIB[r.lib].dot + '" title="' + LIB[r.lib].name + '"></span>' +
+      '<span class="rtitle">' + mark(r.title, ts) + '</span>' +
+      '<span class="rsnip">' + mark(snippetFor(r, ts), ts) + '</span>' +
+      '<span class="rpath">' + mark(r.path, ts) + '</span>' +
+      '<span class="rconf"><span class="cdot" style="background:' + c + '"></span>' + r.score.toFixed(2) + '</span>' +
+      '<span class="rdate">' + r.date + '</span>' +
+      '<span class="rblocks">' + r.blocks + '</span>' +
+      '</div>';
+  }).join('');
+
+  const sel = tbody.querySelector('.row.sel');
+  if(sel) sel.scrollIntoView({block:'nearest'});
+  renderPreview();
+}
+
+/* ================= 渲染：预览分屏 ================= */
+function renderPreview(){
+  const r = DATA.find(x => x.id === state.selId);
+  const ts = terms();
+  if(!r){
+    $('#pvTitle').textContent = '未选中行';
+    $('#pvPath').textContent = '';
+    $('#pvMeta').innerHTML = '';
+    $('#pvbody').innerHTML = '<p style="color:var(--ink3)">用 ↑↓ 或点击选中一行，预览随选中即时切换。</p>';
+    $('#pvOut').innerHTML = '<span class="lknone">无</span>';
+    $('#pvIn').innerHTML = '<span class="lknone">无</span>';
+    return;
+  }
+  $('#pvTitle').textContent = r.title;
+  $('#pvPath').textContent = r.path;
+  const c = confClass(r.score);
+  let meta = '<span class="m"><span class="cdot" style="background:' + c + '"></span>置信度 ' + r.score.toFixed(2) + '</span>' +
+    '<span class="m">' + LIB[r.lib].name + '</span>' +
+    '<span class="m">' + r.ext + '</span>' +
+    '<span class="m">' + r.date + '</span>' +
+    '<span class="m">' + r.blocks + ' 块</span>';
+  if(r.scanned) meta += '<span class="badge scan">扫描件</span>';
+  if(r.failed) meta += '<span class="badge fail">有失败页</span>';
+  $('#pvMeta').innerHTML = meta;
+
+  // 正文：命中段高亮优先，展开正文开关控制全文
+  const paras = r.body;
+  let html = '';
+  let hitIdx = ts.length ? paras.findIndex(p => ts.some(t => p.toLowerCase().includes(t.toLowerCase()))) : 0;
+  if(hitIdx < 0) hitIdx = 0;
+  if(!state.expand){
+    const shown = new Set([hitIdx, hitIdx + 1].filter(i => i < paras.length));
+    paras.forEach((p, i) => {
+      if(shown.has(i)) html += '<p class="hit">' + mark(p, ts) + '</p>';
+    });
+    if(paras.length > shown.size)
+      html += '<div class="pvmore">…… 其余 ' + (paras.length - shown.size) + ' 段在「展开正文」开启后显示</div>';
+  } else {
+    paras.forEach((p, i) => { html += '<p class="' + (i === hitIdx ? 'hit' : '') + '">' + mark(p, ts) + '</p>'; });
+  }
+  $('#pvbody').innerHTML = html;
+
+  $('#pvOut').innerHTML = linkList(r.out, '→');
+  $('#pvIn').innerHTML = linkList(r.in, '←');
+}
+function linkList(list, arr){
+  if(!list.length) return '<span class="lknone">无</span>';
+  return list.map(t => {
+    const exists = !!findByTitle(t);
+    return '<button class="lk" data-walk="' + escHtml(t) + '"' + (exists ? '' : ' disabled style="color:var(--ink3);cursor:default"') +
+      '><span class="arr">' + arr + '</span>' + escHtml(t) + '</button>';
+  }).join('');
+}
+
+/* ================= 顺链而行 ================= */
+function walkTo(title){
+  const input = $('#q');
+  input.value = title;
+  state.q = title;
+  renderRows();
+  const hit = state.shown.find(r => r.title === title);
+  if(hit){
+    state.selId = hit.id;
+    renderRows();
+  }
+  input.focus();
+  input.select();
+}
+
+/* ================= Toast ================= */
+function toast(msg){
+  const box = $('#toasts');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  box.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 300);
+  }, 2200);
+}
+
+/* ================= 事件：行点击 ================= */
+tbody.addEventListener('click', e => {
+  const row = e.target.closest('.row');
+  if(!row) return;
+  state.selId = row.dataset.id;
+  renderRows();
+});
+
+/* ================= 事件：过滤条 ================= */
+$('#q').addEventListener('input', e => { state.q = e.target.value; renderRows(); });
+
+$('#libchips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if(!b) return;
+  state.lib = b.dataset.lib;
+  $('#libchips').querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === b));
+  renderRows();
+});
+$('#fmtchips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if(!b) return;
+  const f = b.dataset.fmt;
+  if(state.fmts.has(f)){ state.fmts.delete(f); b.classList.remove('on'); }
+  else { state.fmts.add(f); b.classList.add('on'); }
+  renderRows();
+});
+$('#stchips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if(!b) return;
+  state.st = b.dataset.st;
+  $('#stchips').querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === b));
+  renderRows();
+});
+$('#topk').addEventListener('change', e => { state.k = +e.target.value; renderRows(); });
+
+function bindSwitch(id, fn){
+  const el = $(id);
+  const flip = () => {
+    const v = el.getAttribute('aria-checked') !== 'true';
+    el.setAttribute('aria-checked', v);
+    fn(v);
+  };
+  el.addEventListener('click', flip);
+  el.addEventListener('keydown', e => {
+    if(e.key === ' ' || e.key === 'Enter'){ e.preventDefault(); e.stopPropagation(); flip(); }
+  });
+}
+bindSwitch('#swExpand', v => { state.expand = v; renderPreview(); });
+bindSwitch('#swSem', v => {
+  state.semantic = v;
+  state.sortKey = v ? 'score' : 'date';
+  state.sortDir = 'desc';
+  renderRows();
+});
+
+/* ================= 事件：表头排序 ================= */
+document.querySelectorAll('#thead button.hcell').forEach(b => {
+  b.addEventListener('click', () => {
+    const key = b.dataset.key;
+    if(state.sortKey === key) state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+    else { state.sortKey = key; state.sortDir = 'desc'; }
+    state.semantic = (state.sortKey === 'score');
+    $('#swSem').setAttribute('aria-checked', state.semantic);
+    renderRows();
+  });
+});
+
+/* ================= 事件：密度 ================= */
+document.querySelectorAll('.dens button').forEach(b => {
+  b.addEventListener('click', () => {
+    document.documentElement.style.setProperty('--rowh', b.dataset.h + 'px');
+    document.querySelectorAll('.dens button').forEach(x => x.classList.toggle('on', x === b));
+  });
+});
+
+/* ================= 事件：预览 ================= */
+$('#btnOpen').addEventListener('click', () => toast('已在 Obsidian 中打开（原型模拟）'));
+$('#btnCollapse').addEventListener('click', () => setPv(false));
+$('#btnExpand').addEventListener('click', () => setPv(true));
+function setPv(open){
+  state.pvOpen = open;
+  pv.classList.toggle('collapsed', !open);
+  $('#pvrail').classList.toggle('show', !open);
+}
+$('#pvlinks').addEventListener('click', e => {
+  const b = e.target.closest('.lk[data-walk]');
+  if(b) walkTo(b.dataset.walk);
+});
+
+/* ================= 键盘：一等公民 ================= */
+document.addEventListener('keydown', e => {
+  const tag = (e.target.tagName || '').toLowerCase();
+  const inInput = tag === 'input' || tag === 'select' || tag === 'textarea';
+
+  if(e.key === 'Escape'){
+    e.preventDefault();
+    if($('#q').value){
+      $('#q').value = ''; state.q = ''; renderRows();
+    } else if(state.pvOpen){
+      setPv(false);
+    }
+    return;
+  }
+  if(e.key === '/' && !inInput){
+    e.preventDefault();
+    $('#q').focus(); $('#q').select();
+    return;
+  }
+  if((e.ctrlKey || e.metaKey) && e.key === 'Enter'){
+    e.preventDefault();
+    if(state.selId) toast('已在 Obsidian 中打开（原型模拟）');
+    return;
+  }
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    if(tag === 'select') return;
+    e.preventDefault();
+    if(!state.shown.length) return;
+    const idx = state.shown.findIndex(r => r.id === state.selId);
+    const next = e.key === 'ArrowDown'
+      ? Math.min(state.shown.length - 1, idx + 1)
+      : Math.max(0, idx - 1);
+    state.selId = state.shown[next].id;
+    renderRows();
+    return;
+  }
+  if(e.key === 'Enter' && tag !== 'select' && !e.ctrlKey && !e.metaKey){
+    e.preventDefault();
+    if(!state.pvOpen) setPv(true);
+    pv.focus();
+    pv.scrollIntoView({block:'nearest'});
+  }
+});
+
+/* ================= 初始化 ================= */
+renderRows();
+if(window.innerWidth < 1000) setPv(false);
+</script>
+</body>
+</html>

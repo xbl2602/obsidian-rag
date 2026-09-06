@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Obsidian RAG · UI/UX 方向选型 DEMO</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0D0E10; --panel: #131518; --panel-hi: #191C20;
+    --line: #26292E; --ink: #EDEEF0; --dim: #878D96; --accent: #5B9DFF;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    padding: 72px 24px 96px;
+  }
+  .eyebrow { font: 600 11px/1 "JetBrains Mono", monospace; letter-spacing: .22em; color: var(--dim); text-transform: uppercase; }
+  h1 { font-size: clamp(28px, 4vw, 44px); font-weight: 700; letter-spacing: -.02em; margin: 14px 0 10px; }
+  .sub { color: var(--dim); font-size: 15px; max-width: 560px; text-align: center; line-height: 1.7; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; max-width: 1180px; width: 100%; margin-top: 52px; }
+  a.card {
+    display: block; text-decoration: none; color: inherit;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+    padding: 7px; transition: transform .5s cubic-bezier(.32,.72,0,1), border-color .3s;
+  }
+  a.card:hover { transform: translateY(-3px); border-color: #3A3E45; }
+  a.card:active { transform: translateY(-1px) scale(.99); }
+  .shell { border-radius: 12px; overflow: hidden; position: relative; aspect-ratio: 16/10; }
+  .shell .bar { position: absolute; inset: 0 0 auto 0; height: 26px; background: var(--panel-hi); display: flex; align-items: center; gap: 6px; padding: 0 12px; }
+  .shell .bar i { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  .chip { position: absolute; right: 10px; top: 36px; font: 600 10px/1 "JetBrains Mono", monospace; letter-spacing: .08em; padding: 5px 8px; border-radius: 6px; }
+  .info { padding: 18px 12px 12px; }
+  .num { font: 600 12px/1 "JetBrains Mono", monospace; color: var(--accent); }
+  .name { font-size: 20px; font-weight: 700; margin: 8px 0 6px; letter-spacing: -.01em; }
+  .desc { color: var(--dim); font-size: 13.5px; line-height: 1.7; }
+  .meta { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .meta span { font: 500 11px/1 "Noto Sans SC", sans-serif; color: var(--dim); border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px; }
+  /* 每张卡一个迷你预览色板 */
+  .pv { position: absolute; inset: 26px 0 0 0; }
+  .pv1 { background: radial-gradient(120% 90% at 20% 0%, rgba(52,211,153,.14), transparent 55%), radial-gradient(90% 80% at 85% 15%, rgba(59,99,246,.12), transparent 60%), #050505; }
+  .pv2 { background: linear-gradient(160deg, #FFFFFF 0%, #F4F5F7 100%); }
+  .pv3 { background: linear-gradient(160deg, #FBFAF7 0%, #F1EEE6 100%); }
+  .pv4 { background: #0D0E10; }
+  .pv .mk { position: absolute; border-radius: 6px; }
+  .pv7 { background: radial-gradient(100% 80% at 30% 30%, rgba(52,211,153,.10), transparent 60%), #050505; }
+  .pv7 .mk.a { left: 20%; top: 42%; width: 22%; height: 24%; background: #0C0E11; border: 1.5px solid #34D399; border-radius: 9px; }
+  .pv7 .mk.b { left: 50%; top: 26%; width: 13%; height: 13%; background: #0C0E11; border: 1px solid rgba(125,184,255,.5); border-radius: 7px; }
+  .pv7 .mk.c { left: 56%; top: 62%; width: 11%; height: 11%; background: #0C0E11; border: 1px solid rgba(251,191,36,.5); border-radius: 7px; }
+  .pv7 .mk.d { left: 34%; top: 54%; width: 18%; height: 1.5px; background: #34D399; opacity: .5; transform: rotate(-18deg); transform-origin: left; }
+  .pv5 { background: radial-gradient(90% 70% at 30% 40%, rgba(11,129,90,.08), transparent 60%), #F4F5F7; }
+  .pv5 .mk.a { left: 22%; top: 38%; width: 26%; height: 26%; background: #fff; border: 1.5px solid #0B815A; border-radius: 12px; box-shadow: 0 6px 18px rgba(16,24,40,.08); }
+  .pv5 .mk.b { left: 56%; top: 24%; width: 16%; height: 16%; background: #fff; border: 1px solid #D8DCE2; border-radius: 9px; box-shadow: 0 4px 12px rgba(16,24,40,.06); }
+  .pv5 .mk.c { left: 60%; top: 58%; width: 13%; height: 13%; background: #fff; border: 1px solid #D8DCE2; border-radius: 8px; box-shadow: 0 4px 12px rgba(16,24,40,.06); }
+  .pv5 .mk.d { left: 30%; top: 50%; width: 26%; height: 1.5px; background: #0B815A; opacity: .4; transform: rotate(24deg); transform-origin: left; }
+  .pv6 { background: #F4F5F7; }
+  .pv6 .mk.a { left: 8%; top: 22%; width: 52%; height: 9%; background: #fff; border-bottom: 1px solid #E5E7EB; border-radius: 0; box-shadow: 0 1px 2px rgba(16,24,40,.04); }
+  .pv6 .mk.b { left: 8%; top: 33%; width: 52%; height: 9%; background: rgba(11,129,90,.06); border-left: 2px solid #0B815A; border-radius: 0; }
+  .pv6 .mk.c { left: 64%; top: 22%; width: 28%; height: 56%; background: #fff; border-radius: 8px 0 0 0; box-shadow: -1px 0 0 #E5E7EB; }
+  .c1 .mk.a { inset: auto 14% 22% 14%; height: 34%; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.1); border-radius: 10px; }
+  .c1 .mk.b { left: 14%; right: 14%; top: 18%; height: 10px; background: rgba(52,211,153,.7); border-radius: 5px; width: 42%; }
+  .c2 .mk.a { inset: auto 12% 20% 12%; height: 36%; background: #fff; border-radius: 10px; box-shadow: 0 8px 24px rgba(16,24,40,.08); }
+  .c2 .mk.b { left: 12%; top: 22%; height: 14px; width: 38%; background: #0B815A; border-radius: 7px; opacity: .85; }
+  .c3 .mk.a { inset: auto 12% 18% 12%; height: 8%; background: none; border-top: 1px solid #E7E4DD; }
+  .c3 .mk.b { left: 12%; top: 20%; height: 22px; width: 46%; background: #1F2328; border-radius: 4px; opacity: .85; }
+  .c3 .mk.c { left: 12%; top: calc(20% + 34px); height: 10px; width: 30%; background: #C9C4B8; border-radius: 4px; }
+  .c4 .mk.a { inset: auto 16% 24% 16%; height: 34%; background: #131518; border: 1px solid #26292E; border-radius: 10px; }
+  .c4 .mk.b { left: 16%; top: 20%; height: 12px; width: 34%; background: #5B9DFF; border-radius: 6px; opacity: .8; }
+  footer { margin-top: 56px; color: var(--dim); font-size: 12.5px; text-align: center; line-height: 1.8; }
+  footer code { font-family: "JetBrains Mono", monospace; color: var(--ink); font-size: 11.5px; }
+</style>
+</head>
+<body>
+  <div class="eyebrow">Obsidian RAG · GUI Redesign</div>
+  <h1>六个方向，选出你心仪的那个</h1>
+  <p class="sub">同一套功能，两组范式。上排是「卡片流」美学的四种皮肤；下排是<b>结构级重构</b>——不再有结果卡片列表，检索被重新发明为空间图谱与增量过滤。</p>
+
+  <div class="grid">
+    <a class="card c1" href="demo7-glass-graph.html">
+      <div class="shell"><div class="bar"><i></i><i></i><i></i></div>
+        <div class="pv pv7"><span class="chip" style="background:rgba(52,211,153,.15);color:#34D399;">FUSION ★</span>
+          <span class="mk a"></span><span class="mk b"></span><span class="mk c"></span><span class="mk d"></span></div>
+      </div>
+      <div class="info">
+        <div class="num">DEMO 7 · 融合版</div>
+        <div class="name">深黑玻璃 · 全库图谱</div>
+        <p class="desc">DEMO 1 的全部功能 × 重新设计的图谱力学：语义相似度=引力、库=聚落，显式双链只是可关的图层；全库 62 节点常驻（WEMM 页 / PDF→MD 缓存均可开关），检索涟漪点亮但不吞掉全景。</p>
+        <div class="meta"><span>结构+皮肤融合</span><span>Signature: 语义引力聚落</span><span>图层阈值滑杆</span></div>
+      </div>
+    </a>
+
+    <a class="card c5" href="demo5-graph.html">
+      <div class="shell"><div class="bar"><i></i><i></i><i></i></div>
+        <div class="pv pv5"><span class="chip" style="background:#E4EAE2;color:#0B815A;">GRAPH CANVAS</span>
+          <span class="mk a"></span><span class="mk b"></span><span class="mk c"></span><span class="mk d"></span></div>
+      </div>
+      <div class="info">
+        <div class="num">DEMO 5 · 结构重构</div>
+        <div class="name">知识图谱画布</div>
+        <p class="desc">没有导航栏和结果列表：笔记是可拖拽节点，双链是弧线；检索时涟漪从问题节点荡开，Top-K 结果被点亮。点节点看 Inspector。</p>
+        <div class="meta"><span>空间画布</span><span>Signature: 检索涟漪</span><span>拖拽 / 缩放 / 平移</span></div>
+      </div>
+    </a>
+
+    <a class="card c6" href="demo6-rows.html">
+      <div class="shell"><div class="bar"><i></i><i></i><i></i></div>
+        <div class="pv pv6"><span class="chip" style="background:#E7F5EE;color:#0B815A;">DENSE ROWS</span>
+          <span class="mk a"></span><span class="mk b"></span><span class="mk c"></span></div>
+      </div>
+      <div class="info">
+        <div class="num">DEMO 6 · 结构重构</div>
+        <div class="name">数据行密屏</div>
+        <p class="desc">零卡片零导航：Everything 式增量过滤，一屏紧凑数据行 + 右侧分屏预览，全键盘驱动；预览里点双链即「顺链而行」。</p>
+        <div class="meta"><span>键盘优先</span><span>Signature: 顺链而行</span><span>信息密度最高</span></div>
+      </div>
+    </a>
+
+    <a class="card c1" href="demo1-glass.html">
+      <div class="shell"><div class="bar"><i></i><i></i><i></i></div>
+        <div class="pv pv1"><span class="chip" style="background:rgba(52,211,153,.15);color:#34D399;">DARK GLASS</span>
+          <span class="mk a"></span><span class="mk b"></span></div>
+      </div>
+      <div class="info">
+        <div class="num">DEMO 1</div>
+        <div class="name">深黑玻璃 · 动态岛</div>
+        <p class="desc">OLED 近黑画布、发丝边框、玻璃浮层；顶部动态岛随索引进度形变。Raycast/Vercel 的暗色纪律。</p>
+        <div class="meta"><span>深色优先</span><span>Signature: 动态岛</span><span>Space Grotesk</span></div>
+      </div>
+    </a>
+
+    <a class="card c2" href="demo2-soft.html">
+      <div class="shell"><div class="bar"><i></i><i></i><i></i></div>
+        <div class="pv pv2"><span class="chip" style="background:#E7F5EE;color:#0B815A;">LIGHT SOFT</span>
+          <span class="mk a"></span><span class="mk b"></span></div>
+      </div>
+      <div class="info">
+        <div class="num">DEMO 2</div>
+        <div class="name">银灰软结构 · 搜索岛</div>
+        <p class="desc">银灰画布、特大号数字、极软弥散环境影；搜索后搜索岛缩小吸顶。苹果系浅色的高级感。</p>
+        <div class="meta"><span>浅色优先</span><span>Signature: 搜索岛吸顶</span><span>Sora</span></div>
+      </div>
+    </a>
+
+    <a class="card c3" href="demo3-editorial.html">
+      <div class="shell"><div class="bar"><i></i><i></i><i></i></div>
+        <div class="pv pv3"><span class="chip" style="background:#E4EAE2;color:#4A6B57;">EDITORIAL</span>
+          <span class="mk a"></span><span class="mk b"></span><span class="mk c"></span></div>
+      </div>
+      <div class="info">
+        <div class="num">DEMO 3</div>
+        <div class="name">暖纸编辑级 · 目录式结果</div>
+        <p class="desc">纸面质感、衬线大标题、杂志目录式检索结果、胶片噪点。为爱书人做的检索工具。</p>
+        <div class="meta"><span>纸感浅色</span><span>Signature: 目录式结果流</span><span>Noto Serif SC</span></div>
+      </div>
+    </a>
+
+    <a class="card c4" href="demo4-instrument.html">
+      <div class="shell"><div class="bar"><i></i><i></i><i></i></div>
+        <div class="pv pv4"><span class="chip" style="background:rgba(91,157,255,.14);color:#5B9DFF;">INSTRUMENT</span>
+          <span class="mk a"></span><span class="mk b"></span></div>
+      </div>
+      <div class="info">
+        <div class="num">DEMO 4</div>
+        <div class="name">单色仪器 · 命令面板</div>
+        <p class="desc">近黑仪器画布、hairline 组织内容、等宽数字；Ctrl+K 命令面板与全键盘链路是灵魂。</p>
+        <div class="meta"><span>键盘优先</span><span>Signature: Ctrl+K 面板</span><span>JetBrains Mono</span></div>
+      </div>
+    </a>
+  </div>
+
+  <footer>
+    交互提示：每个 DEMO 均可完整点按（搜索 / 重建索引 / 库增删 / 设置门禁弹窗 / 诊断面板）。<br>
+    DEMO 4：<code>Ctrl+K</code> 命令面板 · <code>?</code> 键位速查 · 检索内 <code>↑↓ Enter r o</code>；
+    DEMO 5：拖拽节点 · 滚轮缩放 · 点节点看 Inspector；
+    DEMO 6：<code>/</code> 过滤 · <code>↑↓</code> 选行 · <code>Ctrl+Enter</code> 打开 · 预览里点双链即顺链而行<br>
+    旧版归档于 <code>old/</code> · 品牌设计参照于 <code>references/</code>
+  </footer>
+</body>
+</html>
