@@ -2031,3 +2031,12 @@ Roadmap 状态）。
 2. 徽章没反映 exclude_dirs/files/patterns 硬排除（AGENTS.md 在排除名单却显示
    "入库"）——selection_tree 的 _state 补齐 exclude_* 三条规则（与 collect_md_files
    逐条对齐，且置于显式选择之上不可穿透），显示=实际。test_selection 65/65。
+3. **UI 迭代（用户反馈"看不出文件夹/文件/类型区别、左边全是无用空间"）**：勾选
+   面板从 560px 窄抽屉重做为 1180px 宽幅两栏弹窗——左栏整棵目录树（一次拉取
+   folders 扁平结构、depth 缩进、状态圆点、点击切目录），右栏当前目录文件列表
+   （文件夹行图标+加粗底色 / 文件行类型徽章 MD绿·PDF红·DOCX蓝·TXT灰·不支持灰），
+   底部图例。真机调出一个渲染 bug：目录行复用 tree-ico 图标类，该类尺寸规则只在
+   .sel-tree-row 作用域下，落进右栏后 svg 无约束放大到 452px，图标描边叠成巨块
+   遮挡列表——双类修复。DevTools 定位法：RAG_GUIWEB_DEBUG=1 开 DevTools +
+   elementsFromPoint/copy() 到剪贴板（SVG className 是对象不是字符串，typeof
+   判断会误报无类名）。
