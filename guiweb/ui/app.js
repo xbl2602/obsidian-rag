@@ -603,7 +603,7 @@ var ICO_FILE = '<svg class="sel-ico" viewBox="0 0 24 24" fill="none" stroke="cur
 function renderSelTree(r) {
   var cur = SEL.sub;
   var h = r.folders.map(function (f) {
-    var ind = (f.depth * 14) + 'px';
+    var ind = f.depth * 14;  // 数字：先拼 'px' 再 +ind 会得 NaN（缩进全失效 = 平铺）
     var cls = 'sel-tree-row' + (f.path === cur ? ' on' : '')
       + (f.state === 'out' ? ' excluded' : '');
     var dot = f.state === 'root' ? '' :
