@@ -1975,7 +1975,7 @@ test_guiweb 增 `test_parse_confidence_tier_suffix`。相关套件全绿 + 真�
 **动机**：用户要求库内按文件/文件夹粒度决定建不建向量库；被排除的文件**全流程
 彻底不碰**（BGE/WEMM/MinerU/pymupdf 一律不触达）；AI Agent 经 MCP 提议变更必须
 经用户确认（硬编码，无配置绕过）；GUI 在库管理每库出「勾选范围」右侧抽屉。
-设计经用户逐项拍板（docs/design/2026-09-06-selection-gating-design.md）：
+设计经用户逐项拍板（定稿并入本节，不再单开设计文件）：
 ①嵌套冲突=离文件近的显式选择赢；②新文件默认=跟随全局格式；③**无保护概念**——
 全局格式开关=对该格式文件的批量勾/取消（显式勾选的"青苹果菜单"也跟着取消），
 文件夹级选择不被批量触碰；④MCP 确认走对话流（agent 展示 diff + 确认码），用户
@@ -2013,8 +2013,17 @@ GateError）；十件套 + test_guiweb 53 + test_selection 63 全绿，接线检
 修真 bug 2 个：set_config 先 bulk 后 save 的读改写覆盖；collect 的文件级判定
 "/"有无→按扩展名。
 
-**文档**：docs/design/2026-09-06-selection-gating-design.md（实施前已交用户批准）；
-AGENTS/TODO/Vault（操作手册勾选范围段、决策记录 ADR-19、Roadmap 状态）同步。
+**设计定稿（数据模型与判定规则，实施前经用户逐项批准；决策背景另见 Vault ADR-19）**：
+- 数据模型：libraries.json 每库 `"selection_in": ["课件/青苹果菜单.pdf"],
+  "selection_out": ["私人/账单/"]`（库内相对路径，/ 分隔；不在两表 = 中性）。
+  新库无两表 = 全按格式纳入（"默认全部勾选"）；新文件天然中性（跟随格式，
+  可由 config `selection_new_files`=follow/include/exclude 调节）
+- 判定优先级：exclude_* 硬排除 > 最近显式选择 > 格式开关 extensions >
+  中性默认；GUI 徽章与 collect_md_files 逐条对齐（显示=实际）
+- 已知取舍：路径键 = 相对路径，文件改名/移动后选择丢失（按新文件走默认），
+  不做移动追踪；中性 include 档可穿透白名单（仅受支持格式）
+**文档同步**：AGENTS/TODO/Vault（操作手册勾选范围段、决策记录 ADR-19、
+Roadmap 状态）。
 
 **问题44 附记（真机验证发现 2 个显示层真 bug，均已修 + 回归）**：
 1. 中性文件夹显示"排除（跟随格式）"——文件夹没有扩展名，落进格式判定必 out；

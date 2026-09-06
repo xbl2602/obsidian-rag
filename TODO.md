@@ -473,7 +473,7 @@ python index.py --library "Obsidian Vault"
 
 ## 路径级勾选建模（问题 44，2026-09-06）：库内文件/文件夹级决定建不建库
 
-> 状态：✅ 已完成。设计经用户逐项拍板（docs/design/2026-09-06-selection-gating-design.md）。
+> 状态：✅ 已完成。设计经用户逐项拍板（定稿并入 TASK_LOG.md 问题44）。
 
 - [x] 数据面：selection_in/out 存注册表 + resolve_selection 最近显式赢 + 格式批量语义
 - [x] 扫描漏斗：collect_md_files 勾选过滤，11 处调用点穿线（排除=对管线不存在，
