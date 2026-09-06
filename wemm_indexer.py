@@ -189,7 +189,9 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
 
     # 只收 PDF（页级导航仅对 PDF 有意义）
     files = collect_md_files(vault, cfg["exclude_dirs"], cfg["exclude_files"],
-                             cfg["exclude_patterns"], ["pdf"])
+                             cfg["exclude_patterns"], ["pdf"],
+                             selection=(cfg.get("selection_in"), cfg.get("selection_out")),
+                             selection_default=cfg.get("selection_default", "follow"))
 
     try:
         client = chromadb.PersistentClient(path=str(_chroma_dir()))
