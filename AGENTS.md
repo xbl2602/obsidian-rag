@@ -8,8 +8,14 @@
 个人 Obsidian 知识库的本地语义检索系统：多格式文档（md/txt/pdf/docx）→ 切块 →
 BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Flet 桌面 GUI。
 
-## 当前状态速览（2026-09-04）
+## 当前状态速览（2026-09-06）
 
+- **GUI 双实现并存**：原 Flet GUI（`python gui/app.py`）保留可用；**guiweb**（问题42，
+  `python guiweb/app.py`）= pywebview 桌面壳 + HTML/JS 前端（深黑玻璃 + 全库图谱），
+  后端复用 store/worker/config_editor/library 零逻辑重写，GUI 仍是零侵入观察者。
+  契约见 `guiweb/contracts.md`，功能对齐清单 `guiweb/FEATURE_PARITY.md`，接线检查
+  `guiweb/wiring_check.py`（纳入 tests/test_guiweb.py 回归）。改 store/config_editor
+  等共享层时两套 GUI 都要过一遍
 - META_VERSION **9**：多格式提取 + 统一终态 + 原始字节指纹；EXTRACT_VERSION **4**
 - 多格式默认开启（`extensions=md,pdf,docx`）；扫描件 OCR 经 MinerU 云端 API（`pdf_scan_backend`，默认 none）
 - **混合型 PDF（任一页无文字层，含"PPT 文字页+扫描图"混装课件）整本按扫描件路由**（问题34）：

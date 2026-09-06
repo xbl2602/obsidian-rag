@@ -1849,3 +1849,44 @@ pages 参数同步更新。
   无变更零拉起、拉起失败落可重试终态）。**测试纪律新增一条教训**：懒拉起接线后，未打桩
   的既有用例曾尝试真 spawn wemm_server（_wait_health 干等 120s 表现为套件挂死）——
   套件级默认替换 ensure_server 为假实现，杜绝测试拉起真实 GPU 服务。
+
+## 问题42：guiweb——pywebview 桌面壳 + 全库图谱 GUI（与 Flet 版并存）（2026-09-06）
+
+**动机**：demo 验证了「深黑玻璃 + 全库图谱」方向后，评估 GUI 架构：Flet 的
+Python↔Flutter 双进程 JSON 桥扛不住逐帧画布动画（力导/涟漪/拖拽跟手），玻璃拟态
+表现力受限。选型 **pywebview（单依赖，原生窗口 + WebView2 GPU 合成）+ HTML/JS
+前端 + Python 后端原封复用**：Python 3.14 实测可用（.opencode/pywebview_smoke.py），
+净增 1 依赖、可卸掉 flet-desktop 数百 MB 运行时。原 Flet GUI（gui/）**原样保留**，
+两套并存（独立锁文件 data/guiweb_instance.lock）。
+
+**架构**（guiweb/，约 4600 行）：
+- `contracts.md`：前后端唯一契约（28 个 js_api 方法 + 4 类推送事件）
+- `bridge.py`：js_api 桥——快照/库管理/索引/检索/设置/诊断/试验台/导出导入。
+  复用 store/worker/config_editor/library/extractors/dedup 全部现有模块，
+  零逻辑重写；检索结果在**后端集中解析为结构化 JSON**（替换文本协议正则散落）；
+  检索/语义边均为纯读路径（不碰 Chroma、不写文件）
+- `graph_data.py`：全库图谱纯函数——meta 的 links 字段直接建双链图（同
+  resolve_note_relations 规则）、PDF 管线四态从 meta 终态推导（done/queued/
+  failed/none，缺失在力学结构上就是"没有子节点"，WEMM/MinerU 是否生效图上
+  可验证）、WEMM 页节点（>24 页折叠组节点）、磁盘未识别 PDF、主题族归簇
+- `semantic.py`：可选语义边（encode_safe 编码「标题+路径」，阈值≥0.62，
+  每节点 top-4 邻居，内存缓存按指纹失效）
+- `app.py`：文件字节锁单例守卫（移植）+ pywebview 窗口 + 1 秒 snapshot 推送线程
+- `ui/`：深黑玻璃生产前端（demo7 皮肤 + demo1 视图），六视图（图谱/检索/库/
+  索引/试验台/诊断/设置）+ 动态岛 + 日志抽屉 + 全部确认门禁（全量红确认/
+  移除勾选/导入逐字/云端同意），离线零 CDN
+- `wiring_check.py`：接线静态检查——契约方法三向对齐（bridge/mock/app.js）、
+  id 引用完整、无外链（离线铁律），纳入回归
+
+**真实 bug 修复（可复现）**：
+1. 检索整体提示行被渲染成幽灵结果（Flet gui/widgets 同样存在）：低置信查询的
+   「（本次查询整体置信度偏低…）」游离行被当来源行渲染成畸形结果卡。
+   guiweb.parse_search_text 归为 notice 条目渲染横幅。
+2. mock 数据曾把真实 mineru_api_key 写进仓库文件（get_settings 导出未脱敏）——
+   已清除；教训：任何"导出真实配置到代码/文件"的操作必须先过 secret 字段脱敏。
+
+**测试**：tests/test_guiweb.py 45/45（解析 7、格式化 3、主题 7、双链 3、图谱
+管线/页节点/折叠/hub/范围 12、语义边 4、接线检查 1、…）；gui/test_gui_store.py、
+test_config_editor.py 基线零回归；接线检查全绿；pywebview 真机冒烟
+（窗口+WebView2+双向桥）通过，真实数据实跑验证（5 库快照/397 节点图谱/
+失败明细/WEMM 探活）。

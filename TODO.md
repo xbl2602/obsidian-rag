@@ -452,3 +452,17 @@ python index.py --library "Obsidian Vault"
   ~~**触发条件**：架构级改动……需要用户确认具体方案后再单独开一轮实施~~（✅ 2026-09-03
   用户批准后单独一轮实施完成，并发场景测试用例已纳入六件套，AGENTS.md 架构红线
   全部保持未破坏；历史记录见 TASK_LOG.md 问题33"遗留"与问题35）。
+
+---
+
+## GUI 第二实现（问题 42，2026-09-06）：guiweb = pywebview 壳 + HTML 前端 + 全库图谱
+
+> 状态：✅ 已完成并与 Flet GUI 并存（gui/ 保留不删）。动机与架构见 TASK_LOG.md 问题 42。
+
+- [x] pywebview 选型验证（Python 3.14 + WebView2 双向桥冒烟）
+- [x] 契约 28 方法 + 推送事件；bridge.py 复用 store/worker/config_editor/library 零逻辑重写
+- [x] 全库图谱数据层（双链/WEMM 归属/PDF 管线四态可验证/主题聚落/可选语义边）
+- [x] 前端六视图（图谱/检索/库/索引/试验台/诊断/设置）+ 动态岛 + 全部确认门禁，离线零 CDN
+- [x] 接线静态检查（wiring_check）纳入回归；tests/test_guiweb.py 45 用例
+- [x] 真实数据实跑验证（5 库快照 / 397 节点图谱 / 失败明细 / WEMM 探活）
+- [ ] 后续可选：pywebview 打包单 exe（PyInstaller）；语义边缓存落盘；WEMM 页节点缩略图预览
