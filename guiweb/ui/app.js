@@ -642,6 +642,7 @@ function renderSelTree(r) {
   Array.prototype.forEach.call($('selTree').querySelectorAll('[data-tree]'), function (b) {
     b.addEventListener('click', function () {
       SEL.sub = b.getAttribute('data-tree');
+      if (SEL.sub) SEL.expanded[SEL.sub] = true;  // 进目录即展开其子层
       loadSelTree();
     });
   });
