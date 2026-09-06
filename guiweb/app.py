@@ -124,7 +124,8 @@ def main():
     bridge.bind_window(wnd)
     stop = threading.Event()
     threading.Thread(target=_push_loop, args=(bridge, wnd, stop), daemon=True).start()
-    webview.start(debug=False)
+    # RAG_GUIWEB_DEBUG=1 开 DevTools（右键→检查），排障用
+    webview.start(debug=os.environ.get("RAG_GUIWEB_DEBUG") == "1")
     stop.set()
 
 
