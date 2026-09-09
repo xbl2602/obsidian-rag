@@ -20,7 +20,9 @@ from gui.store import (  # noqa: E402
     library_snapshot, is_library_dir, meta_issues_for, ISSUE_TEXT,
     note_relations_for,
     file_index_rows_for, wemm_status_for, wemm_service_probe,
+    gpu_stats, cpu_percent, index_busy,
 )
+import gui.store as _storemod  # noqa: E402 缓存复位用（与上面同一模块对象）
 from gui.app import format_elapsed, format_mmss, App  # noqa: E402 纯函数，不触发窗口
 from gui.theme import DARK  # noqa: E402
 from gui.widgets import _parse_src, _conf_color, _conf_label  # noqa: E402
@@ -1081,6 +1083,87 @@ def test_wemm_service_probe_branches():
     with patch('wemm_retriever.health', side_effect=OSError('refused')):
         alive, detail = wemm_service_probe('http://127.0.0.1:9101')
     assert not alive and '未启动' in detail
+
+
+def test_heartbeat_wemm_phase_running():
+    """wemm 相位 + 心跳新鲜 = running（问题47：页同步阶段不再被误判）。"""
+    now = time.time()
+    assert heartbeat_state(make_progress(running=True, phase="wemm",
+                                         updated_at=now,
+                                         last_advance_at=now)) == HB_RUNNING
+
+
+def test_gpu_stats_fail_open_and_parse():
+    """nvidia-smi 异常 → {ok: False}；正常解析数值；power N/A → None（问题47）。"""
+    _storemod._GPU_CACHE = (0.0, None)
+    with patch("subprocess.run", side_effect=OSError("no nvidia-smi")):
+        assert gpu_stats() == {"ok": False}
+
+    class _Out:
+        stdout = "1200, 8151, 5, 22\n".encode()
+
+    _storemod._GPU_CACHE = (0.0, None)
+    with patch("subprocess.run", return_value=_Out()):
+        got = gpu_stats()
+    assert got["ok"] is True and got["mem_used_mb"] == 1200.0
+    assert got["mem_total_mb"] == 8151.0 and got["power_w"] == 22.0
+
+    class _OutNA:
+        stdout = "1200, 8151, 5, [N/A]\n".encode()
+
+    _storemod._GPU_CACHE = (0.0, None)
+    with patch("subprocess.run", return_value=_OutNA()):
+        assert gpu_stats()["power_w"] is None
+
+    # 缓存期内不再起进程（第二次调用不触碰 subprocess）
+    with patch("subprocess.run", side_effect=AssertionError("must be cached")):
+        assert gpu_stats()["ok"] is True
+    _storemod._GPU_CACHE = (0.0, None)
+
+
+def test_cpu_percent_first_none_then_range():
+    """首次（无上次采样）→ None；有旧采样 → 0~100 之间；绝不抛异常（问题47）。"""
+    if sys.platform != "win32":
+        assert cpu_percent() is None
+        return
+    _storemod._cpu_last = None
+    assert cpu_percent() is None
+    _storemod._cpu_last = (time.time() - 5, 0, 50_000_000)
+    v = cpu_percent()
+    assert v is None or 0.0 <= v <= 100.0, repr(v)
+    _storemod._cpu_last = None
+
+
+def test_index_busy_reuses_given_snapshot():
+    """index_busy(progress) 不再二次读盘（问题47 附记：防撕裂帧冤枉 MCP）。"""
+    from unittest.mock import patch as _patch
+    prog = make_progress(running=True, pid=111)
+    with _patch.object(_storemod, "_pid_alive", return_value=True), \
+         _patch.object(_storemod, "read_progress",
+                       side_effect=AssertionError("must not re-read")):
+        assert index_busy(prog) is True
+    with _patch.object(_storemod, "read_progress",
+                       return_value=make_progress(running=False)):
+        assert index_busy() is False
+
+
+def test_index_task_owner_branches():
+    """任务归属四态：ours/foreign/starting/idle（问题47 附记）。"""
+    from unittest.mock import patch as _patch
+    from gui.store import index_task_owner
+    alive = {"111": True, "222": True}
+    with _patch.object(_storemod, "_pid_alive",
+                       side_effect=lambda pid: alive.get(str(pid), False)):
+        assert index_task_owner(make_progress(running=True, pid=111), 111) == "ours"
+        assert index_task_owner(make_progress(running=True, pid=111), 222) == "foreign"
+        assert index_task_owner(make_progress(running=True, pid=111), None) == "foreign"
+        # pid 已死但本进程句柄还在（启动竞态）：判 starting，等一帧自纠正，
+        # 而不是 idle（idle 会诱使用户重复点启动）
+        assert index_task_owner(make_progress(running=True, pid=999), 999) == "starting"
+        assert index_task_owner(make_progress(running=True, pid=999), None) == "idle"
+        assert index_task_owner(make_progress(running=False), 111) == "starting"
+        assert index_task_owner(make_progress(running=False), None) == "idle"
+        assert index_task_owner({}) == "idle"
 
 
 if __name__ == "__main__":

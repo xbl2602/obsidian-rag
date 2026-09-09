@@ -183,14 +183,15 @@
 
   /* ---------- 运行时状态 ---------- */
   var prog = { running: false, phase: 'idle', files_done: 0, files_total: 0, chunks_done: 0, chunks_total: 0,
-    pct: 0, elapsed: 0, library: '', busy: false, heartbeat: 'idle', heartbeat_note: null };
+    pct: 0, elapsed: 0, library: '', busy: false, task: 'idle', heartbeat: 'idle', heartbeat_note: null };
   var lastElapsed = 80;
   var idxTimer = null, idxStart = 0, idxFull = false, idxLibs = '', stoppedByUser = false;
   var PHASES = [
     { name: 'scanning', ms: 3000, fw: 0.08 },
     { name: 'converting', ms: 6000, fw: 0.32 },
     { name: 'embedding', ms: 8000, fw: 0.75 },
-    { name: 'writing', ms: 4000, fw: 1.0 }
+    { name: 'writing', ms: 4000, fw: 0.95 },
+    { name: 'wemm', ms: 3000, fw: 1.0 }
   ];
   function snapshotPayload() {
     var a = agg();
@@ -205,6 +206,9 @@
         { lib: '技术笔记', reason: 'unreadable', count: 1, label: '损坏文件', advice: '建议用 Office 重新导出后手动重建。' }
       ],
       wemm: { backend: SET_VALUES.wemm_backend, url: '127.0.0.1:9101' },
+      wemm_live: { alive: true, loaded: false, gpu_mem_gb: null },
+      gpu: { ok: true, mem_used_mb: 1200, mem_total_mb: 8151, util_pct: 5, power_w: 22 },
+      cpu: 12,
       device: { model: SET_VALUES.embedding_model, rerank: SET_VALUES.rerank_model, cuda: true }
     };
   }
@@ -314,7 +318,7 @@
       acc += PHASES[i].ms;
     }
     if (!cur) { // 完成
-      prog.running = false; prog.phase = 'done'; prog.pct = 100;
+      prog.running = false; prog.phase = 'done'; prog.pct = 100; prog.task = 'idle';
       prog.files_done = prog.files_total; prog.chunks_done = prog.chunks_total;
       prog.heartbeat = 'done'; prog.heartbeat_note = null;
       lastElapsed = Math.round(total / 1000);
@@ -427,7 +431,7 @@
         files_total: Math.max(3, Math.round(a.files * scale) || 3),
         chunks_done: 0, chunks_total: Math.max(20, Math.round(a.chunks * scale) || 20),
         pct: 0, elapsed: 0, library: targets.map(function (l) { return l.name; }).join('、'),
-        busy: false, heartbeat: 'running', heartbeat_note: null };
+        busy: false, task: 'ours', heartbeat: 'running', heartbeat_note: null };
       idxStart = Date.now();
       if (idxTimer) clearInterval(idxTimer);
       idxTimer = setInterval(tickIndex, 300);
@@ -530,6 +534,13 @@
       return delay(300).then(function () {
         pushLog('勾选格式批量（' + lib + '）· ' + ext + ' → ' + (include ? '纳入' : '排除'));
         return { ok: true, changed: 2, error: null };
+      });
+    },
+
+    selection_resolve_conflict: function (lib, path) {
+      return delay(300).then(function () {
+        pushLog('勾选矛盾已解决（' + lib + '）· 仅本库移除排除 ' + path);
+        return { ok: true, error: null, selection_in: [path], selection_out: [] };
       });
     },
 

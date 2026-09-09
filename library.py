@@ -41,7 +41,10 @@ INVALID_NAME_CHARS = set('/\\:*?"<>|')
 # 库内路径级勾选（问题44）：selection_in / selection_out 存注册表条目，
 # 不进 OVERRIDE_KEYS（不走 set_config 的逗号分割——路径可能含逗号），
 # 专用 set_selection / format_selection_bulk 增删，读侧经 effective_config 规范化。
-# 语义：最近显式赢（文件 > 父文件夹 > … > 库根），显式 > 格式开关 > 中性默认。
+# 语义（问题47 谁具体听谁的）：最近显式命中 vs 目录排除按深度，更具体的赢；
+# 同位置打架（纳入目标本身在 exclude_dirs 里）排除站住，set_selection 拒绝新建；
+# 文件名/格式类规则一律最弱，显式静默穿透。裁决唯一实现 decide_included，
+# 显示（bridge）与漏斗（collect）共用，勿各写一份。
 # ---------------------------------------------------------------------------
 SELECTION_ACTIONS = ("in", "out", "neutral")
 
@@ -68,11 +71,11 @@ def norm_sel_path(p):
     return "/".join(part.strip() for part in parts)
 
 
-def resolve_selection(sel_in, sel_out, rel):
-    """最近显式赢：从 rel 自身逐级向上找第一个出现在任一列表的祖先（含自身）。
+def selection_hit(sel_in, sel_out, rel):
+    """最近显式命中 → (action, depth, prefix)；无命中 → (None, 0, "")。
 
-    返回 "in" | "out" | None（中性 = 无任何显式选择覆盖）。同一层级同时命中
-    两表属于非法状态（set_selection 已防止），此处 out 优先（宁可少索引）。
+    depth = 命中的前缀段数（文件自身 = 全长，最具体）。同一层级同时命中两表
+    属非法状态（set_selection 已防止），此处 out 优先（宁可少索引）。
     """
     sin = set(sel_in or ())
     sout = set(sel_out or ())
@@ -80,10 +83,91 @@ def resolve_selection(sel_in, sel_out, rel):
     for i in range(len(parts), 0, -1):
         pre = "/".join(parts[:i])
         if pre in sout:
-            return "out"
+            return ("out", i, pre)
         if pre in sin:
-            return "in"
-    return None
+            return ("in", i, pre)
+    return (None, 0, "")
+
+
+def resolve_selection(sel_in, sel_out, rel):
+    """最近显式赢：从 rel 自身逐级向上找第一个出现在任一列表的祖先（含自身）。
+
+    返回 "in" | "out" | None（中性 = 无任何显式选择覆盖）。同一层级同时命中
+    两表属于非法状态（set_selection 已防止），此处 out 优先（宁可少索引）。
+    """
+    action, _, _ = selection_hit(sel_in, sel_out, rel)
+    return action
+
+
+def norm_ex_dir_entries(ex_dirs):
+    """目录排除条目归一集合（问题47：同位置判定用）。
+
+    注意 collect 漏斗侧是子串语义（条目 'TEMP' 会命中部件 'MYTEMP'），此处
+    只做字符串归一不改语义：同位置打架只认字符串相等，子串覆盖面走深度规则。
+    """
+    out = set()
+    for e in (ex_dirs or ()):
+        s = str(e).replace("\\", "/").strip().strip("/")
+        if s:
+            out.add(s)
+    return out
+
+
+def excluded_dir_depth(ex_dirs, rel):
+    """目录排除的最深命中深度（1-based；无命中 0）。
+
+    匹配语义与 collect 漏斗逐字一致：条目为任一路径部件的子串即命中，取最深
+    的部件位置。单文件库根（无斜杠）depth=1。
+    """
+    best = 0
+    parts = str(rel).replace("\\", "/").strip("/").split("/")
+    entries = [s for s in (str(e).replace("\\", "/").strip().strip("/")
+                           for e in (ex_dirs or ())) if s]
+    if not entries:
+        return 0
+    for i, part in enumerate(parts, 1):
+        for en in entries:
+            if en in part:
+                best = i
+                break
+    return best
+
+
+def decide_included(sel_in, sel_out, ex_dirs, rel):
+    """谁具体听谁的（问题47 用户拍板）：返回 ("in"|"out"|None, tie)。
+
+    - 最近显式命中 M（深度 dm）vs 最深目录排除 E（深度 de，无=0）：
+      M 存在且 dm > de → 跟随 M（in/out），tie=False——窄例外静默生效；
+      M 存在且 M 命中的前缀字符串恰在排除名单里 → ("out", True)——同位置
+      打架的手工态，排除站住（安全），UI/MCP 侧拒绝新建此类状态；
+      其余（无 M 且 E>0；M 存在但 de 更深）→ ("out", False)；
+      无 M 无 E → (None, False)，调用方走文件名/格式默认。
+    - 文件名/格式类规则（exclude_files/patterns/extensions）一律视为最弱：
+      显式永远静默穿透它们（AGENT 例：全局按名排除某类文档，点名要其中
+      一份即生效，不弹窗）。
+    """
+    action, dm, prefix = selection_hit(sel_in, sel_out, rel)
+    de = excluded_dir_depth(ex_dirs, rel)
+    if action is None:
+        return ("out", False) if de else (None, False)
+    if action == "out":
+        return ("out", False)
+    normed = norm_ex_dir_entries(ex_dirs)
+    if prefix in normed:
+        return ("out", True)
+    if de == 0 or dm > de:
+        return ("in", False)
+    return ("out", False)
+
+
+def is_same_place_blocked(ex_dirs, rel):
+    """该节点本身是否被目录排除名单指名道姓（问题47：即时弹窗触发条件）。
+
+    只认字符串相等（单段目录名最常见）；文件名/格式类规则是"按类匹配"，
+    点具体文件属个别例外，永远不触发。调用方另需确认 action == "in"。
+    """
+    s = str(rel).replace("\\", "/").strip().strip("/")
+    return bool(s) and s in norm_ex_dir_entries(ex_dirs)
 
 
 def _sel_entry_lists(entry):
@@ -132,6 +216,19 @@ def set_selection(name, changes):
         elif action == "out":
             sout_set.add(rel)
         # neutral：已在上面的 discard 中移除显式记录
+    # 同位置打架拒绝（问题47 用户拍板）：纳入的目标本身就躺在目录排除名单
+    # 里（字符串相等，指名道姓），落盘即制造"存上但永远不生效"的矛盾态。
+    # 调用方（GUI 即时弹窗 / MCP 提案校验）应在事前拦截，此处是最后兜底。
+    # 文件名/格式类规则不在此列——点具体文件属个别例外，静默生效。
+    eff_ex_dirs = effective_config(entry)["exclude_dirs"]
+    blocked = norm_ex_dir_entries(eff_ex_dirs)
+    clash = sorted(r for r in sin_set if r in blocked)
+    if clash:
+        raise ValueError(
+            "勾选与排除名单打架（同位置矛盾）：%s 已在目录排除名单（exclude_dirs）里，"
+            "纳入不会生效。请先从排除名单移除（库配置 exclude_dirs，仅本库生效即可），"
+            "或改勾它下面的具体文件（个别例外直接生效，无需弹窗）。"
+            % "、".join(clash))
     entry["selection_in"] = sorted(sin_set)
     entry["selection_out"] = sorted(sout_set)
     save_registry(entries)

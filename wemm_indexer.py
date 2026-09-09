@@ -115,6 +115,31 @@ def save_wemm_meta(meta, path):
     tmp.replace(p)
 
 
+def release_server_after_run(url=None, log=None):
+    """整轮结束、用完即卸（问题47）：显式 evict 看图服务，释放显存。
+
+    调用方是多库驱动的整轮收尾（index.py main / server._run_index /
+    wemm_indexer.main），finally 里调——正常结束调、被杀/异常也调。
+    - 后端 off → 跳过（零开销，服务根本没起过）；
+    - 服务没在跑 → evict 内部折叠 False，一句日志，无异常；
+    - 本函数自身绝不抛异常（释放失败不能污染索引成果）。
+    - 中途被杀没调到 → 服务端 idle 守护 5min 自卸兜底。
+    与"抢占式 evict"（bge 加载前显存不足）是同一接口，语义一致。
+    """
+    _log = log or (lambda *a: None)
+    try:
+        from config import CFG
+        if (CFG.get("wemm_backend") or "off") not in ("on", "local"):
+            return False
+        import gpu_arbiter
+        ok = gpu_arbiter.evict_wemm(url or CFG.get("wemm_url"))
+    except Exception:
+        return False
+    _log("WEMM 看图模型已卸载，显存已释放" if ok
+         else "WEMM 服务未在运行，无需释放显存")
+    return bool(ok)
+
+
 def render_page_b64(pdf_path, page_idx, dpi=WEMM_RENDER_DPI, doc=None):
     """渲染 PDF 第 page_idx 页为 base64 PNG（内存中完成，不写盘）。失败抛异常。
 
@@ -224,11 +249,15 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
 
     # 看图服务懒拉起（问题41）：首个真正需要渲染的文件才拉；全部命中快速路径
     # （无变更）时零拉起零开销。拉不起时该文件记失败终态，下轮自动重试。
-    server_state = {"ready": False}
+    # 单轮单次（问题46）：同一次 index_wemm_library 内只尝试拉起一次——失败后
+    server_state = {"ready": False, "tried": False}
 
     def _ensure_server_lazy():
         if server_state["ready"]:
             return True
+        if server_state["tried"]:
+            return False
+        server_state["tried"] = True
         import gpu_arbiter
         ok, detail = gpu_arbiter.ensure_server(log=log)
         server_state["ready"] = ok
@@ -236,11 +265,17 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
             log(f"WEMM 看图服务不可用（{detail}）——相关文件记失败终态，下轮自动重试")
         return ok
 
-    def _progress(msg):
-        if progress:
+    # progress 回调协议（问题47）：progress(msg, done, total)——文件级粒度
+    # （用户拍板不到页）。单参数旧回调仍兼容（TypeError 回退），传 None 则零开销。
+    def _progress(msg, done=None, total=None):
+        if not progress:
+            return
+        try:
+            progress(msg, done, total)
+        except TypeError:
             progress(msg)
 
-    for fpath in files:
+    for _fi, fpath in enumerate(files, 1):
         rel = str(fpath.relative_to(vault)).replace("\\", "/")
         # Agent 门禁冻结（红线6/7）：未授权格式零渲染零编码零 I/O
         if agent_allowed is not None and "pdf" not in agent_allowed:
@@ -297,7 +332,7 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
                 doc.close()
             except Exception:
                 pass
-        _progress(f"WEMM 页索引 {len(page_batches)} 页（{rel}）")
+        _progress(f"WEMM 页索引 {len(page_batches)} 页（{rel}）", _fi, len(files))
 
     # ---- 写库（含精确清理与终态对齐，镜像 index.py 管理模式）----
     if full:
@@ -401,15 +436,19 @@ def main():
         log("错误：没有已注册的库。请先用 library.py add <路径> 注册。")
         sys.exit(1)
 
-    for entry in entries:
-        cfg = effective_config(entry)
-        log(f"开始 WEMM 页索引库：{cfg['name']} → {cfg['path']}")
-        try:
-            index_wemm_library(cfg, backend=backend_cfg == "on", full=args.full,
-                               agent_allowed=None)
-        except Exception as e:
-            log(f"[{cfg['name']}] WEMM 索引失败（继续下一库）：{e}")
-    log("全部 WEMM 索引任务完成。")
+    try:
+        for entry in entries:
+            cfg = effective_config(entry)
+            log(f"开始 WEMM 页索引库：{cfg['name']} → {cfg['path']}")
+            try:
+                index_wemm_library(cfg, backend=backend_cfg == "on", full=args.full,
+                                   agent_allowed=None)
+            except Exception as e:
+                log(f"[{cfg['name']}] WEMM 索引失败（继续下一库）：{e}")
+        log("全部 WEMM 索引任务完成。")
+    finally:
+        # 整轮结束用完即卸（问题47）：显存不留后台静默占用
+        release_server_after_run(log=log)
 
 
 if __name__ == "__main__":

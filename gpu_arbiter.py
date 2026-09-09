@@ -20,7 +20,12 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# 注意：本文件就在项目根目录（与 wemm_server.py 同级），ROOT 只能取
+# .parent 一层。gui/*/tests/* 等子目录模块才用 .parent.parent——2026-09-08
+# 实测本处曾误写 .parent.parent，PID/日志/拉起脚本路径全部指到上级目录：
+# 拉起的子进程瞬间 "can't open file ...wemm_server.py" 死亡，调用方却空等
+# 120s（每库×每文件），索引表现为"启动后无响应、0 CPU、0 显存"。
+ROOT = Path(__file__).resolve().parent
 PID_FILE = ROOT / "data" / "wemm_server.pid"
 LOG_FILE = ROOT / "data" / "wemm_server.log"
 
@@ -210,6 +215,12 @@ def ensure_server(python_exe=None, url=None, wait_s=120.0, log=None):
         ok = _wait_health(url, wait_s)
         return (ok, "已有实例（PID %d）%s" % (pid, "已就绪" if ok else "等待超时"))
 
+    # 启动脚本先验：脚本缺失时 Popen 照样"成功"（起的是解释器），子进程
+    # 瞬间死亡，之后空等满 wait_s 毫无意义——2026-09-08 的 ROOT 指错即此类。
+    script = ROOT / "wemm_server.py"
+    if not script.is_file():
+        return False, "无法拉起看图服务：启动脚本缺失（%s），请检查项目目录完整性" % script
+
     LOG_FILE.parent.mkdir(exist_ok=True)
     kwargs = {}
     if sys.platform == "win32":
@@ -219,7 +230,7 @@ def ensure_server(python_exe=None, url=None, wait_s=120.0, log=None):
         # 且测试的临时目录会因句柄占用删不掉
         with open(LOG_FILE, "ab") as logf:
             proc = subprocess.Popen(
-                [python_exe, str(ROOT / "wemm_server.py"),
+                [python_exe, str(script),
                  "--port", str(_parse_port(url))],
                 stdout=logf, stderr=logf, cwd=str(ROOT), **kwargs)
     except OSError as e:

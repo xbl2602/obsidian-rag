@@ -18,7 +18,7 @@ from extractors import (BINARY_EXTS, SUPPORTED_EXTS, TEXT_EXTS,
                         mineru_pending_prune, mineru_quota_today,
                         mineru_token_invalid, mineru_token_reset)
 from library import (effective_config, load_registry, meta_path,
-                     resolve_entries, resolve_selection)
+                     resolve_entries, resolve_selection, decide_included)
 
 # 跨平台文件锁：Windows 用 msvcrt（字节范围锁），Linux/macOS 用 fcntl（flock）。
 # 按平台函数内局部导入：Linux 上 import index 不触碰 msvcrt，反之亦然。
@@ -1186,17 +1186,17 @@ def collect_md_files(vault, exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_F
     for p in Path(vault).rglob("*"):
         if not p.is_file():
             continue
-        if any(any(ex in part for ex in exclude_dirs) for part in p.parts):
-            continue
-        if p.name in exclude_files or p.name.startswith(pats):
-            continue
         suffix = p.suffix.lower().lstrip(".")
         if sel is not None:
             rel = str(p.relative_to(vault)).replace("\\", "/")
-            v = resolve_selection(sel[0], sel[1], rel)
-            if v == "out":
+            verdict, _tie = decide_included(sel[0], sel[1], exclude_dirs, rel)
+            if verdict == "out":
                 continue
-            if v is None:
+            if verdict is None:
+                if any(any(ex in part for ex in exclude_dirs) for part in p.parts):
+                    continue
+                if p.name in exclude_files or p.name.startswith(pats):
+                    continue
                 if selection_default == "exclude":
                     continue
                 if selection_default == "include":
@@ -2021,16 +2021,26 @@ if __name__ == "__main__":
         sys.exit(1)
 
     failed = 0
-    for entry in entries:
-        cfg = effective_config(entry)
-        log(f"开始索引库：{cfg['name']} → {cfg['path']}")
+    try:
+        for entry in entries:
+            cfg = effective_config(entry)
+            log(f"开始索引库：{cfg['name']} → {cfg['path']}")
+            try:
+                index_library(cfg, incremental=not args.full, full=args.full)
+            except LockBusyError:
+                raise  # 写锁被占影响所有库，继续跑其余库没有意义，直接上抛
+            except Exception as e:
+                failed += 1
+                log(f"[{cfg['name']}] 索引失败（继续下一库）：{e}")
+    finally:
+        # 整轮结束用完即卸（问题47）：WEMM 看图模型不留后台静默占显存。
+        # LockBusyError 上抛路径同样经过这里——锁都拿不到时服务大概率没起过，
+        # release 内部以后端 off/未运行两档静默跳过，零副作用。
         try:
-            index_library(cfg, incremental=not args.full, full=args.full)
-        except LockBusyError:
-            raise  # 写锁被占影响所有库，继续跑其余库没有意义，直接上抛
-        except Exception as e:
-            failed += 1
-            log(f"[{cfg['name']}] 索引失败（继续下一库）：{e}")
+            from wemm_indexer import release_server_after_run
+            release_server_after_run(log=log)
+        except Exception:
+            pass
     if failed:
         log(f"全部索引任务结束：{failed} 个库失败，其余成功。")
         sys.exit(1)

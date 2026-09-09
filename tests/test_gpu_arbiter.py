@@ -143,8 +143,17 @@ def test_ensure_server_spawns_when_dead():
                 pid = 4242
             return _P()
 
+        alive_calls = {"n": 0}
+
+        def fake_alive(url):
+            # 问题46 起 ensure 内有早夭轮询，health 会被多探几次：
+            # 用状态函数而非固定列表（第 2 次起就绪），耗尽即 StopIteration
+            # 的写法与新轮询不兼容。
+            alive_calls["n"] += 1
+            return alive_calls["n"] >= 2
+
         with patch.object(ga, "PID_FILE", pidfile), \
-             patch.object(ga, "server_alive", side_effect=[False, True]), \
+             patch.object(ga, "server_alive", side_effect=fake_alive), \
              patch.object(ga, "_pid_alive", return_value=False), \
              patch.object(ga, "subprocess") as fake_sp, \
              patch.object(ga, "LOG_FILE", Path(td) / "s.log"):
@@ -189,6 +198,64 @@ def test_ensure_server_spawn_failure_folds():
                                            python_exe="no-such-python", wait_s=1)
             ok("ensure: 拉起失败折叠 False", okd is False)
             ok("ensure: 提示指向 wemm_python", "wemm_python" in detail, detail)
+
+
+def test_root_points_at_project():
+    """ROOT 必须指项目根（问题46）：本文件与 wemm_server.py 同级，只能 .parent。
+
+    2026-09-08 实测 .parent.parent 把 PID/日志/拉起脚本全指到上级目录，
+    子进程瞬间死亡、调用方空等 120s——索引"启动后无响应、0 CPU、0 显存"。
+    """
+    import pathlib
+    ok("root: 与模块同级目录", ga.ROOT == pathlib.Path(ga.__file__).resolve().parent,
+       str(ga.ROOT))
+    ok("root: 下有 wemm_server.py", (ga.ROOT / "wemm_server.py").is_file())
+    ok("root: 下有 index.py", (ga.ROOT / "index.py").is_file())
+    ok("root: PID/日志落在项目 data", ga.PID_FILE.parent == ga.ROOT / "data"
+       and ga.LOG_FILE.parent == ga.ROOT / "data",
+       f"{ga.PID_FILE} / {ga.LOG_FILE}")
+
+
+def test_ensure_server_missing_script_fails_fast():
+    """启动脚本缺失 → 立刻 False，不 spawn、不空等（问题46 同因加固）。"""
+    import time as _t
+    with tempfile.TemporaryDirectory() as td:
+        with patch.object(ga, "ROOT", Path(td)), \
+             patch.object(ga, "PID_FILE", Path(td) / "p.pid"), \
+             patch.object(ga, "server_alive", return_value=False), \
+             patch.object(ga, "subprocess") as fake_sp:
+            spawned = []
+            fake_sp.Popen.side_effect = lambda *a, **k: spawned.append(a)
+            t0 = _t.time()
+            okd, detail = ga.ensure_server(url="http://127.0.0.1:9101",
+                                           python_exe="globalpy", wait_s=120)
+            dt = _t.time() - t0
+            ok("ensure: 脚本缺失立刻 False", okd is False, detail)
+            ok("ensure: 脚本缺失不 spawn", not spawned)
+            ok("ensure: 脚本缺失不空等", dt < 10, "%.1fs" % dt)
+
+
+def test_ensure_server_early_exit_fails_fast():
+    """子进程秒退（早夭）→ 5s 内 False，不等满 wait_s（问题46 同因加固）。"""
+    import time as _t
+    with tempfile.TemporaryDirectory() as td:
+        class _Dead:
+            pid = 9999
+
+            def poll(self):
+                return 1  # 已退出
+
+        with patch.object(ga, "PID_FILE", Path(td) / "p.pid"), \
+             patch.object(ga, "LOG_FILE", Path(td) / "s.log"), \
+             patch.object(ga, "server_alive", return_value=False), \
+             patch.object(ga, "subprocess") as fake_sp:
+            fake_sp.Popen.side_effect = lambda *a, **k: _Dead()
+            t0 = _t.time()
+            okd, detail = ga.ensure_server(url="http://127.0.0.1:9101",
+                                           python_exe="globalpy", wait_s=120)
+            dt = _t.time() - t0
+            ok("ensure: 早夭 False", okd is False, detail)
+            ok("ensure: 早夭不等满 120s", dt < 30, "%.1fs" % dt)
 
 
 def _run_all():

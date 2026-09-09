@@ -157,13 +157,14 @@ class _FakeImageEncoder:
         return v.tolist()
 
 
-def _run(iso, cfg, enc, full=False, agent_allowed=None, url="http://x:1", dim=8):
+def _run(iso, cfg, enc, full=False, agent_allowed=None, url="http://x:1", dim=8,
+         progress=None):
     orig = wi.call_embed_image
     wi.call_embed_image = enc
     try:
         return wi.index_wemm_library(
             cfg, backend=True, full=full, agent_allowed=agent_allowed,
-            url=url, dim=dim, progress=None)
+            url=url, dim=dim, progress=progress)
     finally:
         wi.call_embed_image = orig
 
@@ -534,6 +535,39 @@ def test_index_library_wemm_sync_off_skips_phase():
             cfgmod.CFG.pop("wemm_backend", None)
         else:
             cfgmod.CFG["wemm_backend"] = saved[0]
+
+
+def test_lazy_ensure_failure_single_flight_per_run():
+    """同轮多次失败只拉起 1 次（问题46）：N 个待渲染 PDF 不得触发 N 次拉起等待。
+
+    服务起不来时每文件一次 ensure = N 次全长等待，索引长时间假死；
+    失败 memoize 后本轮剩余文件直接记终态，下轮自动重试（终态可重试承诺不变）。
+    """
+    import gpu_arbiter
+    calls = {"n": 0}
+    orig = gpu_arbiter.ensure_server
+
+    def fake_ensure(log=None):
+        calls["n"] += 1
+        return False, "down"
+
+    gpu_arbiter.ensure_server = fake_ensure
+    try:
+        with _IsoEnv() as iso:
+            for name in ("a.pdf", "b.pdf", "c.pdf"):
+                _make_text_pdf(iso.vault / name, pages=1)
+            cfg = _default_cfg(iso.vault)
+            enc = _FakeImageEncoder()
+            _run(iso, cfg, enc)
+            ok("single-flight: 3 文件只拉起 1 次", calls["n"] == 1, str(calls))
+            m = _meta(iso)
+            ok("single-flight: 3 文件都记可重试终态",
+               all((m.get(n) or {}).get("xfail")
+                   and (m.get(n) or {}).get("reason") == "extract-failed"
+                   for n in ("a.pdf", "b.pdf", "c.pdf")), str(m))
+            iso.cleanup()
+    finally:
+        gpu_arbiter.ensure_server = orig
 
 
 # ---------- 运行器 ----------

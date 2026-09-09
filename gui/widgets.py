@@ -230,10 +230,11 @@ class HeartbeatPill:
 PHASES = ["scanning", "converting", "embedding", "writing", "done"]
 PHASE_TEXT = {"scanning": "扫描", "converting": "转换",
               "embedding": "嵌入", "writing": "写库", "done": "完成",
-              "waiting-lock": "等锁"}  # 问题32：等锁排队相位（不进 stepper，仅文案映射）
+              "waiting-lock": "等锁",  # 问题32：等锁排队相位（不进 stepper，仅文案映射）
+              "wemm": "页库"}  # 问题47：WEMM 页同步相位（不进 stepper，仅文案映射）
 PHASE_COLOR = {"scanning": "scan", "converting": "accent",
                "embedding": "accent", "writing": "accent", "done": "success",
-               "waiting-lock": "accent"}
+               "waiting-lock": "accent", "wemm": "accent"}
 
 
 def _parse_src(src):
@@ -873,10 +874,25 @@ class DeviceBar:
         )
         self._colors = colors
 
-    def update(self, device, model, files, chunks, library=""):
+    def update(self, device, model, files, chunks, library="",
+               gpu=None, cpu=None):
+        """占用显示（问题47）：gpu=store.gpu_stats()、cpu=store.cpu_percent()。
+
+        缺字段/失败显示"—"（fail-open）。看图服务实况（loaded/几GB）只在
+        guiweb 显示——Flet 主循环是 UI 线程，health 探测放这里会卡界面。
+        """
         lib_txt = (" ｜ 库：%s" % library) if library and library != ALL_LIBRARIES else ""
-        self.info.value = "%s · %s%s ｜ 已索引 %d 文件 / %d 块" % (
+        base = "%s · %s%s ｜ 已索引 %d 文件 / %d 块" % (
             device or "—", model or "—", lib_txt, files, chunks)
+        if isinstance(gpu, dict) and gpu.get("ok"):
+            seg = " ｜ 显存 %.1f/%.1fGB · GPU %d%%" % (
+                gpu["mem_used_mb"] / 1024, gpu["mem_total_mb"] / 1024,
+                round(gpu["util_pct"]))
+            if gpu.get("power_w") is not None:
+                seg += " · %dW" % round(gpu["power_w"])
+            seg += " · CPU %s" % (("%d%%" % round(cpu)) if cpu is not None else "—")
+            base += seg
+        self.info.value = base
 
     def apply(self, colors):
         self.btn_vault.icon_color = colors["t2"]

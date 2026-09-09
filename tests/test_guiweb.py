@@ -335,6 +335,87 @@ def test_settings_choices_guard():
     _check("settings: 真桥 get_settings 的 choices 均为数组", not bad, str(bad))
 
 
+def test_snapshot_sys_fields_contract():
+    """快照占用字段契约（问题47）：contracts/mock/app 三处同形。
+
+    contracts 快照含 wemm_live/gpu/cpu 且 phase 枚举含 wemm；
+    mock 快照带同形假数据、模拟阶段含 wemm；
+    app.js 有 sysLine 渲染与 '页库同步' 映射。
+    """
+    from pathlib import Path as _P
+    ui = _P(__file__).resolve().parent.parent / "guiweb" / "ui"
+    md = (_P(__file__).resolve().parent.parent / "guiweb" / "contracts.md").read_text(encoding="utf-8")
+    _check("contracts: phase 枚举含 wemm", "writing|wemm|done" in md)
+    for key in ('"wemm_live"', '"gpu"', '"cpu"'):
+        _check("contracts: 快照含 %s" % key, key in md, key)
+    mock = (ui / "mock.js").read_text(encoding="utf-8")
+    for key in ("wemm_live", "gpu", "cpu:"):
+        _check("mock: 快照含 %s" % key, key in mock, key)
+    _check("mock: 模拟阶段含 wemm", "{ name: 'wemm'" in mock)
+    js = (ui / "app.js").read_text(encoding="utf-8")
+    _check("app: sysLine 渲染存在", "function sysLine(snap)" in js)
+    _check("app: wemm 映射为页库同步", "wemm: '页库同步'" in js)
+    _check("contracts: 快照含 task 归属",
+           '"task":"idle|ours|starting|foreign"' in md)
+    _check("mock: 快照含 task", "task: 'idle'" in mock and "task: 'ours'" in mock)
+    _check("app: 门锁走 task 归属", "snap.task" in js and "t === 'foreign'" in js)
+    _check("app: 启动中有文案", "任务启动中" in js)
+    _check("app: 生产推送入口存在（问题47附记）",
+           "window.__push = function (type, payloadJson)" in js)
+    html = (ui / "index.html").read_text(encoding="utf-8")
+    _check("html: 索引页有占用行 idxSys", 'id="idxSys"' in html)
+    _check("app: 占用行写入 idxSys", "$('idxSys')" in js)
+
+
+def test_preview_result_mapping():
+    """回归（2026-09-08 真机实测）：bridge.preview_poll 曾误读 info["markdown"]
+    （extract_preview 的键是 `md`），成功提取在前端永远是"完成"配两块空面板；
+    且 reason/route 被丢弃，管线级失败同样冒充"完成"。映射抽成纯函数后锁定。"""
+    from guiweb.bridge import Bridge
+    m = Bridge._preview_result_of
+    ok = m({"ok": True, "info": {"md": "# 标题\n正文", "reason": "",
+                                 "route": "local", "cached": False,
+                                 "elapsed": 1.2, "chars": 6}})
+    _check("preview: 成功时 markdown 落盘", ok["markdown"] == "# 标题\n正文",
+           repr(ok["markdown"])[:60])
+    _check("preview: 成功时 ok 保持真", ok["ok"] is True)
+    _check("preview: 成功时 reason 为空", ok["reason"] == "", repr(ok["reason"]))
+    _check("preview: route 透传", ok["route"] == "local", ok["route"])
+    _check("preview: rendered_html 由 md 生成", "标题" in ok["rendered_html"],
+           repr(ok["rendered_html"])[:80])
+    _check("preview: chars/elapsed 透传",
+           ok["chars"] == 6 and ok["elapsed"] == 1.2,
+           "%r %r" % (ok["chars"], ok["elapsed"]))
+    no = m({"ok": True, "info": {"md": None, "reason": "scanned",
+                                 "route": "ocr:none", "cached": False,
+                                 "elapsed": 0.3, "chars": 0}})
+    _check("preview: 未产出时 ok 仍真（进程正常交付）", no["ok"] is True)
+    _check("preview: 未产出时 reason 透传（前端据此显示未产出）",
+           no["reason"] == "scanned", repr(no["reason"]))
+    _check("preview: 未产出时 markdown 为空串", no["markdown"] == "")
+    crash = m({"ok": False, "error": "boom"})
+    _check("preview: 子进程异常时 ok 为假", crash["ok"] is False)
+    _check("preview: 子进程异常时 markdown 为空串", crash["markdown"] == "")
+    _check("preview: 空 payload 不抛", m(None)["markdown"] == "")
+
+
+def test_preview_result_contract_parity():
+    """preview result 新字段 contracts/mock/app 三处同形（reason/route/chars）。"""
+    from pathlib import Path as _P
+    base = _P(__file__).resolve().parent.parent
+    md = (base / "guiweb" / "contracts.md").read_text(encoding="utf-8")
+    _check("contracts: preview result 含 reason/route/chars",
+           "reason, route, cached, elapsed, chars" in md)
+    ui = base / "guiweb" / "ui"
+    mock = (ui / "mock.js").read_text(encoding="utf-8")
+    for key in ("reason: ''", "route:", "chars"):
+        _check("mock: preview result 含 %s" % key.strip(), key in mock, key)
+    js = (ui / "app.js").read_text(encoding="utf-8")
+    _check("app: 未产出分支存在", "未产出 · " in js)
+    _check("app: 路由名映射存在", "ROUTE_NAME" in js)
+    _check("app: 不再无条件完成", "r.ok && !r.reason" in js)
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

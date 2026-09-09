@@ -97,15 +97,30 @@ def _release_singleton():
 
 
 def _push_loop(bridge, wnd, stop):
-    """1 秒状态推送线程：snapshot 全量 + DEAD 告警由 bridge 内部触发。"""
+    """1 秒状态推送线程：snapshot 全量 + DEAD 告警由 bridge 内部触发。
+
+    问题47 附记：此前任意一次异常就永久 break——页面加载期一次
+    evaluate_js 失败（窗口未就绪）即终结此后全部推送，界面表现为
+    "有窗口、无数据、按钮没反馈"。改为连续 5 次失败才退出（窗口真关
+    时 evaluate 会持续失败，照样能退出，不泄漏线程）。
+    """
+    failures = 0
     while not stop.is_set():
         try:
             snap = bridge.get_snapshot()
             if "error" not in snap:
                 wnd.evaluate_js("window.__push && window.__push('snapshot', %s)"
                                 % json.dumps(snap, ensure_ascii=False))
-        except Exception:
-            break  # 窗口已关闭
+            failures = 0
+        except Exception as e:
+            failures += 1
+            try:
+                print("[guiweb] 推送失败×%d（窗口关闭会持续失败）：%s"
+                      % (failures, e), file=sys.stderr)
+            except Exception:
+                pass
+            if failures >= 5:
+                break
         stop.wait(1.0)
 
 

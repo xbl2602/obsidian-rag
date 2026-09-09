@@ -322,6 +322,12 @@ def test_selection_gate():
 # ---------------------------------------------------------------------------
 def test_bridge_selection():
     with tempfile.TemporaryDirectory() as td:
+        # 日志隔离（问题47 附记）：Bridge._log 经 worker.LOG_FILE 写生产
+        # data/gui_index.log，测试多次调用 selection_update 会污染生产日志
+        # （曾表现为"神秘的 t/…/x 成对日志"）。重定向到临时目录，结尾复位
+        # （_check 不抛异常，顺序执行即可；异常外泄时 _run_all 会 loud fail）。
+        import worker as _wmod
+        _saved_log, _wmod.LOG_FILE = _wmod.LOG_FILE, Path(td) / "gui_index.log"
         make_isolated(td)
         v = make_vault(td)
         register(td, v)
@@ -364,19 +370,29 @@ def test_bridge_selection():
         up2 = b.selection_update("t", [{"path": "../../x", "action": "in"}])
         _check("bridge: update 越界拒绝", not up2["ok"] and up2["error"])
         _check("bridge: 不存在的库报错", b.selection_tree("没有的库", "")["error"])
-        # exclude_* 硬排除优先于显式勾选，徽章显示与扫描漏斗一致
+        # 问题47 谁具体听谁的：文件名类规则最弱——显式点名静默穿透
+        # （AGENT 例：全局按名排除某类文档，点其中一份即生效，不弹窗）
         library.set_selection("t", [{"path": "笔记.md", "action": "in"}])
         library.set_config("t", "exclude_files", "笔记.md")
         r3 = b.selection_tree("t", "")
         note = next(f for f in r3["files"] if f["name"] == "笔记.md")
-        _check("bridge: exclude_files 命中显示排除（不可勾选穿透）",
-               note["state"] == "out" and note["explicit"] is None and
-               note["state_text"] == "已排除（排除名单）")
+        _check("bridge: 文件名类排除被显式点名穿透",
+               note["state"] == "in" and note["explicit"] == "in",
+               str({k: note[k] for k in ("state", "explicit")}))
+        _check("funnel: 同上，漏斗同样纳入",
+               "笔记.md" in rels(v, ["md"], selection=(["笔记.md"], [])))
+        # 中性文件仍被文件名排除挡住（无显式，无例外）
+        library.set_selection("t", [{"path": "笔记.md", "action": "neutral"}])
+        r3b = b.selection_tree("t", "")
+        note0 = next(f for f in r3b["files"] if f["name"] == "笔记.md")
+        _check("bridge: 中性文件仍显示排除",
+               note0["state"] == "out" and note0["explicit"] is None)
         # 中性文件夹 = 跟随子内容（无扩展名不能落格式判定，否则全显示"排除"）
         kechen = next(d for d in r["dirs"] if d["name"] == "课件")
         _check("bridge: 中性文件夹 auto_in（跟随子内容）",
                kechen["state"] == "auto_in" and kechen["explicit"] is None and
                kechen["state_text"] == "入库（跟随子内容）")
+        _wmod.LOG_FILE = _saved_log
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +436,138 @@ def test_kb_stale_exclusion_convergence():
                 selection=(cfg2["selection_in"], cfg2["selection_out"]),
                 selection_default=cfg2["selection_default"])
         _check("kb_stale: 全排除后稳态不再误报", not stale2)
+
+
+def test_same_place_conflict_refused():
+    """同位置打架：set_selection 直接拒绝，注册表原样不动（问题47）。"""
+    with tempfile.TemporaryDirectory() as td:
+        make_isolated(td)
+        v = make_vault(td)
+        register(td, v)
+        library.set_config("t", "exclude_dirs", "私人")
+        before = Path(library.LIBRARIES_FILE).read_bytes()
+        try:
+            library.set_selection("t", [{"path": "私人", "action": "in"}])
+            _check("conflict: 同位置纳入被拒", False, "未抛异常")
+        except ValueError as e:
+            _check("conflict: 同位置纳入被拒", True)
+            _check("conflict: 错误指引清排除名单", "exclude_dirs" in str(e), str(e))
+        _check("conflict: 注册表原样不动",
+               Path(library.LIBRARIES_FILE).read_bytes() == before)
+        # 非打架照常：同库其他路径 + out 方向不受影响
+        library.set_selection("t", [{"path": "私人", "action": "out"},
+                                    {"path": "笔记.md", "action": "in"}])
+        e = library.load_registry()[0]
+        _check("conflict: 非打架路径正常落盘",
+               e["selection_out"] == ["私人"] and e["selection_in"] == ["笔记.md"])
+
+
+def test_narrow_exception_and_funnel_safety():
+    """窄例外静默生效；手工打架态漏斗里排除站住（问题47）。"""
+    with tempfile.TemporaryDirectory() as td:
+        v = make_vault(td)
+        # 文件点名穿透继承的目录排除
+        from index import collect_md_files as _collect
+        names = sorted(p.relative_to(v).as_posix()
+                       for p in _collect(str(v), ["课件"], [], (), ["md", "pdf"],
+                                        selection=(["课件/青苹果菜单.pdf"], []),
+                                        selection_default="follow"))
+        _check("funnel: 文件点名穿透目录排除（中性文件按格式跟随照进）",
+               names == ["私人/账单.pdf", "笔记.md", "课件/青苹果菜单.pdf"],
+               str(names))
+        # decide 单元口径：更深的显式赢，更深的排除赢，同串打架 tie
+        _check("decide: 文件例外 in",
+               library.decide_included(["课件/青苹果菜单.pdf"], [], ["课件"],
+                                       "课件/青苹果菜单.pdf") == ("in", False))
+        # 斜杠排除条目在漏斗与 helper 两侧一致视为无效（单部件子串语义）
+        _check("decide: 斜杠条目两侧一致无效",
+               library.decide_included(["课件"], [], ["课件/子"], "课件/子/f.md") == ("in", False))
+        _check("decide: 手工打架 tie 且排除站住",
+               library.decide_included(["课件"], [], ["课件"], "课件/a.md") == ("out", True))
+        _check("decide: 无显式无排除 → 中性",
+               library.decide_included([], [], [], "课件/a.md") == (None, False))
+        _check("tie: 同位置判定",
+               library.is_same_place_blocked(["课件"], "课件") is True and
+               library.is_same_place_blocked(["课件"], "课件/a.md") is False and
+               library.is_same_place_blocked(["AGENTS.md"], "x/AGENTS.md") is False)
+
+
+def test_conflict_tree_flag_and_resolve():
+    """tree 自阻断 flag + 一键解决（继承/覆盖两路，问题47）。"""
+    with tempfile.TemporaryDirectory() as td:
+        make_isolated(td)
+        v = make_vault(td)
+        register(td, v)
+        import worker as _wmod
+        _saved_log, _wmod.LOG_FILE = _wmod.LOG_FILE, Path(td) / "gui_index.log"
+        try:
+            from guiweb.bridge import Bridge
+            b = Bridge()
+            # 继承全局排除的情形
+            library.CFG["exclude_dirs"] = ["私人"]
+            r = b.selection_tree("t", "")
+            si = next(d for d in r["dirs"] if d["name"] == "私人")
+            _check("flag: 继承排除的目录自阻断",
+                   si["self_blocked"] is True and si["state"] == "out")
+            ke = next(d for d in r["dirs"] if d["name"] == "课件")
+            _check("flag: 普通目录不阻断", ke["self_blocked"] is False)
+            res = b.selection_resolve_conflict("t", "私人")
+            e = library.load_registry()[0]
+            _check("resolve: 继承→本库覆盖且纳入",
+                   res["ok"] and e["exclude_dirs"] == [] and
+                   "私人" in e["selection_in"], str(e.get("exclude_dirs")))
+            _check("resolve: 全局未动",
+                   library.CFG["exclude_dirs"] == ["私人"])
+            # 已有覆盖的情形
+            library.set_config("t", "exclude_dirs", "私人,课件")
+            res2 = b.selection_resolve_conflict("t", "课件")
+            e2 = library.load_registry()[0]
+            _check("resolve: 覆盖→只删命中项",
+                   res2["ok"] and e2["exclude_dirs"] == ["私人"] and
+                   "课件" in e2["selection_in"], str(e2.get("exclude_dirs")))
+            # 非阻断路径调本方法 → 拒绝（直接勾选即可）
+            res3 = b.selection_resolve_conflict("t", "笔记.md")
+            _check("resolve: 非阻断拒绝", not res3["ok"] and res3["error"])
+            # 手工打架态显示消歧文案
+            library.set_config("t", "exclude_dirs", "私人")
+            ent = library.load_registry()[0]
+            ent["selection_in"] = ["私人"]
+            library.save_registry([ent])
+            r4 = b.selection_tree("t", "")
+            si4 = next(d for d in r4["dirs"] if d["name"] == "私人")
+            _check("tree: 打架态消歧文案",
+                   si4["state"] == "out" and si4["explicit"] == "in" and
+                   "挡住" in si4["state_text"], str(si4))
+        finally:
+            _wmod.LOG_FILE = _saved_log
+            library.CFG["exclude_dirs"] = []
+
+
+def test_gate_refuses_same_place():
+    """MCP 提案侧事前拦截（问题47）：确认码不花在注定无效的提案上。"""
+    with tempfile.TemporaryDirectory() as td:
+        make_isolated(td)
+        selection_gate.PENDING_FILE = Path(td) / "pending.json"
+        selection_gate.DATA_DIR = Path(td)
+        v = make_vault(td)
+        register(td, v)
+        library.CFG["exclude_dirs"] = ["私人"]
+        try:
+            cfg = library.effective_config(library.load_registry()[0])
+            try:
+                selection_gate.normalize_changes(
+                    cfg, [{"path": "私人", "action": "in"}])
+                _check("gate: 同位置纳入提案被拒", False, "未抛异常")
+            except selection_gate.GateError as e:
+                _check("gate: 同位置纳入提案被拒", True)
+                _check("gate: 指引清排除", "exclude_dirs" in str(e), str(e))
+            ok_changes = selection_gate.normalize_changes(
+                cfg, [{"path": "私人/账单.pdf", "action": "in"}])
+            _check("gate: 窄例外放行",
+                   ok_changes == [{"path": "私人/账单.pdf", "action": "in"}],
+                   str(ok_changes))
+        finally:
+            library.CFG["exclude_dirs"] = []
 
 
 def _run_all():

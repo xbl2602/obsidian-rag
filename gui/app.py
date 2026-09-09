@@ -24,7 +24,7 @@ from store import (  # noqa: E402
     index_state, index_busy, meta_stats, progress_ratio,
     heartbeat_state, heartbeat_note, read_progress, library_entries,
     library_snapshot, meta_issues_for, ISSUE_TEXT,
-    is_library_dir, note_relations_for,
+    is_library_dir, note_relations_for, gpu_stats, cpu_percent,
 )
 from worker import IndexWorker, read_history  # noqa: E402
 from widgets import (  # noqa: E402
@@ -312,11 +312,12 @@ class App:
             self._dead_reported = False
 
         self.device.update(progress.get("device"), MODEL_NAME, files, chunks,
-                           self.lib_picker.text.value)
+                           self.lib_picker.text.value,
+                           gpu=gpu_stats(), cpu=cpu_percent())
 
         self._update_last_chip(running, colors)
 
-        busy = index_busy()
+        busy = index_busy(progress)
         self.progress.set_busy(busy, colors)
 
         new_lines, self._log_cursor = self.worker.lines_since(self._log_cursor)

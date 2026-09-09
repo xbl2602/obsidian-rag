@@ -27,10 +27,14 @@
   "libs": [{"name":"技术笔记","state":"ok|stale|none","files":1284,"chunks":5731,"path":"D:\\Vault\\技术笔记"}],
   "agg_state": "ok|stale|none",
   "files": 1894, "chunks": 8306, "vault_files": 1902,
-  "progress": {"running":false,"phase":"idle|scanning|converting|embedding|writing|done",
+  "progress": {"running":false,"phase":"idle|scanning|converting|embedding|writing|wemm|done",
                "files_done":0,"files_total":0,"chunks_done":0,"chunks_total":0,
                "pct":0.0,"elapsed":0,"library":"","busy":false,
+               "task":"idle|ours|starting|foreign",
                "heartbeat":"idle|running|dead|stalled|done","heartbeat_note":null},
+  "wemm_live": {"alive":true,"loaded":false,"gpu_mem_gb":null},
+  "gpu": {"ok":true,"mem_used_mb":1200,"mem_total_mb":8151,"util_pct":5,"power_w":22},
+  "cpu": 12,
   "last_elapsed": 80,
   "issues": [{"lib":"论文阅读","reason":"scanned","count":3,"label":"扫描件 PDF",
               "advice":"如已在设置中启用…"}],
@@ -40,6 +44,12 @@
 ```
 - `device.cuda` 可能为 `null`（torch 尚未懒加载完成，稍后推送里会带上）。
 - `progress.heartbeat_note`：停滞宽限/转换提示文案（null = 显示默认「心跳正常」）。
+- `progress.task`：任务归属（同一快照判定，防双读撕裂冤枉 MCP）：`ours` 本窗口拉起/
+  `starting` 本窗口刚拉起进度未到/`foreign` 其他进程在跑/`idle` 无任务。
+- `progress.phase` 新增 `wemm`（页库同步，文件级推进；stepper 不进，仅阶段名映射）。
+- `wemm_live`：看图服务实况（只读探测，30s 缓存；`loaded` 真 = 模型在显存）。
+- `gpu`：整卡只读（nvidia-smi，5s 缓存；`ok:false` = 无 N 卡/失败，前端显示"—"；
+  WDDM 下拆不到进程归属）。`cpu`：本机 CPU 总占用（首次为 null，1s 后出数）。
 
 ### list_libraries() → 库管理列表
 ```json
@@ -104,9 +114,20 @@
 state：in/out（显式）| auto_in/auto_out（中性，按格式开关与 selection_new_files 判定）|
 root（树根）。folders = 全库目录树（扁平、depth 缩进、跳过隐藏目录，≤4000 项）——
 前端左栏目录树一次拉取，右栏按 sub 懒加载文件。
+裁决口径（问题47，谁具体听谁的）：最近显式 vs 目录排除按深度，更具体的赢；
+同位置打架（手工态）排除站住，state=out 但 explicit 照实显示、文案为
+"被排除名单挡住（显式勾选已保存但未生效）"；文件名/格式类规则最弱，显式静默
+穿透。`self_blocked`（仅目录）：本身就在目录排除名单 → 前端点击即弹窗，
+不等保存（个别例外：点它下面的具体文件直接生效）。
 
 ### selection_update(lib, changes:[{path, action:"in"|"out"|"neutral"}]) → {ok, error?, selection_in, selection_out}
 GUI=用户本人，直接生效（无需 MCP 那套确认码）；下一轮索引自动应用。
+同位置矛盾（纳入的目标本身就在目录排除名单）直接拒绝并指引先清排除。
+
+### selection_resolve_conflict(lib, path) → {ok, error?, selection_in, selection_out}（问题47）
+同位置矛盾一键解决：仅本库排除名单移除该项并纳入勾选（已有覆盖改覆盖；
+继承全局则写入"全局减去该项"的本库覆盖，全局与其他库不动）。目录本身
+不在排除名单 → {ok:false}（直接勾选即可，无需调本方法）。
 
 ### selection_format_bulk(lib, ext, include) → {ok, changed, error?}
 格式快捷批量：include=false 把该格式文件的显式勾选移入排除（青苹果菜单跟着取消）；true 反向。文件夹级条目不动。

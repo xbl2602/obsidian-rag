@@ -67,6 +67,7 @@
 | 日志区（历史尾 300 行、着色、计数、清空） | log_tail + worker 复用 | ✅ 代码 |
 | 打开 Vault / 打开日志目录 | open_source/open_path/get_static_path | ✅ 代码 |
 | 设备信息行（device·模型·库·块数） | snapshot.device（torch 懒探测线程） | ✅ 代码 |
+| 占用行：显存/GPU/功耗/CPU/看图模型状态（问题47） | snapshot.gpu/cpu/wemm_live（只读，fail-open） | ✅ 代码 |
 | 深/浅主题 | 前端 CSS 变量反转 | ⬜ |
 | GUI 单例守卫 | app.py 文件字节锁（独立锁文件，可与 Flet 版并存） | ✅ 代码 |
 | xfail 汇总文案（扫描件×N…） | snapshot.issues（ISSUE_TEXT 复用） | ✅ 复用 |
@@ -97,6 +98,12 @@
    G.searching 守卫静默吞掉；clearGLit 不清 `.g-conf` 旧角标，两轮连续检索
    显示互相污染。修复：按钮 busy 态 + toast；clearGLit 同步清角标。浏览器
    两轮连续检索实测干净。
+4. **生产版推送总线缺失（2026-09-08，问题47 附记）**：bridge 每秒
+   evaluate_js 调 `window.__push`，但生产版 app.js 从未定义它（只在
+   mock.js 里有）——守卫 `&&` 把全部快照/日志推送静默吞掉，KPI 与进度
+   永远停在启动那一刻，只有直接 API 调用（toast/按钮）有反应，用户体感
+   "点了显示启动、底下毫无反应"。修复：app.js 顶层定义同语义分发器。
+   回归：test_guiweb.py test_snapshot_sys_fields_contract。
 ## 问题44 增量（2026-09-06）：路径级勾选建模（guiweb 独有，Flet 备用版不同步）
 | 功能 | 落点 | 状态 |
 |---|---|---|

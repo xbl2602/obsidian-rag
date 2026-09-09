@@ -27,6 +27,14 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+/* 生产推送入口（问题47 附记·真根因）：bridge 每秒 evaluate_js 调
+   window.__push(type, payloadJson)，但生产版从未定义它（只在 mock.js 里
+   有）——守卫 `&&` 把全部快照/日志推送静默吞掉，KPI 与进度永远停在启动
+   那一刻，只有直接 API 调用（toast/按钮）有反应。与 mock 版同语义
+   （转 CustomEvent），谁后加载覆盖谁都不影响行为。 */
+window.__push = function (type, payloadJson) {
+  window.dispatchEvent(new CustomEvent(type, { detail: payloadJson }));
+};
 function escReg(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function fmtInt(n) { return (n == null ? '-' : Number(n).toLocaleString('zh-CN')); }
 function fmtDur(sec) {
@@ -94,7 +102,7 @@ var S = {
   deadAlarmed: false,
   ioRunning: false
 };
-var PHASE_NAME = { idle: '空闲', scanning: '扫描', converting: '转换', embedding: '嵌入', writing: '写库', done: '完成' };
+var PHASE_NAME = { idle: '空闲', scanning: '扫描', converting: '转换', embedding: '嵌入', writing: '写库', done: '完成', wemm: '页库同步' };
 var HB_NAME = { idle: '空闲', running: '心跳正常', stalled: '心跳停滞', dead: '疑似卡死', done: '已完成' };
 var LIB_COLORS = ['#34D399', '#7DB8FF', '#FBBF24', '#F472B6', '#A78BFA', '#FB923C', '#22D3EE', '#A3E635'];
 var REASON_LABEL = {
@@ -295,6 +303,24 @@ function paintStepper(p) {
   $('idxEta').textContent = p.running && p.pct > 2 ? '剩余 ' + fmtDur(p.elapsed / p.pct * (100 - p.pct)) : '剩余 --';
   $('idxLib').textContent = p.running && p.library ? '目标库：' + p.library : '';
 }
+function sysLine(snap) {
+  // 整机占用一行：显存已用/总量 · GPU利用率 · 功耗 · CPU · 看图模型状态。
+  // 后端缺字段/失败一律显示 --（fail-open），WDDM 下拆不到进程归属，只报整卡。
+  var g = snap.gpu || {}, wl = snap.wemm_live || {};
+  var parts = [];
+  if (g.ok) {
+    parts.push('显存 ' + (g.mem_used_mb / 1024).toFixed(1) + '/' + (g.mem_total_mb / 1024).toFixed(1) + 'GB');
+    parts.push('GPU ' + Math.round(g.util_pct) + '%');
+    if (g.power_w != null) parts.push(Math.round(g.power_w) + 'W');
+  } else {
+    parts.push('显存 --');
+  }
+  parts.push('CPU ' + (snap.cpu != null ? Math.round(snap.cpu) + '%' : '--'));
+  var wtxt = !wl.alive ? '看图服务未运行'
+    : (wl.loaded ? '看图模型常驻' + (wl.gpu_mem_gb != null ? ' ' + wl.gpu_mem_gb + 'GB' : '') : '看图服务空闲（已卸载）');
+  parts.push(wtxt);
+  return parts.join(' · ');
+}
 function onSnapshot(snap) {
   S.snap = snap;
   S.libs = snap.libs || [];
@@ -319,11 +345,14 @@ function onSnapshot(snap) {
   }
   if (p.heartbeat !== 'dead') S.deadAlarmed = false;
   S.lastHeartbeat = p.heartbeat;
-  // WEMM 状态行
+  // WEMM 状态行 + 整机占用行（问题47：显存/GPU/CPU/功耗只读显示）
   var w = snap.wemm || {};
-  $('wemmStateTxt').innerHTML = w.backend === 'off'
-    ? '当前关闭。开启后为 PDF 课件与扫描件建立页级向量，支持以图搜图式定位。'
-    : '已开启 · 后端 <b>' + esc(w.backend) + '</b> · 服务 <b class="mono">' + esc(w.url || '-') + '</b>（空闲自动卸载显存，按需拉起）';
+  var base = w.backend === 'off'
+    ? '页库：当前关闭。开启后为 PDF 课件与扫描件建立页级向量，支持以图搜图式定位。'
+    : '页库：已开启 · 后端 <b>' + esc(w.backend) + '</b>（整轮结束用完即卸）';
+  $('wemmStateTxt').innerHTML = base + '<br><span class="mono">' + esc(sysLine(snap)) + '</span>';
+  var sysEl = $('idxSys');
+  if (sysEl) sysEl.textContent = sysLine(snap);
   // 库名集合变化时才重建下拉选项（避免每秒重建）
   var nameKey = S.libs.map(function (l) { return l.name; }).join(',');
   if (nameKey !== S.libNamesKey) {
@@ -725,6 +754,12 @@ function selRowHTML(it) {
     + follow + '</div>';
 }
 function renderSelList(r) {
+  // 自阻断表（问题47）：目录本身就在排除名单里 → 勾选即同位置打架，点击时
+  // 立刻弹窗（不等保存）。文件永不自阻断（按类排除下的点名属个别例外）。
+  SEL.blocked = {};
+  r.dirs.concat(r.files).forEach(function (it) {
+    if (it.self_blocked) SEL.blocked[it.path] = true;
+  });
   var rows = r.dirs.map(selRowHTML).concat(r.files.map(selRowHTML));
   $('selList').innerHTML = rows.join('')
     || '<div class="sel-loading">（空目录）</div>';
@@ -737,6 +772,32 @@ function renderSelList(r) {
   Array.prototype.forEach.call($('selList').querySelectorAll('[data-selck]'), function (ck) {
     ck.addEventListener('change', function () {
       var path = ck.getAttribute('data-selck');
+      // 同位置打架（问题47，用户拍板）：勾一个本身就被排除名单指名的目录 →
+      // 点击当场弹窗，不等保存。选项：仅本库移除排除并纳入 / 放弃本次勾选。
+      if (ck.checked && SEL.blocked && SEL.blocked[path]) {
+        askConfirm('同位置矛盾：' + path,
+          '它本身就在目录排除名单（exclude_dirs）里，直接勾选纳入不会生效。\n' +
+          '· 仅本库移除排除并纳入：只改本库覆盖，全局与其他库不动；\n' +
+          '· 放弃本次勾选：保持排除现状。\n' +
+          '（直接勾它下面的具体文件则属个别例外，无需弹窗、直接生效。）',
+          null, '仅本库移除排除并纳入').then(function (yes) {
+            if (!yes) { ck.checked = false; selMark(path, null); return; }
+            API.selection_resolve_conflict(SEL.lib, path).then(function (res) {
+              if (!res.ok) {
+                toast(res.error || '解决失败', 'err');
+                ck.checked = false; selMark(path, null); loadSelTree(); return;
+              }
+              selMark(path, null);
+              toast('已移除本库排除并纳入，下轮索引生效');
+              loadSelTree();
+              if (libLoaded) loadLibs();
+            }).catch(function () {
+              toast('解决失败', 'err');
+              ck.checked = false; selMark(path, null); loadSelTree();
+            });
+          });
+        return;
+      }
       // 勾 = 显式纳入；取消 = 显式排除（基准是当前生效态）
       selMark(path, ck.checked ? 'in' : 'out');
     });

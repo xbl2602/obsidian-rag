@@ -17,8 +17,13 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   `guiweb/wiring_check.py`（纳入 tests/test_guiweb.py 回归）。改 store/config_editor
   等共享层时两套 GUI 都要过一遍
 - **路径级勾选建模（问题44）**：`libraries.json` 每库 `selection_in`/`selection_out`
-  （显式勾选/排除，相对路径）+ 中性默认 `selection_new_files`。判定优先级：
-  exclude_* 硬排除 > **最近显式选择**（文件>父文件夹）> 格式开关 extensions。
+  （显式勾选/排除，相对路径）+ 中性默认 `selection_new_files`。判定优先级
+  （问题47 改为谁具体听谁的）：**最近显式命中 vs 目录排除按深度，更具体的赢**
+  （文件点名可穿透继承的目录排除；反之更具体的排除也赢）；**同位置打架**
+  （纳入目标本身就在 exclude_dirs 里）排除站住，且 `set_selection`/MCP 提案
+  拒绝新建此类状态（GUI 点击即弹窗：仅本库移除排除并纳入 / 放弃）；文件名/
+  格式类规则一律最弱，显式静默穿透。裁决唯一实现 `library.decide_included`，
+  显示与漏斗共用，勿各写一份。
   过滤在 `collect_md_files` 唯一漏斗（新增 selection 参数）——**新增文件枚举路径
   必须穿它**，否则被排除文件会漏进管线。格式开关变更经 bulk_for_extensions 批量
   勾/取消（文件级条目跟着迁移，文件夹级不动）。Agent 改勾选只走 MCP 两段式硬门禁

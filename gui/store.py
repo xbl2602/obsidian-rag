@@ -253,9 +253,12 @@ def file_index_rows_for(cfg):
 def wemm_status_for(cfg):
     """单库 WEMM 页索引逐 PDF 状态（零侵入：只读 wemm_meta_<库>.json）。
 
-    返回 {"exists": meta 是否存在, "total_pages": 页向量总数,
+    返回 {"exists": 是否有 PDF 页数据, "total_pages": 页向量总数,
           "rows": [(rel, pages|None, failed, reason)]}（按 rel 排序）；
-    failed 行 pages=None、reason 为人话原因。meta 不存在 = 还没建页索引。
+    failed 行 pages=None、reason 为人话原因。
+    只列 PDF：WEMM 页级导航仅对 PDF 有意义（wemm_indexer 也只收 .pdf），
+    meta 里的历史 md 残留（旧版勾选穿透白名单混入）一律不显示。
+    meta 无 PDF 条目 = 还没建页索引。
     """
     try:
         meta = load_wemm_meta(wemm_meta_file(cfg["name"]))
@@ -323,14 +326,37 @@ def progress_ratio(progress):
     return 0.0
 
 
-def index_busy():
-    """是否已有索引任务在运行（GUI 自身进程或其他进程，含 MCP 触发的后台索引）。"""
-    prog = read_progress()
+def index_busy(progress=None):
+    """是否已有索引任务在运行（GUI 自身进程或其他进程，含 MCP 触发的后台索引）。
+
+    progress：调用方已读的同一份快照（问题47 附记）。快照内"忙不忙"和
+    "跑没跑"若来自两次读盘，正好跨一次状态翻转就会拼出 busy=True +
+    running=False 的撕裂帧——前端会翻译成"有别的 MCP 在跑"。5 秒跑完的
+    增量任务几乎必中这一帧（全量跑几分钟反而看不见）。传同一份则无此问题。
+    """
+    prog = progress if progress is not None else read_progress()
     if prog.get("running"):
         pid = prog.get("pid")
         if pid and _pid_alive(pid):
             return True
     return False
+
+
+def index_task_owner(progress, own_pid=None):
+    """索引任务归属（问题47 附记）：'ours' 本GUI拉起 / 'starting' 本GUI刚拉起
+    （启动 imports 数秒，进度文件还没动静）/ 'foreign' 其他进程（MCP/CLI/
+    另一GUI）在跑 / 'idle' 无任务。
+
+    progress 必须是同一快照（与 index_busy 同一防撕裂纪律）；own_pid 是本
+    GUI 拉起的子进程 pid（没拉起传 None，此时 running 任务一律判 foreign）。
+    只比对 pid，不杀不碰任何进程。
+    """
+    alive = bool(progress.get("running")) and bool(_pid_alive(progress.get("pid")))
+    if alive:
+        if own_pid and progress.get("pid") == own_pid:
+            return "ours"
+        return "foreign"
+    return "starting" if own_pid else "idle"
 
 
 def last_elapsed(progress):
@@ -359,3 +385,91 @@ def _fmt_ts(ts):
         return "从未"
     from datetime import datetime
     return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+
+
+_GPU_CACHE = (0.0, None)  # (timestamp, result)：nvidia-smi 约 0.2s/次，5s 缓存
+
+
+def gpu_stats(ttl=5.0):
+    """整卡只读状态（问题47）：{ok, mem_used_mb, mem_total_mb, util_pct, power_w}。
+
+    数据源 nvidia-smi（普通用户可执行，只读计数器，无需提权；无 N 卡/
+    驱动缺失/解析失败一律 {ok: False}，调用方显示"—"即可，fail-open）。
+    注意 WDDM 下拆不到"哪个进程占多少"——只报整卡总数，不承诺归属。
+    进程内 5s 缓存：两套 GUI 都是 1s 轮询，直调也不会每秒起进程。
+    """
+    global _GPU_CACHE
+    now = time.time()
+    if _GPU_CACHE[1] is not None and now - _GPU_CACHE[0] < ttl:
+        return _GPU_CACHE[1]
+    bad = {"ok": False}
+    try:
+        import subprocess
+        # Windows + pythonw（无控制台）：必须 CREATE_NO_WINDOW，否则每次调用
+        # 都闪一个 CMD 窗口（gui/worker.py 同款教训）。Linux 无此标志位。
+        kwargs = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        out = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=memory.used,memory.total,utilization.gpu,power.draw",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, timeout=8, **kwargs)
+    except Exception:
+        return bad
+    try:
+        parts = out.stdout.decode("utf-8", "replace").strip().split(",")
+        if len(parts) < 4:
+            _GPU_CACHE = (now, bad)
+            return bad
+        used, total, util, power = (p.strip() for p in parts[:4])
+        good = {"ok": True,
+                "mem_used_mb": float(used), "mem_total_mb": float(total),
+                "util_pct": float(util),
+                "power_w": None if power in ("[N/A]", "N/A", "") else float(power)}
+        _GPU_CACHE = (now, good)
+        return good
+    except Exception:
+        _GPU_CACHE = (now, bad)
+        return bad
+
+
+_cpu_last = None  # (timestamp, idle_ticks, total_ticks)：进程内采样缓存
+
+
+def cpu_percent(min_interval=1.0):
+    """本机 CPU 总占用百分比（问题47）：ctypes 读 GetSystemTimes 差值。
+
+    无需提权、无第三方依赖（psutil 遵 requirements 注释不引入）。
+    两次采样才有差值：首次调用（或间隔不足）返回 None，调用方显示"…"
+    （两套 GUI 都是 1s 轮询，第二次起即有数）。失败一律 None，fail-open。
+    """
+    global _cpu_last
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        class _T(ctypes.Structure):
+            _fields_ = [("low", ctypes.c_ulong), ("high", ctypes.c_ulong)]
+
+        def _to_int(t):
+            return (t.high << 32) + t.low
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        idle, kernel, user = _T(), _T(), _T()
+        if not k32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel),
+                                 ctypes.byref(user)):
+            return None
+        now = time.time()
+        idle_i, total_i = _to_int(idle), _to_int(kernel) + _to_int(user)
+        prev = _cpu_last
+        _cpu_last = (now, idle_i, total_i)
+        if prev is None or now - prev[0] < min_interval:
+            return None
+        d_idle, d_total = idle_i - prev[1], total_i - prev[2]
+        if d_total <= 0:
+            return None
+        return max(0.0, min(100.0, (d_total - d_idle) * 100.0 / d_total))
+    except Exception:
+        return None

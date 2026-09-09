@@ -2047,3 +2047,30 @@ Roadmap 状态）。
    刷满。改为展开态模型（SEL.expanded，默认仅顶层可见）：行内 ▸ 箭头切换
    （纯前端重渲染，不重新拉数据）；点目录名导航时自动展开其子层；右栏面包屑
    深跳时祖先链自动展开保持可见。无子目录行箭头占位隐藏。
+## 问题46：GUI 增量/全量重建"启动后无响应"——gpu_arbiter ROOT 指错致 WEMM 空等（2026-09-08）
+
+**症状**：GUI 点增量重建后显示启动但进度不动、界面似卡死；再点报"已有任务在运行"/
+"启动失败"；任务管理器里 python 占 0% CPU、显存 0 占用。全量重建同病（同一管线）。
+
+**根因**（三级放大）：
+1. `gpu_arbiter.py` 在项目根目录却写了 `ROOT = ...parent.parent`（子目录模块才用
+   双 parent），PID/日志/拉起脚本路径全指到上级 `C:\Users\xbl26\projects\data`。
+   实锤：该目录凭空出现 + 其 `wemm_server.log` 里 14 条 `can't open file
+   'C:\Users\xbl26\projects\wemm_server.py'`。
+2. `ensure_server` 拉起的是瞬间死亡的子进程，却照常 `_wait_health` 空等满 120s。
+3. `wemm_indexer._ensure_server_lazy` 失败不 memoize——每文件一次 ensure，N 个待渲染
+   PDF = N×120s。且 `_wemm_auto_phase` 在 WEMM 同步前已释放 bge-m3——进程睡等、
+   模型已卸，正好是"0 CPU + 0 显存"。
+文字索引本身数秒即完成（日志为证），全卡在每库的 WEMM 自动同步里。
+
+**修复**：
+- `gpu_arbiter.ROOT` 改 `.parent`（全仓唯一用错的地方，其余 parent.parent 都在子目录里，逐个核过）；
+  删上级目录残留的 stale `wemm_server.pid`（30984，已死），错位日志保留为证据。
+- `ensure_server` 双保险：脚本缺失直接 False（不 spawn 不等）；拉起后 5s 早夭检查，
+  秒退立刻 False（正常 torch 冷启动进程存活，不受影响）。
+- `index_wemm_library` 同轮单次拉起（tried 旗）：失败即记终态、下轮重试，不再同轮反复空等。
+- 回归：test_gpu_arbiter +4（ROOT 断言/脚本缺失秒回/早夭秒回；旧"固定列表式" health mock
+  改状态函数以兼容轮询），test_wemm_indexer +1（3 文件失败只拉起 1 次且都落可重试终态）。
+  十件套其余 8 套全绿；verify_export_import 与本次路径零交集且需动真库+加载真实模型，
+  本次未跑（曾因其"中途零输出、最后才汇总"被误认卡死而中止，中止本身无残留）。
+

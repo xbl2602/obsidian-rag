@@ -116,6 +116,7 @@ class Bridge:
         self.worker = IndexWorker(on_output=self._on_worker_line)
         self._wnd = None                      # pywebview 窗口引用（推送用）
         self._lib_cache = (0.0, [])           # vault_file_count TTL 缓存
+        self._wemm_live_cache = (0.0, None)   # 看图服务实况 TTL 缓存（30s）
         self._device = None                   # {"model","rerank","cuda"} 懒填
         self._relations_cache = {}
         self._graph_cache = (None, None)      # (fingerprint, graph)
@@ -199,13 +200,19 @@ class Bridge:
                 "pct": store.progress_ratio(prog),
                 "elapsed": prog.get("elapsed_s"),
                 "library": store.progress_library(prog),
-                "busy": store.index_busy(),
+                "busy": store.index_busy(prog),
+                "task": store.index_task_owner(
+                    prog, own_pid=(self.worker.proc.pid
+                                   if self.worker.running else None)),
                 "heartbeat": hb,
                 "heartbeat_note": store.heartbeat_note(prog),
             },
             "last_elapsed": store.last_elapsed(prog),
             "issues": issues,
             "wemm": self.wemm_backend_state(),
+            "wemm_live": self._wemm_live_cached(),
+            "gpu": self._gpu_cached(),
+            "cpu": store.cpu_percent(),
             "device": self._device,
         }
 
@@ -215,6 +222,32 @@ class Bridge:
         if now - ts > 30:
             val = store.vault_file_count()
             self._lib_cache = (now, val)
+        return val
+
+    def _gpu_cached(self):
+        """整卡占用（问题47）：store.gpu_stats 自带进程内 5s 缓存，这里直调。
+        失败 → {ok: False}，前端显示"—"。"""
+        return store.gpu_stats()
+
+    def _wemm_live_cached(self):
+        """看图服务实况 TTL 缓存（问题47）：{alive, loaded, gpu_mem_gb}。
+
+        30s 一探——health 每次打进 wemm_server.log，无缓存会刷屏。
+        只读探测，服务没起也不拉起（store.wemm_service_probe 同纪律）。
+        """
+        now = time.time()
+        ts, val = self._wemm_live_cache
+        if val is None or now - ts > 30:
+            try:
+                from wemm_retriever import health
+                _, url = store.wemm_backend_state()
+                h = health(url) if url else {}
+                val = {"alive": True,
+                       "loaded": bool(h.get("loaded")),
+                       "gpu_mem_gb": h.get("gpu_mem_gb")}
+            except Exception:
+                val = {"alive": False, "loaded": False, "gpu_mem_gb": None}
+            self._wemm_live_cache = (now, val)
         return val
 
     def _probe_device(self):
@@ -299,7 +332,8 @@ class Bridge:
         """
         try:
             from library import (effective_config, load_registry, norm_sel_path,
-                                 resolve_selection)
+                                 resolve_selection, decide_included,
+                                 is_same_place_blocked)
             entry = next((e for e in load_registry() if e["name"] == name), None)
             if entry is None:
                 return {"error": "库不存在：%s" % name}
@@ -322,40 +356,49 @@ class Bridge:
             ex_files = set(cfg.get("exclude_files") or [])
             ex_pats = tuple(cfg.get("exclude_patterns") or [])
 
-            def _hard_excluded(rel, name):
-                # 与 collect_md_files 的 exclude_* 规则逐条对齐（显示=实际）
-                if any(part in ex_dirs for part in rel.split("/")):
-                    return True
-                if name in ex_files or name.startswith(ex_pats):
-                    return True
-                return False
+            ex_dirs_list = list(cfg.get("exclude_dirs") or [])
 
             def _state(rel, is_dir=False, name=""):
-                # exclude_* 硬排除优先于一切（与扫描漏斗同序），且不可被显式勾选穿透
-                if _hard_excluded(rel, name or rel.rsplit("/", 1)[-1]):
-                    return ("out", None, "已排除（排除名单）")
-                v = resolve_selection(sel_in, sel_out, rel)
-                explicit = None
-                if v == "in":
-                    explicit = "in"
-                elif v == "out":
-                    explicit = "out"
-                if v is None:
-                    if is_dir:
-                        # 文件夹是容器：中性 = 跟随子内容（文件夹没有扩展名，
-                        # 不能落进格式判定——否则全部显示"排除"误导用户）
-                        v = "in"
-                    elif default == "exclude":
-                        v = "out"
-                    elif default == "include":
-                        v = "in"
-                    else:
-                        v = "in" if rel.rsplit(".", 1)[-1].lower() in cfg["extensions"]                             else "out"
-                state = v if explicit else ("auto_" + v)
-                text = {"in": "已入库（显式勾选）", "out": "已排除（显式取消）",
-                        "auto_in": "入库（跟随子内容）" if is_dir else "入库（跟随格式）",
+                # 与 collect 漏斗同一裁决（library.decide_included，谁具体听谁的）：
+                # 最近显式 vs 目录排除按深度，文件名/格式类最弱。显示=实际。
+                base = name or rel.rsplit("/", 1)[-1]
+                self_blocked = bool(is_dir) and is_same_place_blocked(
+                    ex_dirs_list, rel)
+                verdict, tie = decide_included(sel_in, sel_out, ex_dirs_list, rel)
+                if tie:
+                    # 同位置打架手工态：排除站住，但显式记录照实显示 + 消歧，
+                    # 不再是"已排除（排除名单）"一笔糊涂账
+                    return ("out", "in",
+                            "被排除名单挡住（显式勾选已保存但未生效）",
+                            self_blocked)
+                if verdict == "out":
+                    v = resolve_selection(sel_in, sel_out, rel)
+                    if v == "out":
+                        return ("out", "out", "已排除（显式取消）",
+                                self_blocked)
+                    return ("out", None, "已排除（排除名单）",
+                            self_blocked)
+                if verdict == "in":
+                    return ("in", "in", "已入库（显式勾选）",
+                            self_blocked)
+                # 中性：文件名类排除仍生效；目录容器跟随子内容；文件走默认/格式
+                if not is_dir and (base in ex_files or base.startswith(ex_pats)):
+                    return ("out", None, "已排除（排除名单）", False)
+                v = None
+                if is_dir:
+                    # 文件夹是容器：中性 = 跟随子内容（文件夹没有扩展名，
+                    # 不能落进格式判定——否则全部显示"排除"误导用户）
+                    v = "in"
+                elif default == "exclude":
+                    v = "out"
+                elif default == "include":
+                    v = "in"
+                else:
+                    v = "in" if rel.rsplit(".", 1)[-1].lower() in cfg["extensions"]                             else "out"
+                state = "auto_" + v
+                text = {"auto_in": "入库（跟随子内容）" if is_dir else "入库（跟随格式）",
                         "auto_out": "排除（跟随格式）"}[state]
-                return state, explicit, text
+                return state, None, text, False
 
             dirs, files = [], []
             for it in sorted(cur.iterdir(), key=lambda x: x.name.lower()):
@@ -363,14 +406,16 @@ class Bridge:
                     continue  # 隐藏目录（.obsidian 等）不进面板
                 rel = (sub_n + "/" if sub_n else "") + it.name
                 if it.is_dir():
-                    st, ex, tx = _state(rel, is_dir=True, name=it.name)
+                    st, ex, tx, sbl = _state(rel, is_dir=True, name=it.name)
                     dirs.append({"name": it.name, "dir": True, "path": rel,
                                  "explicit": ex, "state": st, "state_text": tx,
+                                 "self_blocked": sbl,
                                  "n_children": sum(1 for _ in it.iterdir())})
                 else:
-                    st, ex, tx = _state(rel, name=it.name)
+                    st, ex, tx, _sbl = _state(rel, name=it.name)
                     files.append({"name": it.name, "dir": False, "path": rel,
                                   "explicit": ex, "state": st, "state_text": tx,
+                                  "self_blocked": False,
                                   "ext": it.suffix.lower().lstrip(".")})
             folders = [{"path": "", "depth": 0, "name": name,
                         "explicit": None, "state": "root", "state_text": "库根"}]
@@ -385,9 +430,10 @@ class Bridge:
                     if not it.is_dir() or it.name.startswith("."):
                         continue
                     rel = str(it.relative_to(root)).replace("\\", "/")
-                    st, ex, tx = _state(rel, is_dir=True, name=it.name)
+                    st, ex, tx, sbl = _state(rel, is_dir=True, name=it.name)
                     folders.append({"path": rel, "depth": depth, "name": it.name,
-                                    "explicit": ex, "state": st, "state_text": tx})
+                                    "explicit": ex, "state": st, "state_text": tx,
+                                    "self_blocked": sbl})
                     if len(folders) < 4000:
                         _walk_dirs(it, depth + 1)
 
@@ -431,6 +477,46 @@ class Bridge:
                     "selection_out": entry.get("selection_out") or []}
         except Exception as e:  # noqa: BLE001
             self._log("勾选范围更新失败（%s）：%s" % (name, e), is_error=True)
+            return {"ok": False, "error": str(e)}
+
+    def selection_resolve_conflict(self, name, path):
+        """同位置矛盾一键解决（问题47）：仅本库移除目录排除 + 纳入勾选。
+
+        前端在点击瞬间发现目标目录本身就在排除名单里时调（不再等保存）。
+        只动本库覆盖：已有覆盖改覆盖；继承全局则写入"全局减去该项"的本库
+        覆盖，全局文件与其他库原封不动。单次注册表读写，原子生效。
+        """
+        try:
+            from library import (effective_config, load_registry, norm_sel_path,
+                                 norm_ex_dir_entries, save_registry)
+            rel = norm_sel_path(path)
+            entries = load_registry()
+            entry = next((e for e in entries if e["name"] == name), None)
+            if entry is None:
+                return {"ok": False, "error": "库不存在：%s" % name}
+            eff = effective_config(entry)
+            if rel not in norm_ex_dir_entries(eff.get("exclude_dirs")):
+                return {"ok": False,
+                        "error": "该目录已不在排除名单里，直接勾选即可"}
+            base = entry.get("exclude_dirs")
+            src = base if base is not None else eff.get("exclude_dirs") or []
+            kept = [e for e in src
+                    if str(e).replace("\\", "/").strip().strip("/") != rel]
+            entry["exclude_dirs"] = kept
+            sin = set(effective_config(entry).get("selection_in") or [])
+            sout = set(effective_config(entry).get("selection_out") or [])
+            sin.add(rel)
+            sout.discard(rel)
+            entry["selection_in"] = sorted(sin)
+            entry["selection_out"] = sorted(sout)
+            save_registry(entries)
+            self._log("勾选矛盾已解决（%s）：仅本库排除名单移除 %s 并纳入"
+                      % (name, rel))
+            return {"ok": True, "error": None,
+                    "selection_in": entry["selection_in"],
+                    "selection_out": entry["selection_out"]}
+        except Exception as e:  # noqa: BLE001
+            self._log("勾选矛盾解决失败（%s）：%s" % (name, e), is_error=True)
             return {"ok": False, "error": str(e)}
 
     def unset_library_config(self, name, keys):
@@ -702,6 +788,31 @@ class Bridge:
         self._log("提取试验台启动：%s（后端=%s）" % (Path(path).name, backend or "跟随全局"))
         return {"ok": True}
 
+    @staticmethod
+    def _preview_result_of(payload):
+        """子进程 payload → 前端 result（纯函数，不碰进程/队列，可单测）。
+
+        真机教训（2026-09-08）：extract_preview 的 info 键是 `md`，这里曾误读
+        `info["markdown"]` 恒为空——成功提取在前端永远是"完成"配两块空面板；
+        且 reason/route 等被丢弃，管线级失败（scanned/无 Key/空文件）同样显示
+        "完成"。ok 保持"子进程正常交付"语义；是否产出内容前端看 reason
+       （""=有产出，非空=未产出及原因）。
+        """
+        payload = payload or {}
+        info = payload.get("info") or {}
+        md = info.get("md") or ""
+        return {
+            "ok": bool(payload.get("ok")),
+            "error": payload.get("error"),
+            "markdown": md,
+            "rendered_html": Bridge._md_to_html(md),
+            "reason": info.get("reason") or "",
+            "route": info.get("route") or "-",
+            "cached": bool(info.get("cached")),
+            "elapsed": info.get("elapsed") or 0,
+            "chars": info.get("chars") or len(md),
+        }
+
     def preview_poll(self):
         if self._pv_proc is None:
             return {"running": False, "done": True, "result": None}
@@ -709,26 +820,24 @@ class Bridge:
             return {"running": False, "done": True, "result": self._pv_result}
         if not self._pv_queue.empty():
             payload = self._pv_queue.get()
-            info = payload.get("info") or {}
-            self._pv_result = {
-                "ok": payload.get("ok"),
-                "error": payload.get("error"),
-                "markdown": info.get("markdown", ""),
-                "rendered_html": self._md_to_html(info.get("markdown", "")),
-            }
+            self._pv_result = self._preview_result_of(payload)
             self._pv_done = True
             self._cleanup_preview_dir()
             return {"running": False, "done": True, "result": self._pv_result}
         if not self._pv_proc.is_alive():
             self._pv_result = {"ok": False, "error": "预览进程异常退出",
-                               "markdown": "", "rendered_html": ""}
+                               "markdown": "", "rendered_html": "",
+                               "reason": "extract-failed", "route": "-",
+                               "cached": False, "elapsed": 0, "chars": 0}
             self._pv_done = True
             self._cleanup_preview_dir()
             return {"running": False, "done": True, "result": self._pv_result}
         if time.time() - self._pv_started > 180:
             self.preview_cancel()
             self._pv_result = {"ok": False, "error": "预览超时（180s），已强制终止",
-                               "markdown": "", "rendered_html": ""}
+                               "markdown": "", "rendered_html": "",
+                               "reason": "extract-failed", "route": "-",
+                               "cached": False, "elapsed": 0, "chars": 0}
             self._pv_done = True
             return {"running": False, "done": True, "result": self._pv_result}
         return {"running": True, "done": False, "result": None}

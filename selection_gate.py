@@ -58,8 +58,17 @@ def effective_state_text(cfg, rel):
 
 
 def normalize_changes(cfg_entry, changes):
-    """校验并规范化变更列表：路径合法 + 在库内 + action 合法；整体通过或整体拒绝。"""
+    """校验并规范化变更列表：路径合法 + 在库内 + action 合法；整体通过或整体拒绝。
+
+    问题47 同位置打架事前拦截：action=in 且目标本身就在目录排除名单里
+    （字符串相等，指名道姓）→ 直接拒绝并指引先清排除（set_library_config
+    改 exclude_dirs，仅本库覆盖即可），而不是等到 apply 才失败——确认码
+    不应该花在注定无效的提案上。文件名/格式类规则不在此列：点具体文件属
+    个别例外，静默生效（与漏斗/显示同一规则）。
+    """
+    from library import norm_ex_dir_entries
     root = Path(cfg_entry["path"]).resolve()
+    blocked = norm_ex_dir_entries((cfg_entry.get("exclude_dirs") or []))
     norm = []
     for ch in changes or []:
         rel = norm_sel_path((ch or {}).get("path"))
@@ -69,6 +78,12 @@ def normalize_changes(cfg_entry, changes):
         target = (root / rel).resolve()
         if root != target and root not in target.parents:
             raise GateError(f"路径越出库范围，已拒绝：{rel}")
+        if action == "in" and rel in blocked:
+            raise GateError(
+                f"同位置矛盾已拒绝：{rel} 本身就在目录排除名单（exclude_dirs）里，"
+                f"纳入不会生效。请先用 set_library_config 去掉 exclude_dirs 中的"
+                f"这一项（仅本库覆盖即可，不影响全局与其他库），再重新提案；"
+                f"或改勾它下面的具体文件（个别例外直接生效）。")
         norm.append({"path": rel, "action": action})
     if not norm:
         raise GateError("changes 为空：至少提供一项 {path, action}")
