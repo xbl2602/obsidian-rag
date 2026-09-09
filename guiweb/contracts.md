@@ -175,12 +175,21 @@ GUI=用户本人，直接生效（无需 MCP 那套确认码）；下一轮索�
 - 纯读路径（不碰 Chroma、不写任何文件）；失败返回 {edges:[], error:"…"}。
 
 ### dedup_run(threshold) → {clusters:[{lib,a,b,sim}], stats:{scanned,skipped,pairs,groups}, error?}（阻塞，读全库文件）
-### failures(lib) → {total, rows:[{rel, reason, will_retry}]}
-### wemm_status(lib) → {exists, total_pages, rows:[{rel, pages|null, failed, reason}]}
+### failures(lib) → {total, healthy, multi, rows:[{lib, rel, reason, will_retry, detail:[日志摘录]}]}
+- lib=""/"all" = 聚合全部库（此前当"库名=空串"找库 → 恒返回 0 条，已修）；
+  total=失败条数（不是"正常索引文件数"——那在 healthy）；multi=是否多库聚合
+  （true 时前端在文件名前显示库 chip）。每行 detail=该文件最近的索引日志摘录，
+  前端行点击展开查看具体报错 + 打开源文件。
+### wemm_status(lib) → {exists, total_pages, rows:[{lib, rel, pages|null, failed, reason}]}
+- store 层行是元组（Flet/widgets 共用契约），guiweb 桥必须转成对象再给前端，
+  否则文件名/页数取空、failed 恒 falsy（全"页库就绪"）——已修，勿退回元组。
+- 行只列 **.pdf**：WEMM 页级导航仅对 PDF 有意义（wemm_indexer 也只收 .pdf；
+  "显式勾选 in"会穿透扩展名白名单把 md 混进 collect，索引器已加 .pdf 硬筛，
+  store 显示层再滤一道兜底，历史 md 残留不显示、下次索引自动清向量+meta）。
 ### wemm_probe() → {alive, detail}
 
-### preview_start(path, backend) → {ok, error?}（backend: null=跟随全局 / "local" / "mineru-cloud"）
-### preview_poll() → {running, done, result:null|{ok, error?, markdown, rendered_html}}
+### preview_start(path, backend) → {ok, error?}（backend: null=跟随全局 / "local" / "mineru-cloud" / "mineru-local"；R3b 起扫描件可选本地解析，不出内网）
+### preview_poll() → {running, done, result:null|{ok, error?, markdown, rendered_html, reason, route, cached, elapsed, chars}}（reason:""=有产出；非空=管线未产出原因 ∈ scanned/unreadable/extract-failed/empty/deferred；deferred=本地服务瞬态不可用，本轮跳过不落终态；route ∈ local/mineru-text/ocr:mineru-cloud/ocr:mineru-local/-）
 ### preview_cancel() → {ok}
 
 ### log_tail(cursor) → {lines:[...], cursor}（cursor=null 从头；含历史 data/gui_index.log 尾部）
@@ -199,6 +208,6 @@ GUI=用户本人，直接生效（无需 MCP 那套确认码）；下一轮索�
 | 检索 | 输入+TopK+展开正文+库范围、结构化结果、置信度徽章、片段展开、关联笔记（懒加载+缓存）、打开源文件、耗时 |
 | 库 | 列表（块数/最近索引/覆盖摘要/状态）、添加、每库配置（格式/门禁/排除/切块/覆盖与继承）、移除双确认、打开文件夹、库范围多选（影响检索与重建目标） |
 | 索引 | 增量/全量（红确认：目标库+总块数+预计+检索可用性警告）、五阶段 stepper、pct/ETA/耗时、心跳五态+note、DEAD 告警、停止按钮、上次耗时 |
-| 诊断 | 失败明细表（含 will_retry）、WEMM 状态+探测、近似去重、导出/导入（确认门禁） |
+| 诊断 | 失败明细表（含 will_retry，行点击展开日志详情+打开源文件；全部库聚合）、WEMM 状态+探测、近似去重、导出/导入（确认门禁） |
 | 设置 | 12 分组全部字段、rebuild ⟳ 标记、choices 下拉、suggest 芯片（✓使用中）、secret 密码框、保存热读、云端同意门禁 |
 | 全局 | 动态岛（心跳五态+索引进度形变）、日志区（着色/计数/清空）、深浅主题、提取试验台（选文件/后端覆盖/双页签/取消/超时）、演示模式角标（仅 mock）、单实例守卫（后端） |

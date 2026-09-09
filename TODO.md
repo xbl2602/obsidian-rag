@@ -503,3 +503,10 @@ python index.py --library "Obsidian Vault"
 - [x] `search_knowledge` 工具说明写明分数语义（LLM 读法指南）；config 注释双尺度说明
 - [x] 评估并否决 sigmoid 温度拉伸（单调变换不改排序，对 agent 无实质帮助）
 - [x] 发现并备案：drop 阈值护栏在 sigmoid 地板下永不触发，warn 才是日常主护栏
+## 问题48：提取质量第一档（2026-09-08）
+
+- [x] 索引层噪声清洗：页码行/逐字重复样板行/死图链剥离（_finalize 漏斗，META_VERSION→10，下轮索引全量重建一次）
+- [x] 回归：audit 43/43（新增4项）、extractors 73/73（含版本钉子同步）、guiweb 89/89、其余套件全绿
+- [x] 真库验证：1446份缓存md，样板307份命中删130万字符、页码147份删5.3万字符、死图链23份删5.6万字符
+- [x] 第二档（sidecar 双轨）：云端解包落官方块标注 sidecar；索引有 sidecar 精确删页眉/页脚/页码、无则启发式回退；META→11（一次全量重嵌，零配额零重提）；extractors 74/74、audit 44/44、其余套件全绿；71 个 v1 孤儿缓存移入 _orphan_v1_bak_2026-09-08
+

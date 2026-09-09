@@ -1052,12 +1052,15 @@ def test_wemm_status_for_rows_and_missing():
                       'tbd': False, 'xsrc': 'wemm:m:512:60'},
             'broken.pdf': {'hash': 'y', 'chunks': 0, 'size': 1, 'mtime': 1,
                            'tbd': False, 'xfail': True, 'reason': 'extract-failed'},
+            'notes.md': {'hash': 'z', 'pages': 3, 'size': 1, 'mtime': 1,
+                         'tbd': False, 'xsrc': 'wemm:m:512:60'},  # 历史 md 残留：不显示
         }
         mp.write_text(json.dumps(meta), encoding='utf-8')
         with patch('gui.store.wemm_meta_file', return_value=mp):
             out = wemm_status_for(cfg)
         assert out['exists'] is True and out['total_pages'] == 9
         rows = {r[0]: r for r in out['rows']}
+        assert 'notes.md' not in rows, "WEMM 只对 PDF 有意义，md 残留必须滤掉"
         assert rows['a.pdf'][1] == 9 and rows['a.pdf'][2] is False
         assert rows['broken.pdf'][1] is None and rows['broken.pdf'][2] is True
         assert rows['broken.pdf'][3] == 'extract-failed'

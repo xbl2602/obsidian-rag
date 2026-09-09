@@ -160,6 +160,47 @@ def _cache_path(key, route="local"):
     return get_cache_dir() / f"{key}.{_route_fs(route)}.v{EXTRACT_VERSION}.md"
 
 
+def _sidecar_path(key):
+    """MinerU 官方块标注 sidecar 缓存路径（问题48附记，第二档治本）。
+
+    与正文 md 同 md5 前缀、同 EXTRACT_VERSION 联动（提取逻辑升级时一起失效）。
+    文件名不含 route：同一份文件的 scanned/文字层 属性由内容确定性判定（问题34），
+    ocr:mineru-cloud 与 mineru-text 对同一字节互斥，任何时刻至多一份有效 sidecar；
+    local 直提（pymupdf/docx）从不产 sidecar。→ 只查不猜，零误伤。
+    """
+    return get_cache_dir() / f"{key}.v{EXTRACT_VERSION}.mineru.json"
+
+
+def _cache_put_sidecar(key, raw):
+    """原子写 sidecar。OSError 只记日志（sidecar 丢了退回第一档启发式，不拖累正文）。"""
+    if not raw or not raw.strip():
+        return
+    try:
+        d = get_cache_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f"{key}.v{EXTRACT_VERSION}.{os.getpid()}.json.tmp"
+        tmp.write_text(raw, encoding="utf-8")
+        os.replace(tmp, _sidecar_path(key))
+    except OSError as e:
+        log(f"sidecar 写失败（跳过，索引侧回退启发式清洗）：{e}")
+
+
+def read_cache_sidecar(key):
+    """读 MinerU 官方块标注 sidecar（索引 `_finalize` 双轨清洗用）。
+
+    返回 content_list 的 list，或 None（无 sidecar / 损坏 / 非 list——老文件
+    未重提故无 sidecar，索引侧走第一档启发式回退）。绝不抛异常。
+    """
+    try:
+        p = _sidecar_path(key)
+        if not p.exists():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else None
+    except (OSError, ValueError):
+        return None
+
+
 def _sweep_orphan_tmp():
     """清扫 >24h 的孤儿 *.tmp（崩溃残留的原子写半成品）。失败静默（纯卫生措施）。"""
     global _swept
@@ -862,7 +903,8 @@ def _mineru_resume(job, headers, budget):
     """
     import requests
     deadline = time.monotonic() + max(30.0, budget)
-    md, why = _mineru_poll_result(job["batch_id"], headers, deadline, requests)
+    md, why = _mineru_poll_result(job["batch_id"], headers, deadline, requests,
+                                  key=job["md5"])
     if md is not None:
         _cache_put(job["md5"], md, job["route"])
         _pending_remove(job["batch_id"])
@@ -873,9 +915,13 @@ def _mineru_resume(job, headers, budget):
     return None, "empty" if why == "empty" else "extract-failed"
 
 
-def _mineru_poll_result(batch_id, headers, deadline, requests_mod):
+def _mineru_poll_result(batch_id, headers, deadline, requests_mod, key=None):
     """轮询 batch 至终态并下载解包取正文 .md（问题35 自 _mineru_cloud_extract 抽出，
     新鲜提交与断点续接共用同一条轮询路径）。
+
+    key：本文件字节 md5（问题48附记）。给定且结果包含 content_list.json（v1）时，
+    顺带把官方块标注落 sidecar（`_sidecar_path`），供索引 `_finalize` 双轨清洗
+    精确删页眉/页脚/页码——正文照常返回，sidecar 失败绝不拖累。
 
     返回 (md, why)：md 非 None 时 why="done"；md 为 None 时 why ∈
       timeout  — 本地预算耗尽（服务器端可能仍在跑，调用方应保留 pending 条目）
@@ -927,7 +973,19 @@ def _mineru_poll_result(batch_id, headers, deadline, requests_mod):
         return None, "no-md"
     best = max(mds, key=lambda zi: zi.file_size)  # 最大者=正文主文档
     md = zf.read(best).decode("utf-8", "replace")
-    return (md, "done") if md.strip() else (None, "empty")
+    if not md.strip():
+        return None, "empty"
+    # 问题48附记：顺带落官方块标注 sidecar（v1 content_list.json；v2 是嵌套结构不用）。
+    # 只在 key 已知且 zip 含 content_list 时写；失败静默跳过，绝不拖累正文交付。
+    if key is not None:
+        try:
+            cl = next((zi for zi in zf.infolist()
+                       if zi.filename.lower().endswith("_content_list.json")), None)
+            if cl is not None:
+                _cache_put_sidecar(key, zf.read(cl).decode("utf-8", "replace"))
+        except Exception:
+            pass
+    return (md, "done")
 
 
 _sleep = time.sleep  # 测试注入点（重试退避不真睡）
@@ -1067,7 +1125,8 @@ def _mineru_cloud_extract(path, is_ocr, key=None, pages=None):
         # 统一入账，串行（mineru_concurrency=1）路径的每日配额永远少记。
         mineru_quota_add(1, int(pages or 0))
         md, why = _mineru_poll_result(batch_id, headers,
-                                      time.monotonic() + max(30.0, budget), requests)
+                                      time.monotonic() + max(30.0, budget), requests,
+                                      key=key)
         if md is not None:
             _cache_put(key, md, route)
             _pending_remove(batch_id)

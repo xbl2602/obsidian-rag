@@ -1127,24 +1127,112 @@ function buildWemmLibOptions() {
   sel.value = cur || (S.libs[0] ? S.libs[0].name : '');
 }
 $('failLib').addEventListener('change', loadFailures);
+var S_fail = { rows: [] };   // 供详情行展开用
+function failBadge(reason) {
+  if (reason === 'unreadable' || reason === 'extract-failed') {
+    return '<span class="badge" style="background:var(--err-dim);color:var(--err)">' + esc(REASON_LABEL[reason] || reason) + '</span>';
+  }
+  if (reason === 'empty') {
+    return '<span class="badge" style="background:var(--s2);color:var(--sec)">' + esc(REASON_LABEL[reason] || reason) + '</span>';
+  }
+  return '<span class="badge badge-lo">' + esc(REASON_LABEL[reason] || reason) + '</span>';
+}
+/* 白话解释：为什么会这样 + 怎么改/怎么避免。故障树每档尽量给出可执行动作。 */
+var REASON_WHY = {
+  scanned: '这份 PDF 里有没有文字层的页（纯扫描件/拍照件/“PPT 文字页+扫描图”混装），当前 OCR 后端没把它认进来——不是文件坏了。超页上限（默认 200 页）被跳过的也在这里。',
+  unreadable: '文件打不开或读到一半出错，最常见是文件损坏、正在被别的程序占用（Word/WPS/OneDrive/杀软锁着）、或上传只传了一半。',
+  'extract-failed': '提取这一步失败了：云端 OCR 报错（缺 Key / 额度用尽 / 网络中断 / 服务端限流）或本地解析抛异常。文件本身没坏，多半是当时环境问题。',
+  empty: '程序成功打开并解析了，但里面没有任何正文（全是图片又没开 OCR、或整篇是空页），没有内容可索引。',
+  tbd: '文件正文里满是“待办/占位”标记（TBD/TODO 等），被当成草稿跳过了——它还没写完，不是故障。',
+  unknown: '索引中断/历史遗留导致状态不完整。'
+};
+var REASON_FIX = {
+  scanned: '做法：①没开 OCR——设置里把 pdf_scan_backend 设为 mineru-cloud（需 Key）或 mineru-local（需装 mineru 环境），保存后重建自动重试转正；②超页上限——拆分成 200 页以下的小份再重建。',
+  unreadable: '做法：关掉正在占用它的程序再重建；文件真损坏就从源头重新导出一份替换，下轮自动识别为新文件重新进来。',
+  'extract-failed': '做法：多数情况什么都不用做，环境恢复后自动重试。若持续失败：①云端——去 mineru.net 看 Key 是否有效/额度是否用完，补好后重建；②本地——把报错日志复制给维护者。',
+  empty: '做法：确认它到底该不该有内容。该有却读成空 → 可能是扫描件，参考“扫描件待 OCR”那条；确实是空文件 → 无需处理，它不会反复打扰你。',
+  tbd: '做法：不用管。等这份文件写完（去掉占位标记、有实质内容）后自动就会进索引。',
+  unknown: '做法：对这个库做一次全量重建（保险、干净的归宿）。'
+};
+function copyText(text, btn) {
+  if (!text) return;
+  function done(ok) {
+    toast(ok ? '已复制日志' : '复制失败（浏览器限制），请到右侧日志面板手动复制', ok ? 'ok' : 'err');
+    if (btn) { btn.textContent = ok ? '已复制 ✓' : '复制日志'; setTimeout(function () { btn.textContent = '复制日志'; }, 1600); }
+  }
+  function legacy() {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      done(document.execCommand('copy')); ta.remove();
+    } catch (e) { done(false); }
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); }, legacy);
+  } else { legacy(); }
+}
+function failDetailHtml(r, isAll) {
+  var why = REASON_WHY[r.reason] || '';
+  var fix = REASON_FIX[r.reason] || (REASON_ADVICE[r.reason] || '');
+  var retry = r.will_retry
+    ? '<div class="fd-line" style="color:var(--warn)">✅ 下轮索引会自动重试：OCR 后端/Key 和这条失败记录产生时不一样了，配置已具备转正条件。</div>'
+    : '<div class="fd-line" style="color:var(--ph)">不会自动重试：原因和当前配置一致，改内容/换后端后重建才会再走一遍。</div>';
+  var where = isAll ? '<div class="fd-line"><span class="libchip">' + esc(r.lib) + '</span> <span class="mono">' + esc(r.rel) + '</span></div>' : '';
+  var btns = '<button class="btn btn-sm btn-ghost" data-fopen="1">打开源文件</button>'
+    + (r.detail && r.detail.length
+        ? '<button class="btn btn-sm btn-ghost" data-fcopy="1">复制日志</button>'
+        : '<button class="btn btn-sm btn-ghost" disabled title="索引日志暂无该文件记录">复制日志</button>');
+  return where
+    + '<div class="fd-sec">为什么没进来</div>' + '<div class="fd-line fd-why">' + esc(why || '（无说明）') + '</div>'
+    + '<div class="fd-sec">怎么处理</div>' + '<div class="fd-line fd-fix">' + esc(fix || '—') + '</div>'
+    + retry
+    + btns;
+}
 function loadFailures() {
   API.failures($('failLib').value).then(function (d) {
-    $('failTotal').textContent = '共 ' + d.total + ' 条';
-    $('failBody').innerHTML = (d.rows || []).map(function (r) {
+    S_fail.rows = d.rows || [];
+    var hd = '共 ' + d.total + ' 条失败';
+    if (d.healthy) hd += ' · 正常 ' + d.healthy + ' 份';
+    if (d.multi) hd += '（全部库）';
+    $('failTotal').textContent = hd;
+    var isAll = !!d.multi;
+    $('failBody').innerHTML = S_fail.rows.map(function (r, i) {
       var retry = r.will_retry
         ? ' <span class="mono" style="font-size:10.5px;color:var(--warn)">will_retry</span>'
         : '';
-      var badge = r.reason === 'unreadable' || r.reason === 'extract-failed'
-        ? '<span class="badge" style="background:var(--err-dim);color:var(--err)">' + esc(REASON_LABEL[r.reason] || r.reason) + '</span>'
-        : r.reason === 'empty'
-          ? '<span class="badge" style="background:var(--s2);color:var(--sec)">' + esc(REASON_LABEL[r.reason] || r.reason) + '</span>'
-          : '<span class="badge badge-lo">' + esc(REASON_LABEL[r.reason] || r.reason) + '</span>';
-      return '<tr><td class="p" title="' + esc(r.rel) + '">' + esc(r.rel) + '</td>'
-        + '<td>' + badge + retry + '</td>'
-        + '<td class="g">' + esc(REASON_ADVICE[r.reason] || '') + '</td></tr>';
-    }).join('') || '<tr><td colspan="3" class="g" style="text-align:center;color:var(--ph)">没有失败记录</td></tr>';
+      var name = (isAll ? '<span class="libchip">' + esc(r.lib) + '</span> ' : '') + esc(r.rel);
+      return '<tr class="frow" data-i="' + i + '"><td class="p" title="' + esc(r.rel) + '">' + name + '</td>'
+        + '<td>' + failBadge(r.reason) + retry + ' <span class="mono fd-hint">详情▾</span></td>'
+        + '<td class="g">' + esc(REASON_ADVICE[r.reason] || '') + '</td></tr>'
+        + '<tr class="fd" data-i="' + i + '" style="display:none"><td colspan="3">' + failDetailHtml(r, isAll) + '</td></tr>';
+    }).join('')
+      || '<tr><td colspan="3" class="g" style="text-align:center;color:var(--ph)">没有失败记录</td></tr>';
   }).catch(function () { toast('失败明细加载失败', 'err'); });
 }
+$('failBody').addEventListener('click', function (e) {
+  var cbtn = e.target.closest('[data-fcopy]');
+  if (cbtn) {
+    var crow = cbtn.closest('tr').previousElementSibling;
+    var cr = S_fail.rows[+(crow && crow.getAttribute('data-i'))];
+    if (cr && cr.detail) copyText(cr.detail.join('\n'), cbtn);
+    return;
+  }
+  var btn = e.target.closest('[data-fopen]');
+  if (btn) {
+    var row = btn.closest('tr').previousElementSibling;
+    var r = S_fail.rows[+(row && row.getAttribute('data-i'))];
+    if (r) API.open_source(r.lib, r.rel, '').then(function (res) {
+      toast(res.ok ? '已打开源文件' : ('打开失败：' + (res.error || '未知')), res.ok ? 'ok' : 'err');
+    });
+    return;
+  }
+  var tr = e.target.closest('tr.frow');
+  if (!tr) return;
+  var idx = tr.getAttribute('data-i');
+  var det = tr.nextElementSibling;
+  if (det && det.classList.contains('fd')) det.style.display = det.style.display === 'none' ? '' : 'none';
+});
 $('wemmProbeBtn').addEventListener('click', function () {
   var btn = this;
   btn.disabled = true;
@@ -1157,19 +1245,45 @@ $('wemmProbeBtn').addEventListener('click', function () {
   }).catch(function () { btn.disabled = false; $('wemmProbeOut').textContent = '探测请求失败'; });
 });
 $('wemmLibSel').addEventListener('change', loadWemmStatus);
+var S_wemm = { rows: [] };
 function loadWemmStatus() {
   var lib = $('wemmLibSel').value;
   if (!lib) return;
   API.wemm_status(lib).then(function (d) {
-    $('wemmBody').innerHTML = (d.rows || []).map(function (r) {
-      return '<tr><td class="p" title="' + esc(r.rel) + '">' + esc(r.rel) + '</td>'
+    S_wemm.rows = d.rows || [];
+    $('wemmBody').innerHTML = S_wemm.rows.map(function (r, i) {
+      return '<tr class="wrow" data-i="' + i + '"><td class="p" title="' + esc(r.rel) + '">' + esc(r.rel) + '</td>'
         + '<td class="mono">' + (r.pages != null ? r.pages + ' 页' : '--') + '</td>'
         + '<td>' + (r.failed
           ? '<span class="badge" style="background:var(--err-dim);color:var(--err)">' + esc(r.reason || '失败') + '</span>'
-          : '<span class="badge badge-hi">页库就绪</span>') + '</td></tr>';
+          : '<span class="badge badge-hi">页库就绪</span>') + ' <span class="mono fd-hint">详情▾</span></td></tr>'
+        + '<tr class="wd" data-i="' + i + '" style="display:none"><td colspan="3">'
+        + (r.failed
+          ? '<div class="fd-sec">为什么没建成</div>'
+            + '<div class="fd-line fd-why">' + esc((REASON_WHY[r.reason] || '') + '（看图服务未就绪/渲染超时等都会导致单页失败，下轮会自动重试。）') + '</div>'
+            + '<div class="fd-sec">怎么处理</div>'
+            + '<div class="fd-line fd-fix">' + esc(REASON_FIX[r.reason] || '开启或重启 WEMM 看图服务后重建页库即可。') + '</div>'
+          : '<div class="fd-line">已为这份 PDF 生成 ' + r.pages + ' 页向量 · ' + esc(r.lib) + '</div>')
+        + '<button class="btn btn-sm btn-ghost" data-wopen="1">打开源文件</button></td></tr>';
     }).join('') || '<tr><td colspan="3" class="g" style="text-align:center;color:var(--ph)">该库暂无页向量数据' + (d.exists ? '' : '（页库不存在）') + '</td></tr>';
   }).catch(function () {});
 }
+$('wemmBody').addEventListener('click', function (e) {
+  var btn = e.target.closest('[data-wopen]');
+  if (btn) {
+    var row = btn.closest('tr').previousElementSibling;
+    var r = S_wemm.rows[+(row && row.getAttribute('data-i'))];
+    if (r) API.open_source(r.lib, r.rel, '').then(function (res) {
+      toast(res.ok ? '已打开源文件' : ('打开失败：' + (res.error || '未知')), res.ok ? 'ok' : 'err');
+    });
+    return;
+  }
+  var tr = e.target.closest('tr.wrow');
+  if (!tr) return;
+  var idx = tr.getAttribute('data-i');
+  var det = tr.nextElementSibling;
+  if (det && det.classList.contains('wd')) det.style.display = det.style.display === 'none' ? '' : 'none';
+});
 $('dupThresh').addEventListener('input', function () {
   $('dupThVal').textContent = parseFloat(this.value).toFixed(2);
 });

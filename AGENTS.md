@@ -28,8 +28,11 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   必须穿它**，否则被排除文件会漏进管线。格式开关变更经 bulk_for_extensions 批量
   勾/取消（文件级条目跟着迁移，文件夹级不动）。Agent 改勾选只走 MCP 两段式硬门禁
   （selection_gate.py：提案号+确认码+TTL+一次性，无配置绕过），GUI 直改免码
-- META_VERSION **9**：多格式提取 + 统一终态 + 原始字节指纹；EXTRACT_VERSION **4**
-- 多格式默认开启（`extensions=md,pdf,docx`）；扫描件 OCR 经 MinerU 云端 API（`pdf_scan_backend`，默认 none）
+ - META_VERSION **11**：索引层提取噪声清洗（v10 死图链/页码/样板行启发式；v11 起 MinerU
+   云端新提取文件带官方块标注 sidecar `{md5}.v{EXTRACT_VERSION}.mineru.json`，双轨：
+   有 sidecar 精确删 header/footer/page_number、无则启发式兜底）；EXTRACT_VERSION **4**
+   ——sidecar 与 md 同 md5 前缀同版本联动，EXT 不动 = 老缓存不重提、老文件无 sidecar
+   走启发式；sidecar 只在 MinerU 云端解包处落（`_mineru_poll_result`），local 直提不产
 - **混合型 PDF（任一页无文字层，含"PPT 文字页+扫描图"混装课件）整本按扫描件路由**（问题34）：
   云端开 → 整本 is_ocr=True 送 MinerU vlm 认字产出一份完整 MD；未开 → 整本 scanned 终态待
   xsrc 自愈——宁可诚实空缺，绝不产出"文字页直提+图片页丢失"的半份拼接内容

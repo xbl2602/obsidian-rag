@@ -416,6 +416,64 @@ def test_preview_result_contract_parity():
     _check("app: 不再无条件完成", "r.ok && !r.reason" in js)
 
 
+def test_failures_aggregate_all_libs():
+    """回归（诊断页）：failures("") 必须聚合全部库而非当"库名=空串"返回 0 条；
+    total=失败条数（此前把"正常文件数"当 total，前端标题显示 176 却只有 2 条真失败）。"""
+    from guiweb.bridge import Bridge
+    with patch("store.library_entries") as le, \
+         patch("store.file_index_rows_for") as fir, \
+         patch("guiweb.bridge.Bridge._log_tail",
+               return_value=["[t] 提取失败（tbd），记入终态待重试：x.md",
+                             "[t] MinerU 云端失败，按提取失败处理（extract-failed）：y.pdf"]):
+        le.return_value = [
+            {"name": "A", "path": "D:/a", "collection": "ca"},
+            {"name": "B", "path": "D:/b", "collection": "cb"},
+        ]
+        fir.side_effect = [
+            {"total": 100, "rows": [("x.md", "tbd", False)]},          # A
+            {"total": 40, "rows": [("y.pdf", "extract-failed", True)]},  # B
+        ]
+        b = Bridge()
+        out = b.failures("")
+        _check("failures: 全部库不再返回 0 条", out["total"] == 2,
+               "total=%r" % out["total"])
+        _check("failures: total=失败条数而非正常数", out["total"] == 2 and out["healthy"] == 140,
+               "%r/%r" % (out["total"], out["healthy"]))
+        _check("failures: 行带库名与日志摘录",
+               {r["lib"] for r in out["rows"]} == {"A", "B"}
+               and any(r["detail"] for r in out["rows"]))
+        _check("failures: multi 标记（前端据此显示库 chip）", out["multi"] is True)
+        # 指定单库：只给该库行、multi=False
+        fir.side_effect = None
+        fir.return_value = {"total": 5, "rows": [("x.md", "tbd", False)]}
+        le.return_value = [{"name": "A", "path": "D:/a", "collection": "ca"}]
+        single = b.failures("A")
+        _check("failures: 单库过滤生效", single["total"] == 1 and single["multi"] is False,
+               repr(single))
+
+
+def test_wemm_status_rows_are_objects():
+    """回归（诊断页）：store 层 wemm 行是元组（Flet 共用契约），guiweb 必须转成
+    对象，否则前端取 r.rel/r.pages 恒空、failed 恒 falsy（全显示"页库就绪"）。"""
+    from guiweb.bridge import Bridge
+    with patch("store.library_entries") as le, \
+         patch("store.wemm_status_for") as wsf:
+        le.return_value = [{"name": "A", "path": "D:/a", "collection": "ca"}]
+        wsf.return_value = {"exists": True, "total_pages": 10,
+                            "rows": [("p1.pdf", 6, False, ""),
+                                     ("p2.pdf", None, True, "extract-failed")]}
+        out = Bridge().wemm_status("A")
+        _check("wemm: 元组转对象（rel/pages/failed/reason 可读）",
+               out["rows"] == [
+                   {"lib": "A", "rel": "p1.pdf", "pages": 6,
+                    "failed": False, "reason": ""},
+                   {"lib": "A", "rel": "p2.pdf", "pages": None,
+                    "failed": True, "reason": "extract-failed"}],
+               repr(out["rows"]))
+        _check("wemm: exists/total_pages 透传",
+               out["exists"] is True and out["total_pages"] == 10)
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

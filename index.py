@@ -16,7 +16,8 @@ from extractors import (BINARY_EXTS, SUPPORTED_EXTS, TEXT_EXTS,
                         classify_extraction, current_backend_sig,
                         extract_to_markdown, mineru_cloud_extract_for_parallel,
                         mineru_pending_prune, mineru_quota_today,
-                        mineru_token_invalid, mineru_token_reset)
+                        mineru_token_invalid, mineru_token_reset,
+                        read_cache_sidecar)
 from library import (effective_config, load_registry, meta_path,
                      resolve_entries, resolve_selection, decide_included)
 
@@ -45,8 +46,11 @@ EMBED_BATCH_SIZE = CFG["embed_batch_size"]
 
 # 切块/清洗逻辑版本：升级后旧索引需重嵌（指纹感知不到代码升级），
 # meta 版本不匹配时 index_vault 自动按全量重建处理。
-META_VERSION = 9  # v9: 多格式提取（docx/pdf）+ 统一终态机制 + 原始字节指纹
-                  # （v8: TBD 占位重文件跳过索引；v7: 空正文文件跳过不产生块）
+META_VERSION = 11  # v11: MinerU sidecar 双轨清洗（官方标注精确删页眉/页脚/页码，
+                   #       无 sidecar 老文件沿用 v10 启发式）
+                   # （v10: 提取噪声清洗（页码行/逐字重复样板行/死图链剥离）；
+                   #  v9: 多格式提取（docx/pdf）+ 统一终态机制 + 原始字节指纹；
+                   #  v8: TBD 占位重文件跳过索引；v7: 空正文文件跳过不产生块）
 
 # _load_text 读取失败时的指纹哨兵：锁定/OneDrive/AV 占用等 OSError 场景。
 # 两轮哨兵等值 = 判稳（不反复触发重建）；文件恢复可读后真实 hash ≠ 哨兵 → 自动重试。
@@ -1078,6 +1082,150 @@ def clean_wikilinks(text):
     return re.sub(r"!?\[\[([^\]]*)\]\]", _repl, text)
 
 
+# ---------- 问题48（第一档）：提取噪声清洗 ----------
+#
+# 动机：MinerU/扫描件转写会把"每页都有的东西"变成正文行——页眉（报告标题）、
+# 页脚、页码，以及指向根本不存在的文件的 ![](images/…) 死图链。一份 50 页的
+# 报告等于同一句话被索引 50 次：既污染召回，又浪费向量与 BM25 词表。
+# 三个函数都是纯文本变换、在切块前调用（见 _finalize），只动索引层：
+# 提取缓存里的原文不动，因此 MCP read_document 交付的全文仍带死链——根治
+# （缓存级改写引用/落盘图片）是第二档的事，需要动 EXTRACT_VERSION + 重提。
+
+# 页码行：带标记的必删（第12页 / Page 12 / - 12 -）；裸数字行（"12"）只有
+# "出现 ≥2 个互不相同的裸数字行"（分页信号）时才删——单个孤立数字行可能是
+# 正文内容（如单独成行的年份/编号），宁可漏删不断错。
+_PAGE_NUM_KEYWORD_RE = re.compile(r"^\s*(?:第\s*\d+\s*页|Page\s*\d+)\s*$",
+                                  re.IGNORECASE)
+_PAGE_NUM_DECORATED_RE = re.compile(r"^\s*[-–—_·•*]+\s*\d{1,4}\s*[-–—_·•*]+\s*$")
+_PAGE_NUM_BARE_RE = re.compile(r"^\s*\d{1,4}\s*$")
+
+
+def strip_page_number_lines(text):
+    """删页码行。返回清洗后的文本。"""
+    lines = text.splitlines()
+    bare = {l.strip() for l in lines if _PAGE_NUM_BARE_RE.match(l)}
+    pagination = len(bare) >= 2  # ≥2 个不同裸数字 = 分页，不是正文
+    out = []
+    for l in lines:
+        if _PAGE_NUM_KEYWORD_RE.match(l) or _PAGE_NUM_DECORATED_RE.match(l):
+            continue
+        if pagination and _PAGE_NUM_BARE_RE.match(l):
+            continue
+        out.append(l)
+    return "\n".join(out)
+
+
+# 样板行：同一文档内逐字重复 ≥3 次的"普通段落行"视为页眉/页脚/水印，全删。
+# 保守边界（只删普通段落行，其余一律不动）：
+#   - 标题行（# 开头）：删它会连带丢掉切块标题路径，绝不动；
+#   - 表格行（| 开头）：长表格的重复表头行也在保护内，宁可留噪声不拆表；
+#   - 列表项/引用块/围栏代码块内：可能是正文强调，不是样板，不动；
+#   - 短行（<4 字符）："结论""摘要"这类单节内合法重复的词不受影响；
+#   - 纯标点/结构符号行（---/*** 等分隔线）：不动。
+_BOILER_MIN_REPEATS = 3
+_BOILER_MIN_LEN = 4
+_BOILER_PUNCT_ONLY_RE = re.compile(r"^[\s\-\*_#>|~`]+$")
+_BOILER_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+
+def _boiler_candidate(line):
+    s = line.strip()
+    if len(s) < _BOILER_MIN_LEN or _BOILER_PUNCT_ONLY_RE.match(s):
+        return None
+    if s.startswith("#") or s.startswith("|") or s.startswith(">"):
+        return None
+    if _LIST_ITEM_RE.match(line):
+        return None
+    return s
+
+
+def strip_boilerplate_lines(text, min_repeats=_BOILER_MIN_REPEATS):
+    """删逐字重复的样板行（页眉/页脚/水印）。返回清洗后的文本。"""
+    lines = text.splitlines()
+    counts = {}
+    cands = []
+    in_fence = False
+    for l in lines:
+        if _BOILER_FENCE_RE.match(l):
+            in_fence = not in_fence
+            cands.append(None)
+            continue
+        if in_fence:
+            cands.append(None)
+            continue
+        c = _boiler_candidate(l)
+        cands.append(c)
+        if c is not None:
+            counts[c] = counts.get(c, 0) + 1
+    drop = {s for s, n in counts.items() if n >= min_repeats}
+    if not drop:
+        return text
+    return "\n".join(l for l, c in zip(lines, cands)
+                     if c is None or c not in drop)
+
+
+# 死图链：![alt](src) 里 src 为本地/相对路径的，文件根本不存在（提取器只存
+# md 文本、图片全丢），留着是进向量的死引用。alt 非空留 alt 纯文本（仍是语义
+# 信号），alt 为空整段删；远端 http(s) 图片是活的（可渲染），不动；HTML <img>
+# 同理取 alt。Obsidian ![[…]] 已由 clean_wikilinks 处理，不管。
+_MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+_HTML_IMG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_HTML_ALT_RE = re.compile(r"""alt\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))""",
+                           re.IGNORECASE)
+
+
+def _md_img_repl(m):
+    alt = (m.group(1) or "").strip()
+    src = (m.group(2) or "").strip()
+    if src.lower().startswith(("http://", "https://", "data:")):
+        return m.group(0)  # 远端/内嵌图是活的，不动
+    return alt  # 本地相对路径已死：留 alt 或删整段
+
+
+def _html_img_repl(m):
+    a = _HTML_ALT_RE.search(m.group(0))
+    alt = next((g for g in (a.group(2), a.group(3), a.group(4))
+                if g is not None), "") if a else ""
+    return alt.strip()
+
+
+def strip_dead_image_refs(text):
+    """剥离指向本地图片的死引用（保留 alt 文本与远端图）。返回清洗后的文本。"""
+    text = _MD_IMG_RE.sub(_md_img_repl, text)
+    return _HTML_IMG_RE.sub(_html_img_repl, text)
+
+
+# 问题48附记（第二档治本）：MinerU 官方块标注的噪声类型——实测 schema 含
+# header/footer/page_number/table/text；只删这三类，表格与正文按官方认定保留。
+_SIDECAR_NOISE_TYPES = frozenset({"header", "footer", "page_number"})
+
+
+def strip_sidecar_noise(body, sidecar):
+    """按 MinerU 官方块标注精确删页眉/页脚/页码行（问题48附记，第二档治本）。
+
+    sidecar = extractors.read_cache_sidecar(bhash) 的返回值（content_list 的 list），
+    每个元素 {type, text, page_idx, bbox}。只做「整行逐字相等」匹配：
+      - 官方标 header/footer/page_number 的 text，若在 md 正文里恰好单独成行 → 删；
+      - 标题行（# 前缀）即使文本撞上也不删——那是 md 结构（标题路径进切块向量）；
+      - 表格行/正文/列表一律不动（官方没标噪声，绝不启发式越权）。
+    只精确删、绝不猜测：撞不中的残差噪声交给紧随其后的 v10 启发式清洗兜底
+    （sidecar 只负责把单页/短文档里"重复次数不够"的页眉页码删干净）。
+    """
+    if not isinstance(sidecar, list) or not sidecar:
+        return body
+    noise = set()
+    for b in sidecar:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") in _SIDECAR_NOISE_TYPES:
+            t = str(b.get("text") or "").strip()
+            if t:
+                noise.add(t)
+    if not noise:
+        return body
+    return "\n".join(l for l in body.splitlines() if l.strip() not in noise)
+
+
 def extract_wikilink_targets(text):
     """抽取正文中出现的 wiki 链接目标笔记名（去重、排序），供双链关系图使用。
 
@@ -1638,6 +1786,17 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
             nonlocal changed
             links = extract_wikilink_targets(body)
             body = clean_wikilinks(body)
+            # 问题48清洗：死图链 → [官方 sidecar 精确删（第二档，仅 MinerU 云端
+            # 新提取的文件有；老文件读不到返回 None 自动跳过）] → 页码 → 样板行。
+            # 顺序有讲究：先剥图链（避免重复图片路径行被误判成样板）；sidecar
+            # 只精确删官方标注的页眉/页脚/页码，删不中的残差交给启发式兜底。
+            # 纯文本变换，不影响终态判定。
+            body = strip_dead_image_refs(body)
+            sidecar = read_cache_sidecar(bhash)
+            if sidecar:
+                body = strip_sidecar_noise(body, sidecar)
+            body = strip_page_number_lines(body)
+            body = strip_boilerplate_lines(body)
             # 防御分支：正常不应到达（文本空已归一为终态、提取器保证非空产出）
             if not body.strip():
                 meta[rel] = _terminal_entry(st, bhash, REASON_EMPTY)
@@ -1997,12 +2156,142 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
         raise
 
 
+def prune_unreferenced_data(data_dir=None, cache_dir=None, chroma_dir=None,
+                            entries=None, log=log):
+    """索引完成后一次性全局回收（问题49，用户拍板"全清，没用到就删"）。
+
+    只删"当前不再被任何东西引用"的数据，只读快照后删、绝不触碰在途任务：
+      1. 已从注册表移除的库 → 指纹文件（index_meta_<n>.json / wemm_meta_<n>.json）
+         一并清（先清指纹再算存活集合，同一轮就把这些指纹的提取缓存也释放）；
+      2. Chroma 残留 collection → 不属于任何已注册库的文字集合或 <col>.wemm
+         全删（库级文件/块清理每轮索引已做，这里只清"整个库都没了"的残留）；
+      3. extract_cache → 删除任何已注册库 meta 的 hash（含终态条目）都不引用的
+         md / sidecar / md5 前缀 tmp；mineru_pending/quota 簿记与子目录不碰，
+         在途 MinerU 任务的 md5 并入"活着"集合，绝不误删。
+    幂等；任何单步失败只记日志、绝不抛，不影响索引主流程。
+    entries 传 None = 读真实注册表；data_dir/cache_dir/chroma_dir 用于测试注入
+    隔离目录（默认走真实 DATA_DIR / 提取缓存 / CHROMA_DIR）。
+    返回 (删缓存数, 删 collection 数, 删指纹数)。
+    """
+    data_dir = Path(data_dir) if data_dir else DATA_DIR
+    entries = load_registry() if entries is None else entries
+    if not entries:
+        log("全局回收：无已注册库，跳过")
+        return (0, 0, 0)
+    names = {e["name"] for e in entries}
+    md5re = re.compile(r"^[0-9a-f]{32}\.")
+
+    def _load_hashes(meta_file):
+        out = set()
+        try:
+            m = json.loads(Path(meta_file).read_text(encoding="utf-8"))
+        except Exception:
+            return out
+        if not isinstance(m, dict):
+            return out
+        for info in m.values():
+            if isinstance(info, dict):
+                h = info.get("hash")
+                if isinstance(h, str) and re.fullmatch(r"[0-9a-f]{32}", h):
+                    out.add(h)
+        return out
+
+    # 1) 已删库的指纹文件（index_meta_*.json / wemm_meta_*.json，保留 base index_meta.json）
+    n_meta = 0
+    for p in list(data_dir.glob("index_meta_*.json")):
+        nm = p.name[len("index_meta_"):-len(".json")]
+        if nm not in names:
+            try:
+                p.unlink()
+                n_meta += 1
+            except OSError:
+                pass
+    for p in list(data_dir.glob("wemm_meta_*.json")):
+        nm = p.name[len("wemm_meta_"):-len(".json")]
+        if nm not in names:
+            try:
+                p.unlink()
+                n_meta += 1
+            except OSError:
+                pass
+
+    # 2) 活着指纹 = 各注册库 meta 的 hash + 在途 MinerU 断点簿记
+    keep = set()
+    for e in entries:
+        keep |= _load_hashes(data_dir / f"index_meta_{e['name']}.json")
+    try:
+        from extractors import _pending_load
+        for job in (_pending_load() or {}).values():
+            if isinstance(job, dict):
+                h = job.get("md5")
+                if isinstance(h, str) and re.fullmatch(r"[0-9a-f]{32}", h):
+                    keep.add(h)
+    except Exception:
+        pass
+
+    # 3) 提取缓存孤儿：md / sidecar / md5 前缀 tmp（整目录顶层，不递归子目录）
+    if cache_dir is None:
+        try:
+            from extractors import get_cache_dir
+            cache_dir = Path(get_cache_dir())
+        except Exception:
+            cache_dir = None
+    n_cache = 0
+    if cache_dir is not None and Path(cache_dir).is_dir():
+        for p in list(Path(cache_dir).iterdir()):
+            if not p.is_file():
+                continue
+            m = md5re.match(p.name)
+            if m and m.group(0).rstrip(".") not in keep:
+                try:
+                    p.unlink()
+                    n_cache += 1
+                except OSError:
+                    pass
+
+    # 4) Chroma 残留 collection：只认当前注册库的文字 + <col>.wemm
+    keep_colls = set()
+    for e in entries:
+        try:
+            col = effective_config(e)["collection"]
+        except Exception:
+            continue
+        keep_colls.add(col)
+        try:
+            from wemm_indexer import wemm_collection
+            keep_colls.add(wemm_collection(col))
+        except Exception:
+            pass
+    n_col = 0
+    cd = Path(chroma_dir) if chroma_dir else Path(CHROMA_DIR)
+    if keep_colls and cd.is_dir():
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(path=str(cd))
+            for c in client.list_collections():
+                nm = getattr(c, "name", c)
+                if nm not in keep_colls:
+                    try:
+                        client.delete_collection(nm)
+                        n_col += 1
+                    except Exception:
+                        pass
+        except Exception as e:
+            log(f"全局回收：collection 清理失败（忽略）：{e}")
+
+    if n_cache or n_col or n_meta:
+        log(f"全局回收完成：删提取缓存 {n_cache} 个、残留 collection {n_col} 个、"
+            f"已删库指纹 {n_meta} 个")
+    return (n_cache, n_col, n_meta)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--vault", default=None, help="旧单库入口：直接指定路径（legacy）")
     ap.add_argument("--library", default="all", help="库名（或 all=全部注册库，默认）")
     ap.add_argument("--full", action="store_true", help="全量重建，忽略增量")
     args = ap.parse_args()
+
 
     if args.vault:
         index_vault(args.vault, incremental=not args.full, full=args.full)
@@ -2044,4 +2333,8 @@ if __name__ == "__main__":
     if failed:
         log(f"全部索引任务结束：{failed} 个库失败，其余成功。")
         sys.exit(1)
+    try:
+        prune_unreferenced_data()
+    except Exception as e:
+        log(f"全局回收失败（忽略）：{e}")
     log("全部索引任务完成。")

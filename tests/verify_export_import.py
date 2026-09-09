@@ -38,9 +38,14 @@ def check(name, cond, detail=""):
 
 def run(args, cwd=None, timeout=900, input_text=None):
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    kwargs = {}
+    if input_text is not None:
+        kwargs["input"] = input_text
+    else:
+        kwargs["stdin"] = subprocess.DEVNULL
     return subprocess.run([PY, "-X", "utf8", *args], cwd=cwd, env=env,
                           capture_output=True, text=True, encoding="utf-8",
-                          timeout=timeout, input=input_text)
+                          timeout=timeout, **kwargs)
 
 
 def count_chunks(data_dir):

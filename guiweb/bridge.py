@@ -740,21 +740,76 @@ class Bridge:
         except Exception as e:  # noqa: BLE001
             return {"clusters": [], "stats": None, "error": str(e)}
 
+    @staticmethod
+    def _log_tail(n=4000):
+        """读 GUI 索引日志尾 n 行（供失败明细拼"更具体报错"）。读不到返回 []。"""
+        try:
+            from worker import LOG_FILE
+            if not LOG_FILE.exists():
+                return []
+            lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+            return lines[-n:] if len(lines) > n else lines
+        except OSError:
+            return []
+
+    @staticmethod
+    def _log_snippet_for(rel, tail):
+        """在日志尾里找最近提到该文件的 3 行，作失败明细的可展开详情。
+
+        索引/提取日志里同一文件可能有多条（提交、失败、终态记入），取最后几条
+        即最近的实质报错；日志里没有 = 老失败/本轮无输出，返回空（前端显示"见
+        右侧日志面板"）。
+        """
+        if not tail:
+            return []
+        base = rel.replace("\\", "/").rsplit("/", 1)[-1]
+        if not base:
+            return []
+        hit = [l for l in tail if base in l]
+        return hit[-3:]
+
     def failures(self, lib):
-        cfg = next((c for c in store.library_entries() if c["name"] == lib), None)
-        if cfg is None:
-            return {"total": 0, "rows": [], "error": "库不存在：%s" % lib}
-        data = store.file_index_rows_for(cfg)
-        return {"total": data["total"],
-                "rows": [{"rel": r, "reason": reason, "will_retry": wr}
-                         for r, reason, wr in data["rows"]]}
+        """失败明细：lib=""或"all" = 聚合全部库；total=失败条数（不是正常数）。
+
+        每行带 detail（该文件最近的日志摘录，可点击展开看具体报错）。
+        """
+        entries = store.library_entries()
+        if lib in ("", "all"):
+            cfgs = entries
+        else:
+            cfgs = [c for c in entries if c["name"] == lib]
+        if not cfgs:
+            return {"total": 0, "healthy": 0, "multi": False, "rows": [],
+                    "error": "库不存在：%s" % lib}
+        tail = self._log_tail()
+        rows = []
+        healthy = 0
+        for cfg in cfgs:
+            data = store.file_index_rows_for(cfg)
+            healthy += data["total"]
+            for rel, reason, wr in data["rows"]:
+                rows.append({
+                    "lib": cfg["name"], "rel": rel, "reason": reason,
+                    "will_retry": bool(wr),
+                    "detail": self._log_snippet_for(rel, tail),
+                })
+        rows.sort(key=lambda r: (r["lib"], r["rel"]))
+        return {"total": len(rows), "healthy": healthy, "multi": len(cfgs) > 1,
+                "rows": rows, "error": None}
 
     def wemm_status(self, lib):
         cfg = next((c for c in store.library_entries() if c["name"] == lib), None)
         if cfg is None:
             return {"exists": False, "total_pages": 0, "rows": [],
                     "error": "库不存在：%s" % lib}
-        return store.wemm_status_for(cfg)
+        data = store.wemm_status_for(cfg)
+        # store 层行是元组（Flet/widgets 共用契约）；guiweb 前端按对象字段消费，
+        # 必须在这里转对象，否则文件名/页数渲染成空、failed 恒 falsy（全"页库就绪"）。
+        rows = [{"lib": cfg["name"], "rel": r, "pages": p,
+                 "failed": bool(f), "reason": rs}
+                for r, p, f, rs in data["rows"]]
+        return {"exists": data["exists"], "total_pages": data["total_pages"],
+                "rows": rows, "error": None}
 
     def wemm_backend_state(self):
         backend, url = store.wemm_backend_state()

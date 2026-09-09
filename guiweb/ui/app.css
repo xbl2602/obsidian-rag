@@ -1088,3 +1088,17 @@ body.mock{padding-top:30px}
 }
 .t-caret.open{transform:rotate(90deg);color:var(--body)}
 .t-caret.none{visibility:hidden}
+
+/* ---- 诊断页失败明细 / WEMM 明细：行展开详情 ---- */
+.libchip{display:inline-block;vertical-align:middle;font-size:10.5px;line-height:1;padding:3px 7px;border-radius:999px;background:var(--s2);border:1px solid var(--hair-strong);color:var(--sec);margin-right:6px;white-space:nowrap}
+.frow,.wrow{cursor:pointer}
+.frow:hover td,.wrow:hover td{background:var(--s1)}
+.fd-hint{font-size:10px;color:var(--ph);margin-left:4px}
+tr.fd td,tr.wd td{background:var(--s1);border-top:0}
+tr.fd td{padding:10px 16px 12px}
+.fd-line{font-size:12.5px;line-height:1.7;color:var(--sec);margin-bottom:2px}
+.fd-log{margin:6px 0;padding:8px 10px;font-size:11px;line-height:1.5;color:var(--warn);background:rgba(0,0,0,0.35);border:1px solid var(--hair-strong);border-radius:8px;white-space:pre-wrap;word-break:break-all;max-height:150px;overflow:auto}
+tr.fd .btn,tr.wd .btn{margin-top:6px}
+.fd-sec{margin:8px 0 2px;font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--sec);text-transform:none}
+.fd-why{color:var(--body)}
+.fd-fix{color:var(--sec)}

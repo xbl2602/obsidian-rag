@@ -277,6 +277,12 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
 
     for _fi, fpath in enumerate(files, 1):
         rel = str(fpath.relative_to(vault)).replace("\\", "/")
+        # 只认 PDF：collect_md_files 在"显式勾选 in"时会穿透扩展名白名单（文字索引
+        # 语义：点名要某文件即纳入，不论格式），WEMM 不能渲染 md/docx，必须在此硬筛，
+        # 否则被勾选的 md 会进 current_wemm_rels → 每次 pymupdf.open 失败 → 反复记
+        # 终态重试。筛掉的非 PDF 不在 current 集合里，结尾裁剪会连向量一起清掉旧残留。
+        if fpath.suffix.lower() != ".pdf":
+            continue
         # Agent 门禁冻结（红线6/7）：未授权格式零渲染零编码零 I/O
         if agent_allowed is not None and "pdf" not in agent_allowed:
             if meta.get(rel) is not None:

@@ -267,25 +267,31 @@
     preview.running = false; preview.done = true;
     var ext = preview.path.split('.').pop().toLowerCase();
     preview.result = {
-      ok: true, error: null,
+      ok: true, error: null, reason: '',
+      route: preview.backend === 'mineru-cloud' ? 'ocr:mineru-cloud' : 'local',
+      cached: false, elapsed: 5,
       markdown: '# ' + preview.path.split('\\').pop().split('/').pop() + '\n\n> 试验台隔离缓存产物 · 未写入正式索引\n\n'
         + '## 一、页面结构\n\n本文件为 ' + ext.toUpperCase() + ' 格式，经 '
         + (preview.backend === 'mineru-cloud' ? 'MinerU 云端 vlm' : '本地直提') + ' 通道提取。\n\n'
         + '| 区块 | 说明 |\n|---|---|\n| 标题层级 | 按字号映射 h1-h4 |\n| 表格 | 还原为 Markdown 表 |\n| 公式 | 转写为 LaTeX |\n\n'
         + '## 二、正文示例\n\n扫描件页面经视觉模型认字后按阅读顺序重组，`代码片段` 与 **重点** 保留原语义。此结果仅用于评估提取质量。',
+      chars: 0,
       rendered_html: '<h2>页面结构</h2><p>本文件经 <b>' + (preview.backend === 'mineru-cloud' ? 'MinerU 云端 vlm' : '本地直提')
         + '</b> 通道提取，标题按字号映射，表格还原为结构化行。</p><table><thead><tr><th>区块</th><th>说明</th></tr></thead><tbody>'
         + '<tr><td>标题层级</td><td>按字号映射 h1-h4</td></tr><tr><td>表格</td><td>还原为 Markdown 表</td></tr>'
         + '<tr><td>公式</td><td>转写为 LaTeX</td></tr></tbody></table><p>扫描件页面经视觉模型认字后按阅读顺序重组，<code>代码片段</code> 与 <b>重点</b> 保留原语义。此结果仅用于评估提取质量。</p>'
     };
+    preview.result.chars = preview.result.markdown.length;
     pushLog('试验台提取完成 · ' + preview.path + ' · ' + (preview.backend || 'global') + ' · 隔离缓存');
     previewEmit();
   }
 
   /* ---------- 失败明细 ---------- */
   var FAILS = [
-    { lib: '论文阅读', rel: 'E:\\reading\\papers\\API 限流与重试实践.pdf', reason: 'extract-failed', will_retry: true },
-    { lib: '论文阅读', rel: 'E:\\reading\\papers\\Transformer 原论文.pdf', reason: 'scanned', will_retry: true },
+    { lib: '论文阅读', rel: 'E:\\reading\\papers\\API 限流与重试实践.pdf', reason: 'extract-failed', will_retry: true,
+      detail: ['[t] MinerU 云端 OCR 失败：HTTP 429 限流，等待 Retry-After 后重试', '[t] 提取失败（extract-failed），记入终态待重试：API 限流与重试实践.pdf'] },
+    { lib: '论文阅读', rel: 'E:\\reading\\papers\\Transformer 原论文.pdf', reason: 'scanned', will_retry: true,
+      detail: ['[t] PDF 含图片页，当前未启用云端 OCR 后端，已整本跳过：Transformer 原论文.pdf'] },
     { lib: '论文阅读', rel: 'E:\\reading\\papers\\强化学习导论.pdf', reason: 'scanned', will_retry: true },
     { lib: '技术笔记', rel: 'D:\\work\\docs\\损坏的存档.docx', reason: 'unreadable', will_retry: false },
     { lib: '技术笔记', rel: 'Daily\\2026-05-03.md', reason: 'empty', will_retry: false },
@@ -604,20 +610,23 @@
     },
 
     failures: function (lib) {
-      var rows = FAILS.filter(function (f) { return !lib || f.lib === lib; });
-      return Promise.resolve({ total: rows.length, rows: rows });
+      var rows = FAILS.filter(function (f) { return !lib || f.lib === lib; })
+        .map(function (f) { return { lib: f.lib, rel: f.rel, reason: f.reason,
+          will_retry: !!f.will_retry, detail: f.detail || [] }; });
+      return Promise.resolve({ total: rows.length, healthy: 0, multi: !lib,
+        rows: rows, error: null });
     },
 
     wemm_status: function (lib) {
       var rows = [];
       var pdfsOf = G.nodes.filter(function (n) { return n.type === 'pdf' && (!lib || n.lib === lib); });
       pdfsOf.forEach(function (p) {
-        if (p.pipeline.wemm === 'done') rows.push({ rel: p.rel, pages: p.pages, failed: false, reason: null });
-        else if (p.pipeline.mineru === 'failed') rows.push({ rel: p.rel, pages: null, failed: true, reason: p.fail_reason || 'OCR 失败' });
+        if (p.pipeline.wemm === 'done') rows.push({ lib: p.lib, rel: p.rel, pages: p.pages, failed: false, reason: null });
+        else if (p.pipeline.mineru === 'failed') rows.push({ lib: p.lib, rel: p.rel, pages: null, failed: true, reason: p.fail_reason || 'OCR 失败' });
       });
       return delay(200).then(function () {
         var tp = 0; rows.forEach(function (r) { tp += r.pages || 0; });
-        return { exists: rows.length > 0, total_pages: tp, rows: rows };
+        return { exists: rows.length > 0, total_pages: tp, rows: rows, error: null };
       });
     },
 

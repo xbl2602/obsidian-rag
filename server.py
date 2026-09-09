@@ -34,7 +34,7 @@ from retriever import release_reranker
 
 from index import (HEARTBEAT_TIMEOUT, LockBusyError, collect_md_files,
                    index_library, kb_stale, load_meta, log, progress_text,
-                   read_progress, resolve_note_relations)
+                   prune_unreferenced_data, read_progress, resolve_note_relations)
 from library import (effective_config, list_summary, load_registry, meta_path,
                      norm_sel_path, resolve_entries, resolve_selection,
                      set_config, set_selection)
@@ -143,18 +143,38 @@ def _start_background_index(libs, incremental=True):
 
 
 def _run_index(libs, incremental):
-    """后台线程体：逐库跑索引 + 重建 BM25 缓存；单库失败不阻断其他库。"""
+    """后台线程体：逐库跑索引 + 重建 BM25 缓存；单库失败不阻断其他库。
+
+    整轮全部成功后才做全局回收（prune_unreferenced_data）：任何一库失败说明
+    meta 可能不完整（在途/半截），宁可不回收也不误删仍在用的缓存与集合。
+    """
     _touch_gpu_activity()
-    for lib in libs:
+    had_error = False
+    try:
+        for lib in libs:
+            try:
+                index_library(lib, incremental=incremental,
+                              agent_allowed=lib.get("_agent_allowed"))
+                reset_bm25_index()
+                log(f"后台索引完成：{lib['name']}，BM25 缓存已重建")
+            except LockBusyError as e:
+                had_error = True
+                log(f"后台索引因锁繁忙放弃（{lib['name']}）：{e}")
+            except Exception as e:
+                had_error = True
+                log(f"后台索引失败（{lib['name']}）：{e}")
+    finally:
+        if not had_error:
+            try:
+                prune_unreferenced_data(log=log)
+            except Exception as e:
+                log(f"全局回收失败（忽略）：{e}")
+        # 整轮结束用完即卸（问题47）：长驻 MCP 进程更要保证不留显存占用
         try:
-            index_library(lib, incremental=incremental,
-                          agent_allowed=lib.get("_agent_allowed"))
-            reset_bm25_index()
-            log(f"后台索引完成：{lib['name']}，BM25 缓存已重建")
-        except LockBusyError as e:
-            log(f"后台索引因锁繁忙放弃（{lib['name']}）：{e}")
-        except Exception as e:
-            log(f"后台索引失败（{lib['name']}）：{e}")
+            from wemm_indexer import release_server_after_run
+            release_server_after_run(log=log)
+        except Exception:
+            pass
 
 
 def _chroma_is_empty():

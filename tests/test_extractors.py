@@ -1779,7 +1779,7 @@ def test_static_single_source_of_truth():
     assert "_skipped(" in src_stale and "_skipped(" in src_core, \
         "排除口径必须收拢到单点谓词 _skipped"
     assert core_before_tbd > -1
-    assert index.META_VERSION == 9, "v9：多格式提取+字节指纹"
+    assert index.META_VERSION == 11, "v11：MinerU sidecar 双轨清洗（官方标注精确删页眉/页脚/页码）"
     assert ex.TEXT_EXTS == {"md", "txt"}
     assert ex.BINARY_EXTS == {"pdf", "docx"}
     assert ex.SUPPORTED_EXTS == ex.TEXT_EXTS | ex.BINARY_EXTS
@@ -2185,6 +2185,60 @@ def test_mineru_pending_record_resume_after_interrupt():
         finally:
             ex._mineru_poll_result = saved_poll
             ex._sleep = saved_sleep
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+
+
+def test_mineru_sidecar_persisted_on_poll_result():
+    """问题48附记：轮询 done 且 zip 含 content_list.json（v1）时，官方块标注
+    落 sidecar `<md5>.v{EV}.mineru.json`；正文照常返回；不带 key / 无 content_list
+    不写（老文件回退启发式）。"""
+    with tempfile.TemporaryDirectory() as td:
+        ex.set_cache_dir(Path(td) / "c")
+
+        class _R:
+            """下载 zip 的替身：结果含 main.md + `id_content_list.json`。"""
+
+            def get(self, url, **kw):
+                if url.endswith("/extract-results/batch/b9"):
+                    return _FakeResp({"code": 0, "data": {"extract_result": [
+                        {"state": "done", "full_zip_url": "http://cdn/r.zip"}]}}, 200)
+                if url.endswith("r.zip"):
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w") as zf:
+                        zf.writestr("m/main.md", "# 标题\n正文\nUSM Header\n")
+                        zf.writestr("id_content_list.json", json.dumps([
+                            {"type": "text", "text": "正文", "page_idx": 0},
+                            {"type": "header", "text": "USM Header", "page_idx": 0},
+                            {"type": "page_number", "text": "42", "page_idx": 0}]))
+                    return _FakeResp(content=buf.getvalue(), status=200)
+                return _FakeResp({}, 404)
+
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = _R()
+        try:
+            headers = {"Authorization": "Bearer t"}
+            md, why = ex._mineru_poll_result("b9", headers,
+                                             time.monotonic() + 30, _R(), key="sidecar-md5")
+            assert why == "done" and "正文" in md, (why, md)
+            sp = Path(td) / "c" / f"sidecar-md5.v{ex.EXTRACT_VERSION}.mineru.json"
+            assert sp.exists(), "带 key 且 zip 含 content_list 必须落 sidecar"
+            data = json.loads(sp.read_text(encoding="utf-8"))
+            assert data[1]["type"] == "header" and data[1]["text"] == "USM Header"
+            assert ex.read_cache_sidecar("sidecar-md5") == data, "读回同一份"
+            # 不带 key → 不写
+            ex._mineru_poll_result("b9", headers, time.monotonic() + 30, _R())
+            sidecars = list((Path(td) / "c").glob("*.mineru.json"))
+            assert len(sidecars) == 1, "不带 key 不得写 sidecar"
+            # 无 sidecar / 损坏 → read 返回 None，绝不抛
+            assert ex.read_cache_sidecar("nope") is None
+            (Path(td) / "c" / f"bad.v{ex.EXTRACT_VERSION}.mineru.json").write_text(
+                "{ not json", encoding="utf-8")
+            assert ex.read_cache_sidecar("bad") is None
+        finally:
             if saved_req is not None:
                 sys.modules["requests"] = saved_req
             else:

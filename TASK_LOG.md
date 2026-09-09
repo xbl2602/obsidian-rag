@@ -2074,3 +2074,52 @@ Roadmap 状态）。
   十件套其余 8 套全绿；verify_export_import 与本次路径零交集且需动真库+加载真实模型，
   本次未跑（曾因其"中途零输出、最后才汇总"被误认卡死而中止，中止本身无残留）。
 
+## 问题50：guiweb 诊断页——失败明细"全部库=0"/标题计数错，WEMM 明细空列（2026-09-08）
+
+**症状（用户报障）**：诊断页 ①失败明细选"全部库"恒 0 条（点进每个库其实都有）；
+标题显示 vault "共176条"却只列 2 行；错误行点不开、看不到具体报错。
+②WEMM 页库明细选了 vault 只出一排空行——没文件名没页数、状态全是"页库就绪"、
+点不了。
+**根因（三个独立的显示层 bug）**：
+1. `Bridge.failures("")` 把空串当库名 `next(name=="")` → 直接返回"库不存在"→ 0 条
+   （应聚合全部库）。
+2. `store.file_index_rows_for` 的 `total`=正常索引文件数、`rows`=失败行——bridge
+   原样转发，前端拿它当"失败条数"标题：vault 176 是正常数，真失败其实就 2 行，
+   "共176条"纯属标签语义错位。
+3. `store.wemm_status_for` 行是元组（Flet/widgets 共用契约，不能改 store），guiweb
+   bridge 却原样转发不给前端做对象化——前端按 `r.rel/r.pages` 取字段恒 undefined，
+   `r.failed` 恒 falsy → 每行空文件/空页数/一律"页库就绪"；且无任何点击入口。
+   另：终态条目本身只存 reason 无自由文本错误，"更具体报错"只在索引日志里。
+**修复（只动 guiweb 桥与前端，store 元组契约保持供 Flet）**：
+- bridge：`failures(lib)` 支持 ""/"all" 聚合全部库，total=失败条数、healthy=正常数、
+  multi 标记、每行 {lib,rel,reason,will_retry,detail}——detail 用 `_log_snippet_for`
+  从 GUI 日志尾挑最近提到该文件的 ≤3 行（真报错出处）；
+  `wemm_status` 把元组转 {lib,rel,pages,failed,reason} 对象。
+- app.js：标题改"共 X 条失败 · 正常 Y 份（全部库）"；失败/WEMM 行点击展开详情行
+  （库 chip、处置建议、will_retry 解释、日志摘录 pre、打开源文件按钮）；多库聚合时
+  文件名前显示库 chip。
+- mock.js / contracts.md 同步新形状；app.css 补 libchip/fd-* 样式。
+**回归**：test_guiweb 89→96（新增 failures 聚合/计数语义 + wemm 元组→对象两条，
+store 层函数需 patch `store.*`——bridge 是 `import store` 路径注入加载，patch
+`gui.store.*` 会打到第二份副本上不生效）；audit 44、gui_store 0 failures。
+**教训**：两个 GUI 共用一个 store 层时，"桥→前端"的整形必须各写各的，别把 Flet
+能懂的元组直接喂给 JS；跨包 patch 注意模块加载方式（sys.path 注入的顶层名 ≠
+包名路径，会变两份副本）。
+
+**问题50 续（用户追问后补，2026-09-08）**：
+- **WEMM 为何出现 md**：wemm_indexer 本就只收 pdf（collect 传 ["pdf"]），但
+  collect_md_files 的"显式勾选 in"会穿透扩展名白名单（文字索引设计：点名要
+  某文件即纳入）——Obsidian Vault 的 selection_in 含 00-Inbox/90-Archive/
+  AGENTS.md，被勾选目录里的 md 因此混进 WEMM 当前集合并反复尝试渲染失败。
+  修复：wemm_indexer 循环开头对非 `.pdf` 硬 continue（不进 current 集合 →
+  结尾裁剪连 meta 条目与页向量一起清掉旧残留）；gui/store.wemm_status_for
+  显示层只列 .pdf 兜底（历史残留即时隐藏，下次 WEMM 索引自动物理清除）。
+  已实测：真库 wemm_meta 里 AGENTS.md 等 md 条目是旧版混入的残留。
+- **失败明细详情语义**：用户要的不是贴日志，而是"白话为什么失败 + 怎么修怎么
+  避免下次"；日志降级为一个小"复制日志"按钮（navigator.clipboard，点一下
+  复制该文件最近日志摘录）。前端新增 REASON_WHY/REASON_FIX 故障树文案
+  （scanned/unreadable/extract-failed/empty/tbd/unknown 各配"为什么"与
+  "做法"），行展开显示：为什么没进来 / 怎么处理 / 是否自动重试 / 按钮组。
+- 回归：test_guiweb 96、test_gui_store 0 failures（wemm 测试加 md 条目滤除
+  断言）、wemm_indexer 60、node --check 双绿。
+

@@ -173,6 +173,93 @@ def test_bare_wikilink_kept():
         assert got == want, f"{src!r} -> {got!r}，期望 {want!r}"
 
 
+# ---------- 问题48（第一档）：提取噪声清洗 ----------
+
+def test_page_number_lines_stripped():
+    doc = "正文第一行\n第 12 页\n正文第二行\nPage 5\n- 13 -\n42\n结尾\n"
+    got = index.strip_page_number_lines(doc)
+    assert "第 12 页" not in got and "Page 5" not in got and "- 13 -" not in got
+    assert "42" in got, "单个孤立裸数字行可能是正文（年份/编号），必须保留"
+    assert "正文第一行" in got and "结尾" in got
+    # ≥2 个互不相同的裸数字行 = 分页信号，全删
+    multi = "a\n12\nb\n13\nc\n"
+    got2 = index.strip_page_number_lines(multi)
+    assert "12" not in got2.splitlines() and "13" not in got2.splitlines()
+    # 列表序号与含数字正文不受影响
+    assert "1. 试验步骤" in index.strip_page_number_lines("1. 试验步骤\n2. 记录数据\n")
+    assert "2024年总结" in index.strip_page_number_lines("2024年总结\n正文\n")
+
+
+def test_boilerplate_repeated_lines():
+    header = "USM Aerospace Exchange Report"
+    body = "\n\n".join(f"{header}\n\n第{i}章内容在此" for i in range(1, 6))
+    got = index.strip_boilerplate_lines(body)
+    assert header not in got, "重复 5 次的页眉必须全删"
+    assert "第3章内容在此" in got
+    # 只出现 2 次（目录+正文）的不删
+    two = "3.2 试验结果\n\n一些内容\n\n3.2 试验结果\n\n另一些内容\n"
+    assert "3.2 试验结果" in index.strip_boilerplate_lines(two)
+    # 保护边界：重复标题/表格行/列表项/围栏内容/短行一律不动
+    prot = ("## 结论\n\n内容一\n\n## 结论\n\n内容二\n\n## 结论\n\n内容三\n\n"
+            "| 型号 | 推力 |\n| 甲 | 1 |\n\n| 型号 | 推力 |\n| 乙 | 2 |\n\n"
+            "| 型号 | 推力 |\n| 丙 | 3 |\n")
+    gotp = index.strip_boilerplate_lines(prot)
+    assert gotp.count("## 结论") == 3, "标题行删了会连带丢掉切块标题路径"
+    assert gotp.count("| 型号 | 推力 |") == 3, "表格行不动，宁可留噪声不拆表"
+    lst = "- 待办事项\n\n正文\n\n- 待办事项\n\n正文\n\n- 待办事项\n\n正文\n"
+    assert "- 待办事项" in index.strip_boilerplate_lines(lst)
+    fence = "```\nimport os\n```\n\n文字\n\n```\nimport os\n```\n\n文字\n\n```\nimport os\n```\n"
+    assert "import os" in index.strip_boilerplate_lines(fence)
+    short = "结论\n\n甲\n\n结论\n\n乙\n\n结论\n\n丙\n"
+    assert "结论" in index.strip_boilerplate_lines(short), "短行（<4字）不受影响"
+
+
+def test_dead_image_refs_stripped():
+    got = index.strip_dead_image_refs("见下图\n\n![](images/fig1.jpg)\n\n后续文字\n")
+    assert "images/fig1.jpg" not in got and "见下图" in got and "后续文字" in got
+    assert index.strip_dead_image_refs("![发动机结构图](images/fig1.jpg)") == "发动机结构图"
+    assert index.strip_dead_image_refs("![](images/fig1.jpg)") == ""
+    keep = "![logo](http://example.com/a.png)"
+    assert index.strip_dead_image_refs(keep) == keep, "远端活图不动"
+    assert index.strip_dead_image_refs('文字<img src="a.jpg" alt="剖面图">后续') == "文字剖面图后续"
+    assert index.strip_dead_image_refs('<img src="a.jpg">') == ""
+
+
+def test_cleaning_pipeline_no_cascade():
+    """图链先剥：避免重复的图片路径行被误判成样板连累正文。"""
+    doc = "![示意图](images/a.jpg)\n\n![示意图](images/a.jpg)\n\n![示意图](images/a.jpg)\n"
+    body = index.strip_dead_image_refs(doc)
+    body = index.strip_boilerplate_lines(body)
+    assert "images/" not in body
+
+
+# ---------- 问题48附记：MinerU sidecar 官方标注清洗（第二档治本） ----------
+
+def test_sidecar_annotated_noise_stripped():
+    """按官方块标注精确删页眉/页脚/页码（整行逐字匹配），正文/表格/标题不动。"""
+    sidecar = [
+        {"type": "header", "text": "USM Aerospace Exchange Report", "page_idx": 0},
+        {"type": "page_number", "text": "Page 3", "page_idx": 0},
+        {"type": "text", "text": "The measured thrust values are listed below.", "page_idx": 0},
+        {"type": "table", "table_body": "<table>...</table>", "page_idx": 0},
+    ]
+    body = ("USM Aerospace Exchange Report\n\nThe measured thrust values are "
+            "listed below.\n\nPage 3\n")
+    got = index.strip_sidecar_noise(body, sidecar)
+    assert "USM Aerospace Exchange Report" not in got
+    assert "Page 3" not in got
+    assert "measured thrust" in got
+    # 标题行即使文本撞页眉也保留（md 结构，标题路径进切块向量）
+    body2 = "# USM Aerospace Exchange Report\n\n正文\n\nUSM Aerospace Exchange Report\n"
+    got2 = index.strip_sidecar_noise(body2, sidecar)
+    assert got2.startswith("# USM Aerospace Exchange Report")
+    assert got2.count("USM Aerospace Exchange Report") == 1, got2
+    # 非 list / 空 / 无噪声类型 → 原样返回
+    assert index.strip_sidecar_noise(body, None) == body
+    assert index.strip_sidecar_noise(body, []) == body
+    assert index.strip_sidecar_noise(body, [{"type": "text", "text": "正文"}]) == body
+
+
 # ---------- 问题28：wikilink 目标抽取（双链关系图，与 clean_wikilinks 取值方向相反）----------
 
 def test_extract_wikilink_targets():
