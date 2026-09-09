@@ -269,14 +269,14 @@ def wemm_status_for(cfg):
     for rel, info in meta.items():
         if rel == "_version" or not isinstance(info, dict):
             continue
-        if info.get("tbd") or info.get("xfail"):
-            rows.append((rel, None, True, info.get("reason") or "渲染失败"))
-        else:
-            pages = int(info.get("pages", 0))
-            total += pages
-            rows.append((rel, pages, False, ""))
+        if rel.lower().endswith(".pdf"):
+            if info.get("tbd") or info.get("xfail"):
+                rows.append((rel, None, True, info.get("reason") or "渲染失败"))
+            else:
+                pages = int(info.get("pages", 0))
+                total += pages
+                rows.append((rel, pages, False, ""))
     rows.sort(key=lambda r: r[0])
-    # meta 文件不存在时 load_wemm_meta 返回空 dict（不抛异常）：无条目 = 还没建页索引
     return {"exists": bool(rows), "total_pages": total, "rows": rows}
 
 

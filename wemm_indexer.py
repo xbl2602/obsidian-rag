@@ -250,6 +250,8 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
     # 看图服务懒拉起（问题41）：首个真正需要渲染的文件才拉；全部命中快速路径
     # （无变更）时零拉起零开销。拉不起时该文件记失败终态，下轮自动重试。
     # 单轮单次（问题46）：同一次 index_wemm_library 内只尝试拉起一次——失败后
+    # 本轮剩余文件直接记终态，不再重复拉起+空等（此前每文件一次 ensure，
+    # 服务起不来时 N 个文件 = N 次全长等待，索引长时间假死）。
     server_state = {"ready": False, "tried": False}
 
     def _ensure_server_lazy():

@@ -570,6 +570,106 @@ def test_lazy_ensure_failure_single_flight_per_run():
         gpu_arbiter.ensure_server = orig
 
 
+def test_progress_callback_counts_and_single_arg_compat():
+    """progress 回调收到 (msg, done, total)；单参数旧回调仍兼容（问题47）。"""
+    with _IsoEnv() as iso:
+        for name in ("a.pdf", "b.pdf"):
+            _make_text_pdf(iso.vault / name, pages=1)
+        cfg = _default_cfg(iso.vault)
+        enc = _FakeImageEncoder()
+        got = []
+        _run(iso, cfg, enc, progress=lambda msg, done, total: got.append((done, total)))
+        ok("progress: 逐文件收到 done/total", got == [(1, 2), (2, 2)], str(got))
+        iso.cleanup()
+    with _IsoEnv() as iso:
+        _make_text_pdf(iso.vault / "c.pdf", pages=1)
+        cfg = _default_cfg(iso.vault)
+        enc = _FakeImageEncoder()
+        msgs = []
+        _run(iso, cfg, enc, progress=lambda msg: msgs.append(msg))
+        ok("progress: 单参数旧回调不炸且收到消息", len(msgs) == 1, str(msgs))
+        iso.cleanup()
+
+
+def test_release_after_run_evicts_and_never_raises():
+    """整轮收尾 release：开→调 evict 传配置地址；异常折叠 False；关→零调用（问题47）。"""
+    import config as cfgmod
+    calls = {}
+    orig = gpu_arbiter.evict_wemm
+    saved_backend = cfgmod.CFG.get("wemm_backend")
+
+    def fake_evict(url=None, **kw):
+        calls["url"] = url
+        if calls.get("boom"):
+            raise RuntimeError("net down")
+        return True
+
+    gpu_arbiter.evict_wemm = fake_evict
+    try:
+        cfgmod.CFG["wemm_backend"] = "on"
+        ok("release: 开→True", wi.release_server_after_run() is True)
+        ok("release: 地址取自配置",
+           calls.get("url") == cfgmod.CFG.get("wemm_url"), str(calls))
+        calls["boom"] = True
+        ok("release: 异常折叠 False", wi.release_server_after_run() is False)
+        calls.pop("boom", None)
+        before = len(calls)
+        cfgmod.CFG["wemm_backend"] = "off"
+        ok("release: 关→False 且零调用",
+           wi.release_server_after_run() is False and len(calls) == before,
+           str(calls))
+    finally:
+        gpu_arbiter.evict_wemm = orig
+        if saved_backend is None:
+            cfgmod.CFG.pop("wemm_backend", None)
+        else:
+            cfgmod.CFG["wemm_backend"] = saved_backend
+
+
+def test_wemm_auto_phase_reports_wemm_progress_then_done():
+    """index 侧：页同步阶段上报 phase=wemm（running），收尾回到 done（问题47）。"""
+    import config as cfgmod
+    seen = []
+    orig_wemm = wi.index_wemm_library
+    orig_release = index.release_model
+    saved_backend = cfgmod.CFG.get("wemm_backend")
+
+    def fake_wemm(cfg, backend=True, full=False, agent_allowed=None,
+                  progress=None, **kw):
+        assert progress is not None  # _wemm_auto_phase 必须透传回调
+        progress("页库同步开始…", None, None)
+        progress("WEMM 页索引 2 页（doc.pdf）", 1, 1)
+        return {"pages": 2, "files": 1}
+
+    wi.index_wemm_library = fake_wemm
+    index.release_model = lambda: None
+    cfgmod.CFG["wemm_backend"] = "on"
+    try:
+        with patch.object(index, "update_progress",
+                          lambda **kw: seen.append(kw)), \
+             patch("retriever.release_reranker", lambda: None):
+            lib = {"name": "L", "path": "X", "collection": "kb_L",
+                   "exclude_dirs": [], "exclude_files": set(),
+                   "exclude_patterns": (), "extensions": ["md"]}
+            index._wemm_auto_phase(lib, full=False)
+            phases = [s.get("phase") for s in seen]
+            ok("auto-progress: 经过 wemm 相位", "wemm" in phases, str(phases))
+            ok("auto-progress: 收尾回到 done",
+               seen and seen[-1].get("phase") == "done"
+               and seen[-1].get("running") is False, str(seen[-1:]))
+            wemm_calls = [s for s in seen if s.get("phase") == "wemm"]
+            ok("auto-progress: 文件计数透传",
+               any(c.get("files_done") == 1 and c.get("files_total") == 1
+                   for c in wemm_calls), str(wemm_calls))
+    finally:
+        wi.index_wemm_library = orig_wemm
+        index.release_model = orig_release
+        if saved_backend is None:
+            cfgmod.CFG.pop("wemm_backend", None)
+        else:
+            cfgmod.CFG["wemm_backend"] = saved_backend
+
+
 # ---------- 运行器 ----------
 
 def _run_all():
