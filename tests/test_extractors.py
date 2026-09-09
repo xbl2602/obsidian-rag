@@ -1892,9 +1892,11 @@ def test_all_text_pages_still_local_route():
 
 
 def test_scan_branch_only_mineru_cloud_sends_to_cloud():
-    """扫描分支收拢：只有 mineru-cloud 送云端。none / mineru-local / 文字层语义的
-    local / 未知值一律跳过——封死旧代码「未匹配取值 fall-through 到云端调用」
-    的口子（旧代码对这些值会真的发起云端请求）。"""
+    """扫描分支收拢：只有 mineru-cloud 送云端。none / 文字层语义的 local /
+    未知值一律跳过——封死旧代码「未匹配取值 fall-through 到云端调用」
+    的口子（旧代码对这些值会真的发起云端请求）。
+    R3b：mineru-local 移出本表（改走本机服务，见下个用例），此处不再断言它。
+    """
     with tempfile.TemporaryDirectory() as td:
         ex.set_cache_dir(Path(td) / "cache")
 
@@ -1907,7 +1909,7 @@ def test_scan_branch_only_mineru_cloud_sends_to_cloud():
         try:
             p = Path(td) / "scan.pdf"
             _make_scanned_pdf(p)
-            for backend in ("none", "mineru-local", "local", "garbage-value"):
+            for backend in ("none", "local", "garbage-value"):
                 info = ex.extract_preview(p, backend=backend)
                 assert info["md"] is None and info["reason"] == "scanned", (backend, info)
         finally:
@@ -1915,6 +1917,162 @@ def test_scan_branch_only_mineru_cloud_sends_to_cloud():
                 sys.modules["requests"] = saved_req
             else:
                 sys.modules.pop("requests", None)
+            ex.set_cache_dir(None)
+
+
+def test_scan_branch_mineru_local_deferred_without_tool_env():
+    """R3b：pdf_scan_backend=mineru-local 但本机无 mineru tool 环境时，
+    扫描件走「deferred」——本轮跳过、不落终态、不写缓存、不碰云端 requests。
+    （测试环境恒无 tool 环境；并显式复位 URL 缓存，保证在装好环境的机器上
+    跑同样确定性 deferred。）"""
+    import gpu_arbiter
+    with tempfile.TemporaryDirectory() as td:
+        cache = Path(td) / "cache"
+        ex.set_cache_dir(cache)
+        saved_url, ex._MINERU_LOCAL_URL = ex._MINERU_LOCAL_URL, None
+        orig_resolve = gpu_arbiter._resolve_mineru_python
+        gpu_arbiter._resolve_mineru_python = lambda explicit=None: None
+
+        class _NoNet:
+            def __getattr__(self, name):
+                raise AssertionError(f"本地路径绝不能碰云端 requests .{name}")
+
+        saved_req = sys.modules.get("requests")
+        sys.modules["requests"] = _NoNet()
+        try:
+            p = Path(td) / "scan.pdf"
+            _make_scanned_pdf(p)
+            info = ex.extract_preview(p, backend="mineru-local")
+            assert info["md"] is None and info["reason"] == "deferred", info
+            assert info["route"] == "-", info  # 无缓存写入，无路由可言
+            assert list(cache.glob("*.md")) == [], "deferred 绝不能写缓存"
+        finally:
+            if saved_req is not None:
+                sys.modules["requests"] = saved_req
+            else:
+                sys.modules.pop("requests", None)
+            gpu_arbiter._resolve_mineru_python = orig_resolve
+            ex._MINERU_LOCAL_URL = saved_url
+            ex.set_cache_dir(None)
+
+
+def test_scan_branch_mineru_local_routing_with_fake_service():
+    """R3b：本地服务可调用时（注入假 _mineru_local_extract），扫描分支路由：
+    成功→正文+ocr:mineru-local 缓存键；parse-failed→extract-failed；
+    too-many-pages→scanned（超限不重试，由诊断页提示拆分）。"""
+    with tempfile.TemporaryDirectory() as td:
+        cache = Path(td) / "cache"
+        ex.set_cache_dir(cache)
+        orig = ex._mineru_local_extract
+        try:
+            p = Path(td) / "scan.pdf"
+            _make_scanned_pdf(p)
+            key = hashlib.md5(p.read_bytes()).hexdigest()
+            want = cache / f"{key}.ocr-mineru-local.v{ex.EXTRACT_VERSION}.md"
+
+            ex._mineru_local_extract = lambda *a, **k: ("本地认字正文", "")
+            md, reason, route, cached = ex._extract_full(p, backend="mineru-local")
+            assert reason == "" and md == "本地认字正文" and route == "ocr:mineru-local", \
+                (reason, route)
+            assert want.exists(), "本地成功必须按 ocr:mineru-local 路由写缓存"
+            md2, _, route2, cached2 = ex._extract_full(p, backend="mineru-local")
+            assert cached2 is True and md2 == md and route2 == "ocr:mineru-local"
+
+            for f in cache.glob("*.md"):
+                f.unlink()
+            ex._mineru_local_extract = lambda *a, **k: (None, "extract-failed")
+            md, reason, route, cached = ex._extract_full(p, backend="mineru-local")
+            assert md is None and reason == "extract-failed", (md, reason)
+            assert list(cache.glob("*.md")) == [], "失败不写缓存"
+
+            ex._mineru_local_extract = lambda *a, **k: (None, "too-many-pages: 500 页超过上限")
+            md, reason, route, cached = ex._extract_full(p, backend="mineru-local")
+            assert md is None and reason == "scanned", (md, reason)
+        finally:
+            ex._mineru_local_extract = orig
+            ex.set_cache_dir(None)
+
+
+def test_current_backend_sig_mineru_local_readiness_bit():
+    """R3b：mineru-local 的 xsrc 签名带 tool 环境就绪位——后装环境签名翻转，
+    旧终态自动重试（checker B3 闭环）。纯路径探测，无进程/网络开销。"""
+    import gpu_arbiter
+    saved = cfgmod.CFG.get("pdf_scan_backend")
+    orig_resolve = gpu_arbiter._resolve_mineru_python
+    try:
+        cfgmod.CFG["pdf_scan_backend"] = "mineru-local"
+        gpu_arbiter._resolve_mineru_python = lambda explicit=None: None
+        assert ex.current_backend_sig() == "mineru-local:noready"
+        gpu_arbiter._resolve_mineru_python = lambda explicit=None: "C:/fake/python.exe"
+        assert ex.current_backend_sig() == "mineru-local:ready"
+    finally:
+        gpu_arbiter._resolve_mineru_python = orig_resolve
+        if saved is None:
+            cfgmod.CFG.pop("pdf_scan_backend", None)
+        else:
+            cfgmod.CFG["pdf_scan_backend"] = saved
+
+
+def test_index_deferred_skip_writes_no_terminal():
+    """R3b index 级：本地服务不可用时扫描件 deferred——整轮不抛异常、不落终态、
+    不动 meta（服务恢复后下轮自然重试）。_IsoEnv 隔离 + 强制无 tool 环境，
+    在任何机器上都确定性 deferred。"""
+    import gpu_arbiter
+    iso = _IsoEnv()
+    saved_scan = cfgmod.CFG.get("pdf_scan_backend")
+    saved_url, ex._MINERU_LOCAL_URL = ex._MINERU_LOCAL_URL, None
+    orig_resolve = gpu_arbiter._resolve_mineru_python
+    gpu_arbiter._resolve_mineru_python = lambda explicit=None: None
+    try:
+        cfgmod.CFG["pdf_scan_backend"] = "mineru-local"
+        _make_scanned_pdf(iso.vault / "scan.pdf")
+        with iso:
+            ex.set_cache_dir(iso.tmp / "ecache")
+            try:
+                _run_index(iso, incremental=False, full=True)
+            finally:
+                ex.set_cache_dir(None)
+        meta = _load_meta(iso)
+        assert "scan.pdf" not in meta, \
+            f"deferred 文件绝不能落任何终态条目（实得 {meta.get('scan.pdf')!r}）"
+    finally:
+        gpu_arbiter._resolve_mineru_python = orig_resolve
+        ex._MINERU_LOCAL_URL = saved_url
+        if saved_scan is None:
+            cfgmod.CFG.pop("pdf_scan_backend", None)
+        else:
+            cfgmod.CFG["pdf_scan_backend"] = saved_scan
+        iso.cleanup()
+
+
+def test_purge_extract_cache_only_current_version():
+    """--fresh-extract 的 purge：只删当前版本的正文 md + sidecar；断点簿记、
+    配额账本、旧版本残留、.tmp、子目录一律不动。返回删除个数。"""
+    with tempfile.TemporaryDirectory() as td:
+        cache = Path(td) / "cache"
+        cache.mkdir()
+        ex.set_cache_dir(cache)
+        try:
+            v = ex.EXTRACT_VERSION
+            cur_md = cache / f"{'a' * 32}.local.v{v}.md"
+            cur_sc = cache / f"{'a' * 32}.v{v}.mineru.json"
+            old_md = cache / f"{'b' * 32}.local.v{v - 1}.md"
+            keep_pending = cache / "mineru_pending.json"
+            keep_quota = cache / "mineru_quota.json"
+            keep_tmp = cache / "zzz.tmp"
+            sub = cache / "sub"
+            sub.mkdir()
+            (sub / f"{'c' * 32}.local.v{v}.md").write_text("x", encoding="utf-8")
+            for p in (cur_md, cur_sc, old_md, keep_pending, keep_quota, keep_tmp):
+                p.write_text("x", encoding="utf-8")
+            n = ex.purge_extract_cache()
+            assert n == 2, f"只应删 2 个当前版本文件（实删 {n}）"
+            assert not cur_md.exists() and not cur_sc.exists()
+            for p in (old_md, keep_pending, keep_quota, keep_tmp):
+                assert p.exists(), f"{p.name} 必须保留"
+            assert (sub / f"{'c' * 32}.local.v{v}.md").exists(), "子目录不动"
+            assert ex.purge_extract_cache() == 0, "幂等：第二次删 0 个"
+        finally:
             ex.set_cache_dir(None)
 
 
@@ -2345,6 +2503,9 @@ def test_classify_extraction_matrix():
             cfgmod.CFG["pdf_scan_backend"] = "none"
             assert ex.classify_extraction(p_mixed) == ("inline", 4, None, None), \
                 "未开云端 = 整本 scanned 快速路径"
+            cfgmod.CFG["pdf_scan_backend"] = "mineru-local"
+            assert ex.classify_extraction(p_mixed) == ("local", 4, True, "ocr:mineru-local"), \
+                "本地服务 = 主线程串行（不进线程池），is_ocr/route 语义同 cloud"
             cfgmod.CFG["pdf_scan_backend"] = "mineru-cloud"
 
             p_text = Path(td) / "t.pdf"

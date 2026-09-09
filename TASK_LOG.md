@@ -2047,6 +2047,7 @@ Roadmap 状态）。
    刷满。改为展开态模型（SEL.expanded，默认仅顶层可见）：行内 ▸ 箭头切换
    （纯前端重渲染，不重新拉数据）；点目录名导航时自动展开其子层；右栏面包屑
    深跳时祖先链自动展开保持可见。无子目录行箭头占位隐藏。
+
 ## 问题46：GUI 增量/全量重建"启动后无响应"——gpu_arbiter ROOT 指错致 WEMM 空等（2026-09-08）
 
 **症状**：GUI 点增量重建后显示启动但进度不动、界面似卡死；再点报"已有任务在运行"/
@@ -2073,6 +2074,134 @@ Roadmap 状态）。
   改状态函数以兼容轮询），test_wemm_indexer +1（3 文件失败只拉起 1 次且都落可重试终态）。
   十件套其余 8 套全绿；verify_export_import 与本次路径零交集且需动真库+加载真实模型，
   本次未跑（曾因其"中途零输出、最后才汇总"被误认卡死而中止，中止本身无残留）。
+
+## 问题47：WEMM 用完即卸 + 页同步进度上报 + 占用显示（2026-09-08）
+
+**动机**：用户拍板——看图模型用完必须立刻卸载、不许后台静默占显存（要"释放显存
+按钮"本身就是设计失误）；且索引时要能分清"真完工"还是"等 MinerU"；界面要常驻
+显存/GPU/CPU/功耗。权限红线：只读计数器（nvidia-smi/系统时间 API/回环 /evict），
+普通用户身份，不提权、不装依赖、不写系统目录，执行前拿用户审批（已批）。
+
+**设计（按用户修正）**：不是每库一卸，而是**整轮全部库完成、没人用了再卸**——
+收尾点在三个多库驱动处（index.py main / server._run_index / wemm_indexer.main，
+finally 调 `release_server_after_run`，自身绝不抛异常；中途被杀由服务端 idle
+守护 5min 自卸兜底）。抢占路径（bge 加载前显存不足调 evict）本就存在，覆盖
+"别的进程需要时及时释放"。
+
+**改动**：
+1. `wemm_indexer.release_server_after_run` 新增 + 三处收尾调用。
+2. 页同步阶段进度上报（文件级，用户拍板）：`_wemm_auto_phase` 经 progress 回调
+   写 `phase="wemm"`（每文件推进，无需停滞宽限），收尾回到 done（此前末库会
+   永远停在 wemm/running）；`index_wemm_library` 回调协议扩展为 (msg, done,
+   total)，单参数旧回调 TypeError 回退兼容。
+3. 前后端 `wemm→页库/页库同步` 映射（Flet PHASE_TEXT/COLOR、guiweb PHASE_NAME；
+   stepper 两端都不进，与 Flet 旧决策一致）。
+4. `store.gpu_stats()`（nvidia-smi，进程内 5s 缓存，fail-open）+
+   `store.cpu_percent()`（ctypes GetSystemTimes 差值，psutil 遵注释不引入）→
+   bridge 快照 `gpu/cpu/wemm_live`（wemm 实况 30s 缓存，防 health 日志刷屏；
+   只读探测绝不拉起）→ guiweb 占用行 + Flet DeviceBar 同步显示。
+   contracts/mock/接线检查同步更新。
+5. 回归：wemm_indexer 60/60、gui_store（+3）、guiweb 63/63、arbiter 37/37，
+   其余 8 套全绿；verify_export_import 与本次零交集（不碰 WEMM/GPU 路径）
+   且动真库，本次未跑。
+**附记（同日真机）**：修完用户仍报"点了显示启动、底下毫无反应、找不到功耗
+行"。查实两条：①功耗行在诊断页，索引页看不见——已在索引页加 `idxSys` 行；
+②真根因是生产版 app.js 从未定义 `window.__push`（只在 mock.js 里有），bridge
+的每秒推送全被 `&&` 守卫静默吞掉，KPI/进度永远停在启动那一刻——只有直接 API
+调用有反应。修复为顶层同语义分发器（与 mock 互覆盖无害）。   回归进
+test_snapshot_sys_fields_contract，guiweb 66/66。
+**附记2（同日）**：用户报增量时闪现"有别的 MCP 在调用"、全量不现。查实并无
+MCP 进程——快照内 busy 与 running 来自两次读盘，5 秒跑完的增量必跨一次翻转，
+拼出撕裂帧。修复：`index_busy(progress)` 单快照复用 + 新增 `index_task_owner`
+四态（ours/starting/foreign/idle），前端门锁改走 task，"启动中"有独立文案，
+   冤枉 MCP 的时代结束。回归：gui_store/guiweb 相关用例全绿。
+
+## 问题47 附记2：勾选与排除打架——谁具体听谁的（2026-09-08，用户拍板）
+
+**症状**：90-Archive 同时躺在 exclude_dirs 与 selection_in 里——保存成功、
+文件有值，但树形永远显示排除（"回退"假象）。根因是旧优先级"排除名单永远
+优先"没有给"点名道姓的纳入"留活路。
+
+**用户拍板的三条语义**（指名道姓 vs 按类匹配）：
+1. 全局规则指名道姓（exclude_dirs 写确切位置）+ 勾同一个位置 = 两道命令打架
+   → 点击当场弹窗（不等保存）：仅本库移除排除并纳入 / 放弃；
+2. 全局规则按类匹配（exclude_files/patterns/格式：凡叫这名的都算）+ 点其中
+   某一份 = 一般规则+个别例外，意图唯一 → 静默放行，不弹窗
+   （AGENT 例：全局按名排除某类文档，点名要其中一份即生效）；
+3. 漏斗改"谁具体听谁的"：最近显式 vs 目录排除按深度（文件点名可穿透继承的
+   目录排除，反之亦然）；同位置打架的手工态排除站住（安全），且保存侧与
+   MCP 提案侧拒绝新建。
+
+**实现**：裁决唯一函数 `library.decide_included`（显示 bridge._state 与漏斗
+collect 共用）；`set_selection` 同位置拒绝（带指引）；`selection_gate`
+提案侧事前拦截（确认码不花在注定无效的提案上）；bridge
+`selection_resolve_conflict` 单方法原子解决（只写本库覆盖，全局不动）；
+前端复用 askConfirm 即时弹窗。回归：test_selection 88/88（含翻转的旧断言
+exclude_files+显式=纳入），其余十件套全绿（vee 除外，零交集）。
+附带堵住测试污染生产日志：test_bridge_selection 重定向 worker.LOG_FILE
+（此前"神秘 t/…/x 成对日志"即测试 bridge 调用所写）。
+悬置未解：20:07:59 与用户手动保存同秒、同库（seltest_tmp）出现的一条
+'../../x' 拒绝记录，发送方不明（影响为零：被拒且原子）。
+
+## 问题48：提取质量第一档——索引层噪声清洗（2026-09-08）
+
+**做了什么**：`_finalize` 漏斗新增三段纯文本清洗（`clean_wikilinks` 之后）：
+`strip_dead_image_refs`（本地死图链→留 alt/删整段，远端活图不动）→
+`strip_page_number_lines`（第X页/Page/-N-/多裸数字分页信号）→
+`strip_boilerplate_lines`（逐字重复≥3次的普通段落行；标题/表格/列表/引用/
+围栏/短行<4字一律保护）。META_VERSION 9→10（红线：清洗逻辑变更必升版），
+下轮索引触发一次全量重建；`test_extractors` 版本钉子同步到 10。
+**真库实测**（1446 份缓存 md，只读）：样板 307 份命中删 130 万字符、页码
+147 份删 5.3 万字符、死图链 23 份删 5.6 万字符。抽查 Top 文件确认为真实噪声
+（`<!-- Start of picture text -->` ×2081 等 pymupdf4llm 标记残留、各章重复页眉）。
+附带发现：71 份 `.v1.md` 是旧命名孤儿缓存（现行查不到，死重，另行清理）。
+回归：audit 43/43（新增 4 项）、extractors 73/73、guiweb 89/89、其余全绿。
+**诚实声明**：清洗只在索引层，提取缓存原文不动——MCP `read_document` 全文
+仍带死链），第一档本质是"靠重复次数猜样板"（误伤案例：某教材"Problems"×87、
+"Thus,"碎句连词），治本靠第二档官方标注。
+
+## 问题48附记：MinerU 结果包真实抓包（2026-09-08，第二档前置验证）
+
+两个 1 页合成 PDF 真实提交（共 2 文件×1 页，配额已记账），结论全是实测：
+- zip 内：`{id}_content_list.json` + `content_list_v2.json` + `layout.json` +
+  `{id}_model.json` + `full.md` + `{id}_origin.pdf` + `images/`（有图时才有）。
+- v1 清单 schema：`{type, text, page_idx, bbox}`；实测 type 有 text / header /
+  footer（待含页脚样本）/ page_number / table。探针1的裸 "42" 被官方标为
+  page_number——第一档的裸数字启发式猜对了，但官方标注零误伤。
+- table 块结构：`{type, table_body(HTML), table_caption(list), table_footnote,
+  img_path(指向images/), page_idx, bbox}`，无 text 键；实测 table_body HTML
+  完整正确，但 caption 归因是启发式的（把表格下方的 Figure 图注误贴给表格）。
+  full.md 里表格已是 markdown 形态，因此"HTML 替换 md 表格"收益未经证实，
+  决议：表格不替换，json 只用于删 header/footer/page_number。
+- v2 清单首条是嵌套 list（非扁平 dict），施工用 v1 即可。
+- 治本施工方向（待授权）：解包处多存 sidecar `{md5}.v4.mineru.json`（与 md
+  同键前缀、版本联动；同一字节至多一份有效 json，ocr/text 路由互斥故与路由
+  无关；老文件无 json 走第一档回退）→ `_finalize` 双轨清洗（有 json 按官方
+  类型删行、无 json 沿用第一档）→ META_VERSION 10→11（一次全量重嵌，GPU
+  时间，零配额；EXTRACT_VERSION 不动，零重提）。图片落盘已决议暂不做。
+
+## 问题48附记2：sidecar 双轨清洗施工落地（2026-09-08）
+
+按抓包结论施工（用户"继续"授权），零配额零重提，META_VERSION 10→11：
+- `extractors._mineru_poll_result(batch_id, headers, deadline, requests, key=None)`：
+  解包处若 zip 含 v1 `content_list.json` 且给了 key，顺带原子落 sidecar
+  `{md5}.v{EXTRACT_VERSION}.mineru.json`（`_cache_put_sidecar`）；文件不含 route——
+  同一字节的 scanned/文字层 由内容确定性互斥（问题34），local 直提永不产。
+  失败静默跳过（OSError 只记日志），正文交付绝不被 sidecar 拖累。
+  `read_cache_sidecar(key)` 只读、损坏返 None。续接路径 `_mineru_resume` 同带
+  `key=job["md5"]`（断点续接也落 sidecar）。
+- `index._store_chunks` 双轨：`clean_wikilinks` 后 `read_cache_sidecar(bhash)` →
+  有则 `strip_sidecar_noise`（整行逐字精确删 header/footer/page_number，标题行/
+  表格/正文不动），再跑 v10 启发式（页码/样板）兜底删官方没标出来的残差；
+  老文件无 sidecar → 全启发式，行为与 v10 完全一致。
+- 真库：71 个 `.v1.md` 孤儿缓存移入 `data/extract_cache/_orphan_v1_bak_2026-09-08/`
+  （现行命名 v2 起查不到的死重，非删除、可回滚）。
+- 回归：extractors 74/74（+sidecar 落盘/读取测试）、audit 44/44（+官方标注精确删
+  纯函数测试）、guiweb 89、其余套件全绿。
+- 生效边界诚实声明：只有**新提交/续接成功的 MinerU 云端提取**会产 sidecar；老缓存
+  （含 v10 那批云端文件）正文里已存在的页眉页码仍靠启发式，要让它也享受官方标注，
+  只能等文件字节变化自然重提或日后手动"刷新 MinerU 缓存"（那会烧配额，未做）。
+  图片落盘已决议不做；表格 HTML 替换已决议不换（实测 caption 归因启发式不可靠）。
 
 ## 问题50：guiweb 诊断页——失败明细"全部库=0"/标题计数错，WEMM 明细空列（2026-09-08）
 
@@ -2123,3 +2252,107 @@ store 层函数需 patch `store.*`——bridge 是 `import store` 路径注入�
 - 回归：test_guiweb 96、test_gui_store 0 failures（wemm 测试加 md 条目滤除
   断言）、wemm_indexer 60、node --check 双绿。
 
+## 问题49：索引完成后全局回收 GC——"没用到就删"（2026-09-08）
+
+**背景**：提取缓存是"按指纹追加、只增不删"，文件每改一次就留一份孤儿
+（71 个 `.v1.md` 是手工清的，证明没有自动回收）；已从注册表移除的库还残留
+文字/WEMM collection 与指纹文件。用户拍板：全清，每次索引完成即回收。
+**盘点结论**：Chroma/WEMM 的"已删文件的块/页"每轮索引本就在精确清理
+（index.py 裁剪+collection.delete、wemm_indexer 同构），库级残留与新活只在
+"整个库没了 / 提取缓存孤儿"。
+**实现**：`index.prune_unreferenced_data(data_dir/cache_dir/chroma_dir/entries
+可注入，默认真实路径，幂等，任何单步失败只记日志绝不抛)`，只读快照后删：
+1. 已删库指纹文件（index_meta_<n>.json / wemm_meta_<n>.json；base
+   index_meta.json 默认入口保留）；
+2. 活着指纹 = 各注册库 meta 的 hash 并集 + 在途 MinerU 断点簿记 md5
+   （续接任务绝不被误删）；
+3. extract_cache 顶层 md / sidecar / md5 前缀 tmp，指纹不在活着集即删；
+   子目录（_orphan_v1_bak 等）与 mineru_pending/quota 簿记不碰；
+4. Chroma 残留 collection（不属于任何注册库的文字或 <col>.wemm）删。
+**触发**：仅整轮索引**全部成功**后——CLI `__main__` 与 `server._run_index`
+（GUI/MCP 共用）finally 里，had_error 时跳过（meta 可能不完整，宁可不回收）。
+**测试**：新增 `tests/test_prune.py` 5 用例（孤儿缓存/已删库 meta 与 collection/
+在途保护/无注册库 no-op/子目录不碰），全隔离目录注入；全套件回归绿
+（audit 44、extractors 74、guiweb 89、wemm 60/13、gpu 37、其余照旧）。
+**边界诚实声明**：回收基准是"已注册库当前 meta 引用"——被排除/未索引文件、
+已移除库的缓存会删；此后 `read_document` 对这类文件返回 not-cached（本就
+不在索引里，语义一致）。修 bug/测试曾用非 hex 假指纹（g/h）被正则正确拒绝。
+
+## guiweb 提取试验台"秒完成但空屏"（2026-09-08，用户报障）
+
+**症状**：guiweb（注意不是 Flet 版）试验台，本地直提/MinerU 都是"完成 · 耗时
+1s"但渲染/源码两格全空。状态行文案与 `guiweb/ui/app.js labPoll` 逐字对应，
+定位到 guiweb 链路。
+
+**根因两处（都在显示层，提取管线本身正常）**：
+1. `bridge.preview_poll` 误读 `info["markdown"]`——`extract_preview` 的键是
+   `md`，恒取空，成功提取永远空屏；
+2. `reason/route/cached/elapsed/chars` 被丢弃，且子进程正常交付即 `ok=True`
+   ——管线级未产出（scanned/缺 Key/空文件，MinerU 无 Key 瞬间失败也是 1s）
+   同样冒充"完成"。
+Flet 版 `_render` 用 `info["md"]` 一直是对的，故只有 guiweb 中招；FEATURE_PARITY
+曾标"代码 ✅"但从未经真机验证。
+
+**修复**：映射抽成纯函数 `Bridge._preview_result_of`（`md→markdown` + 全字段
+透传）；前端三结局如实区分——完成（路由·字数·管线耗时）/ 未产出（原因+处置
+建议，复用 REASON_LABEL/ADVICE）/ 失败；mock 与 contracts 同构跟进。
+验证：真 spawn 子进程 payload 经新映射端到端出内容（local/54字）；用户环境
+实测全局文字层后端 mineru-cloud 云端链路本身是通的（首轮复现 10s 真回包），
+之前只是显示层全丢了。回归：test_guiweb 89/89（新增 16 项映射+契约断言）。
+
+
+
+
+
+## 问题51：MinerU 本地部署 R3b——pipeline 本机解析（2026-09-09）
+
+背景：8GB 卡（RTX 5060 Laptop）+ Windows + 全局 py3.14。云端配额够用，
+做本地的核心收益是隐私（不出内网）与离线可用。官方后端三选一后定 pipeline：
+vlm 本地引擎要 8GB 显存（本机贴线死路）、http-client 需另有算力服务端。
+
+架构（照抄 wemm_server.py 模式）：mineru tool 环境（uv tool install 的
+py3.12，全局 `mineru` 命令可用）跑 `mineru_server.py`（:9102，壳+串行锁+
+懒加载+空闲卸载）；壳内复用 MinerU 官方 `ReusableLocalAPIServer` 管
+`mineru-api` 子进程，对外只有 /health /parse /evict，单文件同步 POST
+/file_parse（pipeline/auto/ch，return_md 内联 JSON）；.venv 只用 urllib
+说话，零新增依赖。HF_HOME 只作用于子进程环境（E:\models\hf），C 盘
+15GB 现有 HF 缓存原样不动；HF_TOKEN 走用户变量。
+
+仲裁（checker B1）：拉起前先 evict_wemm → wait_for_vram(4.5)；bge 加载前
+index._vram_maybe_evict_wemm 反向 evict_mineru；wait 超时不等 900s，直接
+deferred 下轮重试。端口顺延 9102→9104（用户拍板）。
+
+提取语义：扫描分支 mineru-local 真调用，route=ocr:mineru-local；服务瞬态
+不可用→"deferred"（本轮跳过、不落终态、不动 meta，对标云端 Token 失效跳过）；
+xsrc 签名带 tool 就绪位（后装环境自动翻转重试，checker B3 闭环）；超页上限
+（配置 mineru_local_max_pages，默认 200）→scanned 提示拆分；EXTRACT_VERSION
+4→5（防陈旧云端正文/sidecar 误命中；增量轮零重提，无需 --full）。
+文字层 mineru-local 保持占位退化（开关预留）。
+
+测试：extractors 78（1895 翻转+deferred+假服务路由+sig 就绪位+_IsoEnv index 级
+deferred+classify local 行）、arbiter 52（resolve/顺延/evict 新增）、其余全绿。
+
+**问题51附记（真机联调抓到的孤儿进程 bug，2026-09-09）**：
+生产链路首跑失败 `torch.AcceleratorError: CUDA unknown`——根因不是模型/驱动，
+是显存被 11 个测试残留进程吃光（6.5GB/8GB）：壳被 Stop-Process 强杀后，
+Windows 下内 mineru-api（stdin 守望缺席）不会随父进程死，模型常驻显存。
+修复：`mineru_server.py` 记内服务 PID（`data/mineru_inner.pid`，优雅退出清掉），
+启动时 tasklist 验明 python 身份后认领回收（验不出 fail-closed 宁残留不误杀）。
+教训：凡"父管子进程"结构，强杀路径必须有 PID 认领，否则每个调试会话漏一波
+显存——WEMM 单进程结构天然免疫， MinerU 双进程必须显式处理。
+生产链路复测全绿：ensure 拉起 :9102 → 解析 18s → `ocr:mineru-local.v5` 落盘 →
+复用目录 cached=True。
+
+**问题51附记2（用户“全量重建像增量+进程常驻”报障排查，2026-09-09）**：
+三件事拼出的误会 + 两个真 bug。
+(1) 用户那轮重建时后端还不是 mineru-local（v5 缓存 12 cloud + 4 text + 1 local，
+0 local 产出），扫描件秒跳 + 文字层秒提，看着像增量；随后 LECTURE NOTE 库在
+bge 加载时撞 HF DNS 瞬断（getaddrinfo failed）整库失败，体感“超快完工”。
+(2) 真 bug A：并发 ensure 开出双壳同绑 :9102（allow_reuse 下共存、pid 互踩、
+显存 double）——加跨进程拉起锁（msvcrt.locking，30s，持有者崩溃系统自动放），
+锁超时只做只读复用；回归 test_ensure_mineru_concurrent_single_launch。
+(3) 真 bug B：进度文件 WinError 5 一轮 510 次——Windows Defender/搜索索引与
+原子 replace 竞争（仓内无第二个写者），_write_progress_file 加 3 次短退避重试。
+(4) 非 bug：外壳 30min/内服务 5min 空闲退出是设计值，不是泄漏；试验台 41 页
+preview 解析成功但只写临时缓存，所以生产 0 local 缓存是对的。
+用户重跑全量前置条件：后端已切 mineru-local、DNS 已恢复、残留双壳已清。

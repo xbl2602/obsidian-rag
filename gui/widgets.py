@@ -2325,7 +2325,8 @@ class ExtractLabDialog:
             value="auto", width=270,
             options=[ft.DropdownOption(key="auto", text="跟随全局设置"),
                      ft.DropdownOption(key="none", text="本地直提（无 OCR）"),
-                     ft.DropdownOption(key="mineru-cloud", text="MinerU 云端 OCR")])
+                     ft.DropdownOption(key="mineru-cloud", text="MinerU 云端 OCR"),
+                     ft.DropdownOption(key="mineru-local", text="MinerU 本地解析")])
         # flet 0.86：Dropdown 事件名为 on_select（构造器不接受 on_change）
         self._dd_backend.on_select = lambda _e: self._refresh_hint()
 
@@ -2403,7 +2404,7 @@ class ExtractLabDialog:
         has_key = "已配 Key" if ex.current_backend_sig().endswith(":key") else "未配 Key"
         return {"none": "本地直提（OCR 关）",
                 "mineru-cloud": f"MinerU 云端（{has_key}）",
-                "mineru-local": "本地部署（未支持）"}.get(b, b)
+                "mineru-local": "MinerU 本地（不出内网）"}.get(b, b)
 
     def _effective_backend(self):
         """扫描件分支下，本次运行实际生效的后端（dropdown 覆盖，或跟随全局
@@ -2446,7 +2447,8 @@ class ExtractLabDialog:
                 "不写入/读取生产缓存，也不写入索引。")
         tail = {"none": "当前后端：本地直提——扫描件将被跳过并说明原因。",
                 "mineru-cloud": "当前后端：MinerU 云端——每个扫描件可能需要数十秒。",
-                "mineru-local": "本地部署属 R3b 尚未支持，扫描件将跳过。",
+                "mineru-local": "当前后端：MinerU 本地——不出内网，需先装好 mineru 环境；"
+                                "服务未就绪时跳过，下轮自动重试。",
                 }.get(self._effective_backend(), "")
         # 上面这段只讲扫描件；有文字层的 PDF 走另一个独立配置键（pdf_text_backend），
         # 同一个下拉现在对它也生效（详见 _effective_text_backend），必须一并说明，
@@ -2505,9 +2507,11 @@ class ExtractLabDialog:
 
     @staticmethod
     def _budget_for(backend):
+        # R3b：mineru-local 本地解析同样是分钟级长任务，给同样的长预算；
+        # 内层超时（300+30×页数）由 extractors 把关，外层只防子进程 hang 死。
         try:
             import config as cm
-            if backend in ("auto", "mineru-cloud"):
+            if backend in ("auto", "mineru-cloud", "mineru-local"):
                 return max(30.0, float(cm.CFG.get("mineru_timeout_seconds") or 600))
         except Exception:
             pass

@@ -503,6 +503,7 @@ python index.py --library "Obsidian Vault"
 - [x] `search_knowledge` 工具说明写明分数语义（LLM 读法指南）；config 注释双尺度说明
 - [x] 评估并否决 sigmoid 温度拉伸（单调变换不改排序，对 agent 无实质帮助）
 - [x] 发现并备案：drop 阈值护栏在 sigmoid 地板下永不触发，warn 才是日常主护栏
+
 ## 问题48：提取质量第一档（2026-09-08）
 
 - [x] 索引层噪声清洗：页码行/逐字重复样板行/死图链剥离（_finalize 漏斗，META_VERSION→10，下轮索引全量重建一次）
@@ -510,3 +511,32 @@ python index.py --library "Obsidian Vault"
 - [x] 真库验证：1446份缓存md，样板307份命中删130万字符、页码147份删5.3万字符、死图链23份删5.6万字符
 - [x] 第二档（sidecar 双轨）：云端解包落官方块标注 sidecar；索引有 sidecar 精确删页眉/页脚/页码、无则启发式回退；META→11（一次全量重嵌，零配额零重提）；extractors 74/74、audit 44/44、其余套件全绿；71 个 v1 孤儿缓存移入 _orphan_v1_bak_2026-09-08
 
+## 问题49：索引完成后全局回收（2026-09-08）
+
+- [x] 盘点：Chroma/WEMM 的已删文件块每轮索引本就在精确清理；缺口=提取缓存孤儿 + 已删库残留
+- [x] index.prune_unreferenced_data：删孤儿 md/sidecar/tmp + 已删库指纹 + 残留 collection（多库 meta 并集 + 在途 MinerU 断点簿记受保护；幂等、失败降级）
+- [x] 触发=整轮索引全部成功后（CLI + server._run_index，GUI/MCP 共用）；had_error 跳过
+- [x] tests/test_prune.py 5 用例；全套件回归绿
+
+## 问题50：guiweb 诊断页失败明细/WEMM 明细修复（2026-09-08）
+
+- [x] failures("全部库")=0：空串当库名找库 -> 改聚合全部库
+- [x] 标题计数错位：total 原是正常索引数(176) 非失败数 -> total=失败条数 + healthy 正常数
+- [x] 错误行可展开：detail 取该文件最近索引日志摘录 + 打开源文件按钮
+- [x] WEMM 明细空列：store 元组行未在 guiweb 桥转对象 -> 转 {lib,rel,pages,failed,reason}
+- [x] WEMM 行点击展开/打开源文件；mock/contracts/app.css 同步
+- [x] test_guiweb 96/96（新增 failures 聚合与 wemm 转换回归）
+
+## 问题51：MinerU 本地部署 R3b（2026-09-09）
+
+- [x] 环境：uv tool install mineru[all]（py3.12 隔离）+ cu128 torch（官方 CPU 轮子换 CUDA）
+- [x] mineru_server.py：壳（串行锁/懒加载/空闲卸载/页上限）+ 复用 ReusableLocalAPIServer
+- [x] arbiter：ensure_mineru（端口顺延）+ evict_mineru（双向抢占）+ MINERU_MIN_VRAM_GB=4.5
+- [x] extractors：扫描分支真调用 + kind=local 串行 + deferred + sig 就绪位 + VER 4→5
+- [x] index：deferred 跳过不落终态；bge 加载前反向 evict_mineru
+- [x] 配置/GUI：3 新键 + scan 下拉/试验台/budget/文案去占位 + contracts
+- [x] 回归：extractors 78/78、arbiter 52、其余十件套全绿
+- [x] E:\models\hf 建 pipeline 模型 + 真 VRAM 峰 1827MB(含 1 页)
+- [x] 真gp- torchvision 0.23->0.26+cu128(nms ABI 断 方) + pymupdf 衡 tool 环境(页数计)
+- [x] 框 chain 通 mineru_server /parse -> md 102 字 OK
+- [x] MINERU_MIN_VRAM_GB 保 4.5(官 4GB + 余量)

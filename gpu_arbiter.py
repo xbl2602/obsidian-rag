@@ -14,6 +14,7 @@ WDDM 溢出共享显存、整机性能骤降。本模块实现三件事：
 因此本模块只允许标准库依赖。
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -240,9 +241,322 @@ def ensure_server(python_exe=None, url=None, wait_s=120.0, log=None):
         PID_FILE.write_text(str(proc.pid), encoding="utf-8")
     except OSError:
         pass
+    # 早夭检查：合理解释器/脚本问题会让子进程几秒内退出——此时等满 wait_s
+    # 纯属空耗（一次拉起即 120s 假死）。正常冷启动（torch import 数十秒）
+    # 进程一直存活，不受此分支影响；之后仍走完整 _wait_health。
+    _poll = getattr(proc, "poll", None)
+    for _ in range(50):
+        if server_alive(url):
+            break
+        try:
+            dead = _poll() is not None if callable(_poll) else False
+        except Exception:
+            dead = False
+        if dead:
+            msg = ("看图服务进程启动后 5s 内退出（解释器/依赖/脚本问题），"
+                   "详见 %s" % LOG_FILE)
+            if log is not None:
+                log(msg)
+            return False, msg
+        time.sleep(0.1)
     ok = _wait_health(url, wait_s)
     if log is not None:
         log("WEMM 看图服务已按需拉起（PID %d）" % proc.pid if ok
             else "WEMM 看图服务拉起后未就绪，详见 %s" % LOG_FILE)
     return (ok, "已按需拉起并就绪（PID %d）" % proc.pid if ok
             else "已拉起但 %ds 内未就绪，详见 data/wemm_server.log" % wait_s)
+
+
+# ---- MinerU 本地解析服务（R3b） ----
+# 与 WEMM 同构：按需拉起（幂等、分离进程、日志落盘）、用完即卸、双向抢占。
+# 三点不同：① 默认端口 9102，被占时自动顺延（用户拍板）；② python 解释器是
+# uv tool 的隔离环境（非全局 Python），路径可配置、可自动探测；③ HF_HOME 只
+# 作用于子进程环境（C 盘 15GB 现有 HF 缓存原样不动，模型下到 E:\models\hf）。
+
+MINERU_MIN_VRAM_GB = 4.5  # pipeline 后端约 4GB + 0.5 余量（待冒烟实测校准）
+MINERU_PID_FILE = ROOT / "data" / "mineru_server.pid"
+MINERU_LOG_FILE = ROOT / "data" / "mineru_server.log"
+MINERU_PORT_TRIES = 3     # 端口顺延次数：base、base+1、base+2
+
+
+def _port_in_use(port):
+    """127.0.0.1:port 是否已被监听（连接成功=被占；拒绝=空闲）。"""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(1.0)
+    try:
+        return s.connect_ex(("127.0.0.1", int(port))) == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _resolve_mineru_python(explicit=None):
+    """mineru tool 环境的 python.exe。explicit（config.mineru_python）优先；
+    空则按 uv tool 默认落点自动探测；都找不到返回 None（调用方报错提示安装）。"""
+    if explicit and Path(str(explicit)).is_file():
+        return str(explicit)
+    cands = []
+    try:
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            cands.append(Path(appdata) / "uv" / "tools" / "mineru" / "Scripts"
+                         / "python.exe")
+        home = Path.home()
+        cands.append(home / ".local" / "share" / "uv" / "tools" / "mineru"
+                     / "bin" / "python")
+        cands.append(home / ".local" / "share" / "uv" / "tools" / "mineru"
+                     / "Scripts" / "python.exe")
+    except Exception:
+        pass
+    for c in cands:
+        try:
+            if c.is_file():
+                return str(c)
+        except Exception:
+            continue
+    return None
+
+
+def _mineru_env():
+    """子进程环境：os.environ 全量继承（checker E1：禁整块替换，丢 PATH 必死），
+    再增量覆盖 HF_HOME（模型目录作用域隔离，见 E2）。"""
+    env = os.environ.copy()
+    if not env.get("HF_HOME") and not env.get("HF_HUB_CACHE"):
+        # 默认模型家：E:\models\hf（C 盘现有 15GB 缓存不动）。目录不存在就建，
+        # 建不起也不阻塞（回退默认缓存，拉起日志里警告一次）。
+        default = Path("E:/models/hf")
+        try:
+            default.mkdir(parents=True, exist_ok=True)
+            env["HF_HOME"] = str(default)
+        except Exception:
+            pass
+    return env
+
+
+def _acquire_ensure_lock(timeout_s=30.0):
+    """拿 MinerU 拉起跨进程锁（check-and-launch 之间不许第二个进程插队开壳）。
+
+    生产实测：一次重建触发两次并发 ensure，开出两个同端口外壳（allow_reuse
+    下共存、pid 文件互踩、显存 double）。Windows 用 msvcrt.locking 非阻塞轮询；
+    持有者崩溃时系统自动释放锁，无 stale 死锁。返回持锁文件对象（调用方负责
+    解锁关闭），超时/失败返回 None（调用方只做只读复用检查，不拉起）。
+    """
+    lock_path = ROOT / "data" / "mineru_ensure.lock"
+    try:
+        lock_path.parent.mkdir(exist_ok=True)
+        f = open(lock_path, "a+b")
+    except OSError:
+        return None
+    if sys.platform == "win32":
+        try:
+            import msvcrt
+            deadline = time.time() + timeout_s
+            while True:
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                    return f
+                except OSError:
+                    if time.time() >= deadline:
+                        try:
+                            f.close()
+                        except Exception:
+                            pass
+                        return None
+                    time.sleep(0.2)
+        except Exception:
+            try:
+                f.close()
+            except Exception:
+                pass
+            return None
+    try:
+        import fcntl
+        deadline = time.time() + timeout_s
+        while True:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return f
+            except OSError:
+                if time.time() >= deadline:
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+                    return None
+                time.sleep(0.2)
+    except Exception:
+        try:
+            f.close()
+        except Exception:
+            pass
+        return None
+
+
+def _release_ensure_lock(f):
+    if f is None:
+        return
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            try:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            except Exception:
+                pass
+        else:
+            import fcntl
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+    finally:
+        try:
+            f.close()
+        except Exception:
+            pass
+
+
+def evict_mineru(url, timeout=15.0):
+    """请求 MinerU 停内服务释放显存（双向抢占，checker B1：bge/WEMM 加载前调用）。
+
+    正在解析时会等当前一份走完再停——那一份的成果保留。服务不在/请求失败
+    返回 False（fail-open：绝不阻塞调用方）。
+    """
+    try:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/evict", data=b"{}",
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return bool(json.loads(r.read().decode("utf-8")).get("ok"))
+    except Exception:
+        return False
+
+
+def _read_mineru_pid():
+    try:
+        return int(MINERU_PID_FILE.read_text(encoding="utf-8").strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def ensure_mineru(python_exe=None, url=None, wait_s=120.0, log=None):
+    """按需拉起 MinerU 本地解析服务（幂等，R3b）。
+
+    端口顺延（用户拍板）：base → base+1 → base+2，逐个试：
+      health 通 = 已有实例，直接用；端口空闲 = 在此拉起；端口被占但 health
+      不通 = 被别的东西占着，换下一个。全部失败返回 (False, None, detail)。
+    返回 (ok, url_used|None, detail)。拉不起/等不到不抛异常（fail-open：
+    调用方回退记 scanned 终态，下轮重试）。
+    """
+    try:
+        from config import CFG
+        url = url or CFG.get("mineru_local_url") or "http://127.0.0.1:9102"
+        python_exe = python_exe or CFG.get("mineru_python") or None
+        try:
+            max_pages = int(CFG.get("mineru_local_max_pages") or 200)
+        except (TypeError, ValueError):
+            max_pages = 200
+    except Exception:
+        url = url or "http://127.0.0.1:9102"
+        max_pages = 200
+
+    script = ROOT / "mineru_server.py"
+    if not script.is_file():
+        return False, None, "无法拉起本地解析服务：启动脚本缺失（%s）" % script
+
+    resolved_py = _resolve_mineru_python(python_exe)
+    if not resolved_py:
+        return False, None, ("找不到 mineru tool 环境的 Python（mineru_python 未配且自动"
+                             "探测失败）：请先跑 uv tool install --python 3.12 -U "
+                             "\"mineru[all]\"，详见 AI_GUIDE")
+
+    try:
+        from urllib.parse import urlparse
+        base_port = urlparse(url).port or 9102
+        host = urlparse(url).hostname or "127.0.0.1"
+    except Exception:
+        base_port, host = 9102, "127.0.0.1"
+
+    last_detail = "未知错误"
+    lock = _acquire_ensure_lock(timeout_s=30.0)
+    try:
+        if lock is None:
+            # 锁超时：别家正在拉起，只做只读复用检查，绝不自己再开一个
+            for i in range(MINERU_PORT_TRIES):
+                try_url = "http://%s:%d" % (host, base_port + i)
+                if server_alive(try_url):
+                    return True, try_url, "本地解析服务已在运行（%s）" % try_url
+            return False, None, "拉起锁等待超时且未见可用实例（可能别家拉起失败），请重试"
+        for i in range(MINERU_PORT_TRIES):
+            port = base_port + i
+            try_url = "http://%s:%d" % (host, port)
+            if server_alive(try_url):
+                return True, try_url, "本地解析服务已在运行（%s）" % try_url
+            if _port_in_use(port):
+                last_detail = "%s 端口被占（非 MinerU 服务），顺延" % try_url
+                continue
+            ok, detail = _launch_mineru(resolved_py, script, port, try_url,
+                                       max_pages, wait_s, log)
+            if ok:
+                return True, try_url, detail
+            last_detail = detail
+            # 拉起失败换下一个端口再试（当前端口可能处于 TIME_WAIT 等瞬态）
+        return False, None, "本地解析服务拉起失败（已试 %d 个端口）：%s" % (
+            MINERU_PORT_TRIES, last_detail)
+    finally:
+        _release_ensure_lock(lock)
+
+
+def _launch_mineru(python_exe, script, port, url, max_pages, wait_s, log):
+    """在指定空闲端口拉起一次。返回 (ok, detail)。"""
+    pid = _read_mineru_pid()
+    if pid and _pid_alive(pid):
+        # 有实例但 health 不通：可能在冷加载，只等不重复拉起
+        ok = _wait_health(url, wait_s)
+        return (ok, "已有实例（PID %d）%s" % (pid, "已就绪" if ok else "等待超时"))
+
+    MINERU_LOG_FILE.parent.mkdir(exist_ok=True)
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
+    try:
+        with open(MINERU_LOG_FILE, "ab") as logf:
+            proc = subprocess.Popen(
+                [python_exe, str(script),
+                 "--port", str(port),
+                 "--max-pages", str(max_pages)],
+                stdout=logf, stderr=logf, cwd=str(ROOT),
+                env=_mineru_env(), **kwargs)
+    except OSError as e:
+        return False, "拉起失败（%s）：确认 mineru_python 指向 uv tool 环境" % type(e).__name__
+    try:
+        MINERU_PID_FILE.write_text(str(proc.pid), encoding="utf-8")
+    except OSError:
+        pass
+    _poll = getattr(proc, "poll", None)
+    for _ in range(50):
+        if server_alive(url):
+            break
+        try:
+            dead = _poll() is not None if callable(_poll) else False
+        except Exception:
+            dead = False
+        if dead:
+            msg = ("本地解析服务进程启动后 5s 内退出（解释器/依赖/脚本问题），"
+                   "详见 %s" % MINERU_LOG_FILE)
+            if log is not None:
+                log(msg)
+            return False, msg
+        time.sleep(0.1)
+    ok = _wait_health(url, wait_s)
+    if log is not None:
+        log("MinerU 本地解析服务已按需拉起（PID %d，%s）" % (proc.pid, url) if ok
+            else "MinerU 本地解析服务拉起后未就绪，详见 %s" % MINERU_LOG_FILE)
+    return (ok, "已按需拉起并就绪（PID %d，%s）" % (proc.pid, url) if ok
+            else "已拉起但 %ds 内未就绪，详见 data/mineru_server.log" % wait_s)

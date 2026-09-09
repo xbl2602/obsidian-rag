@@ -36,11 +36,14 @@ GROUPS = [
      "fields": [("model_name", "str"), ("rerank_enabled", "bool"),
                 ("rerank_model", "str")]},
     {"title": "PDF 与云端 OCR", "level": "basic", "icon": "PICTURE_AS_PDF_OUTLINED",
-     "desc": "扫描件 OCR 与文字层 PDF 的提取后端；切到 mineru-cloud 会上传原始文件。",
+     "desc": "扫描件 OCR 与文字层 PDF 的提取后端；切到 mineru-cloud 会上传原始文件，"
+             "mineru-local 不出内网（需先装 mineru 环境）。",
      "fields": [("pdf_scan_backend", "str"), ("pdf_text_backend", "str"),
                 ("mineru_model_version", "str"),
                 ("mineru_api_key", "str"), ("mineru_timeout_seconds", "int"),
-                ("mineru_concurrency", "int"), ("mineru_rate_per_minute", "int")]},
+                ("mineru_concurrency", "int"), ("mineru_rate_per_minute", "int"),
+                ("mineru_local_url", "str"), ("mineru_python", "str"),
+                ("mineru_local_max_pages", "int")]},
     {"title": "检索输出", "level": "basic", "icon": "SEARCH_OUTLINED",
      "desc": "返回内容的形状与低置信护栏，全部实时生效。",
      "fields": [("return_chunk_limit", "int"), ("max_chunks_per_file", "int"),
@@ -136,6 +139,7 @@ FIELD_META = {
                          "choices": [
                              ("none", "不做 OCR，扫描件跳过（默认）"),
                              ("mineru-cloud", "MinerU 云端 OCR（上传原始文件）"),
+                             ("mineru-local", "MinerU 本地解析（不出内网，需先装 mineru 环境）"),
                          ],
                          "hint": "无文字层 PDF 的处理方式；切换后下轮索引自动重试存量扫描件"},
     "pdf_text_backend": {"label": "文字层 PDF 后端",
@@ -159,8 +163,14 @@ FIELD_META = {
                            "hint": "0=最大吞吐（限速闸门自动节流，完成一个补一个）；"
                                    "1=串行；≥2=固定并发。默认保守 3，实测无 429 再调高"},
     "mineru_rate_per_minute": {"label": "每分钟提交上限",
-                               "hint": "滑动窗口限速；官方三个提交接口共用 50 个文件/"
-                                       "分钟，默认 45 留余量，0=不限"},
+                                       "hint": "滑动窗口限速；官方三个提交接口共用 50 个文件/"
+                                               "分钟，默认 45 留余量，0=不限"},
+    "mineru_local_url": {"label": "本地解析服务地址",
+                         "hint": "mineru_server.py 监听地址；端口被占自动顺延，无需手动改"},
+    "mineru_python": {"label": "MinerU 环境 Python",
+                      "hint": "uv tool 装好的 py3.12 全路径；空=自动探测。别填 .venv/全局3.14"},
+    "mineru_local_max_pages": {"label": "本地解析单文件页数上限",
+                               "hint": "超限跳过记 scanned 并提示拆分；0=不限（不推荐）"},
     # ---- 视觉导航（WEMM）----
     "wemm_backend": {"label": "视觉导航开关",
                      "choices": [

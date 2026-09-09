@@ -17,7 +17,7 @@ from extractors import (BINARY_EXTS, SUPPORTED_EXTS, TEXT_EXTS,
                         extract_to_markdown, mineru_cloud_extract_for_parallel,
                         mineru_pending_prune, mineru_quota_today,
                         mineru_token_invalid, mineru_token_reset,
-                        read_cache_sidecar)
+                        purge_extract_cache, read_cache_sidecar)
 from library import (effective_config, load_registry, meta_path,
                      resolve_entries, resolve_selection, decide_included)
 
@@ -275,12 +275,26 @@ def read_progress():
 
 
 def _write_progress_file(base):
-    """原子写进度文件（在 _progress_lock 内调用）。"""
+    """原子写进度文件（在 _progress_lock 内调用）。
+
+    Windows 下 Defender/搜索索引会瞬间打开刚落盘的 .tmp 做实时扫描，
+    此时 os.replace 会撞 WinError 5（Access is denied）——生产实测一轮
+    撞 500+ 次。加 3 次短退避重试；仍失败才记日志忽略（进度丢失可接受，
+    绝不能让一次进度落盘卡死索引主流程）。
+    """
     try:
         DATA_DIR.mkdir(exist_ok=True)
         tmp = PROGRESS_FILE.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(base, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, PROGRESS_FILE)
+        for attempt in range(3):
+            try:
+                os.replace(tmp, PROGRESS_FILE)
+                return
+            except PermissionError:
+                if attempt < 2:
+                    time.sleep(0.1 * (attempt + 1))
+                    continue
+                raise
     except Exception as e:
         log(f"写进度文件失败（忽略）：{e}")
 
@@ -662,15 +676,31 @@ def _try_switch_back_cuda():
 
 
 def _vram_maybe_evict_wemm():
-    """加载 CUDA 模型前，若空闲显存不足且 WEMM 在线，请求其立即卸载让路（问题41）。
+    """加载 CUDA 模型前，若空闲显存不足且 WEMM / MinerU 在线，请求其立即卸载让路。
+
+    问题41（WEMM）+ R3b（MinerU，双向抢占 checker B1）：pipeline 约 4GB，
+    与 bge-m3 硬共存即溢出，故 bge 加载前两边都请。顺序：先 MinerU（本地串行
+    无 pending，中断即本轮记终态、下轮重试），再 WEMM（原有语义）。
 
     显存仲裁 fail-open：探测失败 / 服务不在 / 请求失败一律静默放行，绝不阻塞
-    正常加载路径——WEMM 侧被抢占的编码批次由页索引失败终态记账下轮重试。
+    正常加载路径——被抢占侧的批次由各自失败终态记账下轮重试。
     """
     try:
         import gpu_arbiter
         from config import CFG as _CFG
         free = gpu_arbiter.vram_free_gb()
+        if free is None or free >= gpu_arbiter.BGE_MIN_VRAM_GB:
+            return
+        murl = _CFG.get("mineru_local_url")
+        if murl and gpu_arbiter.server_alive(murl):
+            log(f"空闲显存 {free:.1f}GB 不足（需 >= {gpu_arbiter.BGE_MIN_VRAM_GB}GB），"
+                f"请求 MinerU 本地解析服务让路…")
+            gpu_arbiter.evict_mineru(murl)
+            time.sleep(2.0)
+            try:
+                free = gpu_arbiter.vram_free_gb(max_age=0.0)
+            except Exception:
+                pass
         if free is None or free >= gpu_arbiter.BGE_MIN_VRAM_GB:
             return
         url = _CFG.get("wemm_url")
@@ -1314,12 +1344,16 @@ def collect_md_files(vault, exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_F
                      selection=None, selection_default="follow"):
     """收集应纳入索引的文件（与索引使用同一套过滤规则；扩展名白名单，默认 md）。
 
-    问题44 路径级勾选（selection=(sel_in, sel_out)，来自注册表条目）：
-      - 优先级：exclude_* 硬排除 > 显式勾选（最近显式赢）> 中性默认
-      - 显式 "in" 可穿透扩展名白名单（用户点名要的文件优先于格式开关）；
-        显式 "out" 一票排除（即使格式在白名单里）
-      - 中性文件的默认归属 selection_default："follow"=按扩展名白名单（默认）、
-        "include"=受支持格式一律纳入（可穿透白名单）、"exclude"=一律排除
+    问题44 路径级勾选（selection=(sel_in, sel_out)，来自注册表条目）+
+    问题47 谁具体听谁的（用户拍板）：
+      - 最近显式命中 vs 目录排除：更具体的赢（文件自身的勾选 > 它所在目录
+        的排除；反之排除赢）。显式 "out" 一票排除；
+      - 同位置打架（手工态：某目录同时在勾选 in 与排除名单）：排除站住
+        （安全），UI 保存侧与 MCP 提案侧拒绝新建此类状态；
+      - 文件名/格式类规则（exclude_files/patterns、扩展名白名单）一律最弱：
+        显式静默穿透它们（点名要其中某一份即生效，不弹窗）。
+      - 全中性：走 selection_default（follow=白名单 / include=受支持格式
+        全纳 / exclude=全排），再叠文件名与目录排除。
     selection=None 时行为与旧版完全一致（扩展名白名单）。
     """
     if not Path(vault).is_dir():
@@ -1352,9 +1386,15 @@ def collect_md_files(vault, exclude_dirs=EXCLUDE_DIRS, exclude_files=STRUCTURE_F
                         continue
                 elif suffix not in ext_set:
                     continue
-            # v == "in"：显式勾选穿透白名单，直接纳入
+            # verdict == "in"：显式勾选穿透一切（目录继承排除、文件名、
+            # 格式白名单），直接纳入
             out.append(p)
-        elif suffix in ext_set:
+            continue
+        if any(any(ex in part for ex in exclude_dirs) for part in p.parts):
+            continue
+        if p.name in exclude_files or p.name.startswith(pats):
+            continue
+        if suffix in ext_set:
             out.append(p)
     return out
 
@@ -1691,8 +1731,27 @@ def _wemm_auto_phase(lib, full=False, agent_allowed=None):
             pass
         from wemm_indexer import index_wemm_library
         log(f"[{name}] WEMM 页级导航自动同步（{'全量' if full else '增量'}）…")
-        return index_wemm_library(lib, backend=True, full=full,
-                                  agent_allowed=agent_allowed)
+        # 进度上报（问题47）：页同步阶段此前零写盘，GUI 全程显示旧 done 造成
+        # "装死"误判。文件级粒度（用户拍板）：每处理完一个 PDF 推进一次，
+        # 25s 停滞线碰不到，无需停滞宽限；单文件上百页的极端情况可能误报
+        # 停滞（仅告警级别，不影响流程），接受该 trade-off。
+        def _wemm_progress(msg, done=None, total=None):
+            update_progress(running=True, phase="wemm", library=name,
+                            message=msg, files_done=done, files_total=total)
+        _wemm_progress("页库同步开始…")
+        st = {}
+        try:
+            st = index_wemm_library(lib, backend=True, full=full,
+                                    agent_allowed=agent_allowed,
+                                    progress=_wemm_progress)
+            return st
+        finally:
+            # 本库真正收尾（含页库）：running=False 回到 done——否则末库的
+            # 进度永远停在 wemm/running（下一库的 progress_start 会覆盖，
+            # 但末库无下文）。文件/块数沿用文字阶段留下的值，仅翻阶段。
+            update_progress(running=False, phase="done",
+                            message="页库同步完成（%s 页）" % (st.get("pages", "?")
+                                                      if isinstance(st, dict) else "?"))
     except Exception as e:
         log(f"[{name}] WEMM 页级导航同步失败（不影响文字索引）："
             f"{type(e).__name__}: {e}")
@@ -1999,6 +2058,14 @@ def _index_core(vault, collection_name, meta_file, exclude_dirs, exclude_files,
                 # 转换豁免窗口严格闭合于 extract_to_markdown 的真实耗时，绝不
                 # 泄漏进后续相位（600s 级 MinerU 云端 OCR 也完全在这段窗口内）。
                 update_progress(phase="scanning", message=f"已转换 {rel}")
+                if reason == "deferred":
+                    # R3b 本地服务瞬态不可用：本轮跳过——不落终态、不动 meta、
+                    # 不计 changed（对标云端段 Token 失效跳过）。文件保持原条目/
+                    # 无条目原状，服务恢复后下轮自然重试。
+                    log(f"{tag}本地解析服务暂不可用，本轮跳过（下轮自动重试）：{rel}")
+                    update_progress(files_done=unchanged + changed,
+                                    message=f"本地服务暂不可用，已跳过 {rel}")
+                    continue
                 if body is None:
                     meta[rel] = _terminal_entry(st, bhash, reason or REASON_EXTRACT_FAILED,
                                                 xsrc=xsig)
@@ -2290,8 +2357,17 @@ if __name__ == "__main__":
     ap.add_argument("--vault", default=None, help="旧单库入口：直接指定路径（legacy）")
     ap.add_argument("--library", default="all", help="库名（或 all=全部注册库，默认）")
     ap.add_argument("--full", action="store_true", help="全量重建，忽略增量")
+    ap.add_argument("--fresh-extract", action="store_true",
+                    help="先删当前版本的提取正文缓存+sidecar 再索引（默认关；"
+                         "不开时内容哈希相同的缓存直接复用，不重复解析）")
     args = ap.parse_args()
 
+    if args.fresh_extract:
+        try:
+            n = purge_extract_cache()
+            log(f"--fresh-extract：已删当前版本提取缓存 {n} 个，全部文件重新解析")
+        except Exception as e:
+            log(f"--fresh-extract 清理失败（继续索引）：{e}")
 
     if args.vault:
         index_vault(args.vault, incremental=not args.full, full=args.full)

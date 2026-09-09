@@ -33,6 +33,17 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
    有 sidecar 精确删 header/footer/page_number、无则启发式兜底）；EXTRACT_VERSION **4**
    ——sidecar 与 md 同 md5 前缀同版本联动，EXT 不动 = 老缓存不重提、老文件无 sidecar
    走启发式；sidecar 只在 MinerU 云端解包处落（`_mineru_poll_result`），local 直提不产
+- **全局回收（问题49）**：每轮整库索引**全部成功后**自动跑
+  `index.prune_unreferenced_data`——删提取缓存孤儿（md/sidecar/tmp）、已删库的
+  指纹与残留 Chroma collection；多库 meta 指纹并集 + 在途 MinerU 断点簿记 = 活着集，
+  幂等、失败降级只记日志。任何一库失败（had_error）跳过回收。测试
+  `tests/test_prune.py`。改"哪些算活着/何时触发"的语义时两处触发点
+  （CLI `__main__`、`server._run_index`）与存活集构造要一起过一遍
+- 多格式默认开启（`extensions=md,pdf,docx`）；扫描件 OCR 三档（`pdf_scan_backend`，
+  默认 none）：none 跳过 / mineru-cloud 云端 API / **mineru-local 本机 pipeline
+  服务（问题51 R3b：uv tool 的 py3.12 跑 `mineru_server.py` :9102，串行+懒加载+
+  空闲卸载，仲裁双向抢占；服务瞬态不可用记 deferred 本轮跳过不落终态；单文件
+  页上限 `mineru_local_max_pages` 默认 200）**；EXTRACT_VERSION **5**
 - **混合型 PDF（任一页无文字层，含"PPT 文字页+扫描图"混装课件）整本按扫描件路由**（问题34）：
   云端开 → 整本 is_ocr=True 送 MinerU vlm 认字产出一份完整 MD；未开 → 整本 scanned 终态待
   xsrc 自愈——宁可诚实空缺，绝不产出"文字页直提+图片页丢失"的半份拼接内容

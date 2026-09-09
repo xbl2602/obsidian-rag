@@ -39,7 +39,7 @@ TEXT_EXTS = {"md", "txt"}
 BINARY_EXTS = {"pdf", "docx"}
 SUPPORTED_EXTS = TEXT_EXTS | BINARY_EXTS
 
-EXTRACT_VERSION = 4  # 提取逻辑版本：v2 起缓存键含产出路由（local / ocr:后端 / mineru-text）；
+EXTRACT_VERSION = 5  # 提取逻辑版本：v2 起缓存键含产出路由（local / ocr:后端 / mineru-text）；
                       # v3：MinerU 云端请求体新增 model_version 参数（问题33），旧缓存产出
                       # 用的是未指定版本时的服务端默认（较弱的 pipeline 模式），必须失效重提。
                       # v4：分拣规则改为「存在图片页即整本按扫描件路由」（问题34）——v3 及
@@ -47,10 +47,15 @@ EXTRACT_VERSION = 4  # 提取逻辑版本：v2 起缓存键含产出路由（loc
                       # 这类文件在 v4 下要么整本送云端、要么落 scanned 终态，产出语义不同；
                       # 旧缓存（含 local 路由的半份结果）必须整体失效，防止 v4 的 text_route
                       # 候选误命中 v3 时代的半份 local 缓存。
+                      # v5：扫描件分支新增 mineru-local 真调用（R3b）——v4 及更早的
+                      # ocr:mineru-local 键是占位期残留（扫描件记 scanned、无正文），
+                      # 且同 md5 的陈旧云端正文/sidecar 不得误命中本地产出（sidecar
+                      # 文件名不含 route，checker#10），整体失效重提。
 
 DEFAULT_CACHE_DIR = Path(__file__).parent / "data" / "extract_cache"
 
-# 扫描件 OCR 后端（config.pdf_scan_backend 的合法值）
+# 扫描件 OCR 后端（config.pdf_scan_backend 的合法值）。
+# R3b 起 mineru-local 是真调用（本机 pipeline 服务）；none 仍是默认。
 SCAN_BACKENDS = ("none", "mineru-cloud", "mineru-local")
 
 # 有文字层 PDF 的提取后端（config.pdf_text_backend 的合法值）。
@@ -110,8 +115,10 @@ def get_model_version():
 def current_backend_sig():
     """OCR 能力签名：进二进制终态条目的 xsrc 字段。
 
-    签名变化（如 none→mineru-cloud、或补配了 api_key）= 能力变化，
-    index 层据此对 scanned/extract-failed 终态自动重试转正。
+    签名变化 = 能力变化，index 层据此对 scanned/extract-failed 终态自动重试转正。
+    R3b：mineru-local 的签名带 tool 环境就绪位（纯路径探测，毫秒级、无进程/
+    网络开销）——用户后装好 mineru 环境时签名翻转，旧终态自动重试；装之前
+    落的终态不会与装之后混淆（checker B3 的 sig 闭环）。
     """
     b = get_scan_backend()
     has_key = False
@@ -121,7 +128,15 @@ def current_backend_sig():
             has_key = bool(str(CFG.get("mineru_api_key", "")).strip())
         except Exception:
             has_key = False
-    return f"{b}:{'key' if has_key else 'nokey'}"
+        return f"{b}:{'key' if has_key else 'nokey'}"
+    if b == "mineru-local":
+        try:
+            import gpu_arbiter
+            ready = bool(gpu_arbiter._resolve_mineru_python())
+        except Exception:
+            ready = False
+        return f"{b}:{'ready' if ready else 'noready'}"
+    return f"{b}:nokey"
 
 _cache_dir = None  # 测试注入覆盖；None = 用默认
 _swept = False     # 孤儿 tmp 清扫每进程至多一次
@@ -158,6 +173,35 @@ def _route_fs(route):
 
 def _cache_path(key, route="local"):
     return get_cache_dir() / f"{key}.{_route_fs(route)}.v{EXTRACT_VERSION}.md"
+
+
+def purge_extract_cache():
+    """删当前版本的提取正文缓存 + sidecar（--fresh-extract 用）。
+
+    只删 `*.v{EXTRACT_VERSION}.md` 与 `*.v{EXTRACT_VERSION}.mineru.json`：
+    不碰断点簿记（mineru_pending.json）、配额账本、旧版本残留（死了的版本
+    由全局回收 prune 认领）、任何 .tmp（崩溃残留，下次写覆盖）。
+    返回删除个数。绝不抛异常（purge 失败只记日志，不阻塞随后索引）。
+    """
+    n = 0
+    try:
+        d = get_cache_dir()
+        if not d.is_dir():
+            return 0
+        suffix_md = ".v%d.md" % EXTRACT_VERSION
+        suffix_sc = ".v%d.mineru.json" % EXTRACT_VERSION
+        for p in d.iterdir():
+            if not p.is_file():
+                continue
+            if p.name.endswith(suffix_md) or p.name.endswith(suffix_sc):
+                try:
+                    p.unlink()
+                    n += 1
+                except OSError:
+                    continue
+    except Exception as e:
+        log(f"提取缓存清理失败（忽略）：{e}")
+    return n
 
 
 def _sidecar_path(key):
@@ -467,6 +511,104 @@ def _extract_docx(path):
 _TEXT_PAGE_MIN_CHARS = 10
 
 
+# ---------- 扫描件 OCR：MinerU 本地服务（R3b） ----------
+
+_MINERU_LOCAL_URL = None  # 进程内缓存的实际服务地址（含端口顺延结果）；失效时重拉
+
+
+def _mineru_local_timeout(pages):
+    """单文件超时（秒）= 300 + 30×页数。诚实声明：pipeline GPU 尚无基准数据，
+    这是防卡死的 backstop（200 页→约105min），不是性能承诺；每次解析的真实
+    耗时会记日志，攒够样本后校准（checker B2）。页数上限由服务端把关。"""
+    try:
+        n = int(pages or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return 300.0 + 30.0 * max(0, n)
+
+
+def _mineru_local_extract(path, pages=None, key=None):
+    """本机 pipeline 解析一份 PDF。返回 (md|None, reason)。
+
+    reason == "deferred" 是瞬态环境信号（服务拉不起/进程不在），调用方
+    （index）必须按"本轮跳过、不落终态、不动 meta"处理——对标云端 Token 失效
+    跳过（index.py 云端段），下轮自然重试。其余失败一律折叠 extract-failed
+    类终态原因。绝不抛异常（红线1）、绝不触云端（零配额）。
+    """
+    global _MINERU_LOCAL_URL
+    import time as _time
+    import urllib.request as _urlreq
+    import json as _json
+
+    def _post(url, payload, timeout):
+        req = _urlreq.Request(
+            url.rstrip("/") + "/parse",
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        with _urlreq.urlopen(req, timeout=timeout) as r:
+            return _json.loads(r.read().decode("utf-8"))
+
+    def _alive(url):
+        try:
+            req = _urlreq.Request(url.rstrip("/") + "/health")
+            with _urlreq.urlopen(req, timeout=5) as r:
+                return bool(_json.loads(r.read().decode("utf-8")).get("ok"))
+        except Exception:
+            return False
+
+    # 服务地址解析：缓存命中且存活直接用；否则（首次/空闲自退出后）重拉。
+    # ensure_mineru 幂等、无服务时做完整拉起；失败即 deferred，不阻塞。
+    url = _MINERU_LOCAL_URL
+    if not url or not _alive(url):
+        try:
+            import gpu_arbiter
+            ok, url_used, detail = gpu_arbiter.ensure_mineru(
+                log=lambda m: _warn_once("mineru-local-launch", m))
+        except Exception as e:
+            _warn_once("mineru-local-arbiter",
+                       f"本地解析服务调度异常（按环境未就绪跳过）：{type(e).__name__}")
+            return None, "deferred"
+        if not ok or not url_used:
+            _warn_once("mineru-local-down",
+                       f"本地解析服务不可用，本轮跳过（下轮重试）：{detail}")
+            return None, "deferred"
+        # 拉起成功先请 WEMM 让路（8GB 卡 pipeline 与 WEMM 不能共存；bge 侧由
+        # index._vram_maybe_evict_wemm 反向请 MinerU，双向抢占闭环 checker B1）
+        try:
+            from config import CFG as _CFG
+            wurl = _CFG.get("wemm_url")
+            if wurl and gpu_arbiter.server_alive(wurl):
+                gpu_arbiter.evict_wemm(wurl)
+        except Exception:
+            pass
+        _MINERU_LOCAL_URL = url_used
+        url = url_used
+
+    timeout = _mineru_local_timeout(pages)
+    t0 = _time.monotonic()
+    try:
+        resp = _post(url, {"pdf_path": str(path), "timeout_s": timeout}, timeout + 60.0)
+    except Exception as e:
+        # 服务中途死亡：地址缓存失效，下轮重拉（deferred，不落终态）
+        _MINERU_LOCAL_URL = None
+        _warn_once("mineru-local-conn",
+                   f"本地解析服务调用失败（{type(e).__name__}），本轮跳过下轮重试")
+        return None, "deferred"
+    secs = round(_time.monotonic() - t0, 1)
+    if not isinstance(resp, dict) or not resp.get("ok"):
+        err = (resp.get("error") if isinstance(resp, dict) else None) or "unknown"
+        _warn_once(f"mineru-local-parse:{str(err).split(':')[0]}",
+                   f"本地解析失败（{err}），记入终态待重试：{Path(path).name}（{secs}s）")
+        if str(err).startswith("too-many-pages"):
+            return None, "scanned"  # 超页上限：当缺页处理，诊断页提示拆分
+        return None, "extract-failed"
+    md = resp.get("md")
+    if not isinstance(md, str) or not md.strip():
+        return None, "empty"
+    print(f"[mineru-local] 解析成功：{Path(path).name}（{secs}s）")
+    return md, ""
+
+
 def _extract_pdf(path, backend=None):
     """PDF 提取路由（问题34 起：按页检测、整本分派）。
 
@@ -510,15 +652,28 @@ def _extract_pdf(path, backend=None):
         text_pages = sum(1 for pg in doc
                          if len(_page_text(pg).strip()) >= _TEXT_PAGE_MIN_CHARS)
         if text_pages < doc.page_count:
-            # 存在图片页：整本按扫描件流程（问题34）。仅 mineru-cloud 有产出能力，
-            # 其余任何取值（none 默认 / mineru-local 占位 / 未知值 / 试验台覆盖）
-            # 一律收拢到「跳过」——收拢同时封死旧代码「未匹配取值 fall-through
+            # 存在图片页：整本按扫描件流程（问题34）。mineru-cloud 送云端
+            # （is_ocr=True），mineru-local 送本机 pipeline 服务（R3b，
+            # is_ocr 语义相同：整本视觉认字产出一份完整 MD）；none/未知值
+            # 收拢到「跳过」——收拢同时封死旧代码「未匹配取值 fall-through
             # 到云端调用」的口子（如试验台把文字层语义的 local 覆盖进扫描分支）。
             scan_backend = backend or get_scan_backend()
+            if scan_backend == "mineru-local":
+                md, reason = _mineru_local_extract(path, pages=doc.page_count)
+                if reason == "deferred":
+                    return None, "deferred", "ocr:mineru-local"
+                if md is None:
+                    # 超页上限：当缺页处理落 scanned（诊断页提示拆分），下轮不重试；
+                    # 映射放路由层（而非 _mineru_local_extract 内部），与云端/跳过
+                    # 收拢同处，语义一处看完。
+                    if (reason or "").startswith("too-many-pages"):
+                        return None, "scanned", "ocr:mineru-local"
+                    return None, reason, "ocr:mineru-local"
+                return md, reason, "ocr:mineru-local"
             if scan_backend != "mineru-cloud":
                 _warn_once("scanned",
-                           "PDF 含图片页（无文字层），当前未启用云端 OCR 后端，已整本跳过"
-                           "（可在设置中把 pdf_scan_backend 设为 mineru-cloud）")
+                           "PDF 含图片页（无文字层），当前未启用 OCR 后端，已整本跳过"
+                           "（设置里把 pdf_scan_backend 设为 mineru-cloud 或 mineru-local）")
                 return None, "scanned", f"ocr:{scan_backend}"
             md, reason = _mineru_cloud_extract(path, is_ocr=True, pages=doc.page_count)
             return md, reason, "ocr:mineru-cloud"
@@ -826,7 +981,9 @@ def classify_extraction(path, backend=None, md5=None):
                       （worker 用它们调 mineru_cloud_extract_for_parallel，
                       不再重开 PDF——PyMuPDF 不保证多线程安全，worker 线程
                       绝不触碰 pymupdf）。
-      kind="inline" → 本地快速路径（缓存秒回 / 本地直提 / 云端未启用的快速失败），
+      kind="local"  → 走本机 MinerU 服务：主线程串行直调（服务端进程内串行锁，
+                      并发无意义），不进线程池。is_ocr/route 语义同 cloud。
+      kind="inline" → 本地快速路径（缓存秒回 / 本地直提 / OCR 未启用的快速失败），
                       当场跑完即可。pages = 页数（非 PDF 或打不开为 0）。
     判定与 _extract_pdf 的路由条件严格同源；漂移只影响并行收益（该并行的没并行 /
     不该并行的多绕一道），绝不影响产出正确性——真正执行仍走 extract_to_markdown
@@ -865,9 +1022,14 @@ def classify_extraction(path, backend=None, md5=None):
                          if len(_pt(pg).strip()) >= _TEXT_PAGE_MIN_CHARS)
         if text_pages < pages:
             # 与 _extract_pdf 扫描分支同源（问题34）：有图片页 → 仅 mineru-cloud
-            # 且 Key 已配时值得并行（没 Key 是快速失败）
+            # 且 Key 已配时值得并行（没 Key 是快速失败）；R3b：mineru-local 走
+            # 本机服务，主线程串行（kind="local"，不进线程池——服务端串行锁，
+            # 并发无意义；classify 本身不做任何网络/进程调用，服务挂了执行时
+            # 再 deferred，见 _mineru_local_extract）。
             if (backend or get_scan_backend()) == "mineru-cloud" and _cloud_key_ready():
                 return "cloud", pages, True, "ocr:mineru-cloud"
+            if (backend or get_scan_backend()) == "mineru-local":
+                return "local", pages, True, "ocr:mineru-local"
             return "inline", pages, None, None
         if text_backend == "mineru-cloud" and _cloud_key_ready():
             return "cloud", pages, False, "mineru-text"

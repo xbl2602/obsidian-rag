@@ -258,6 +258,123 @@ def test_ensure_server_early_exit_fails_fast():
             ok("ensure: 早夭不等满 120s", dt < 30, "%.1fs" % dt)
 
 
+def test_mineru_resolve_python():
+    """_resolve_mineru_python：显式合法路径优先；全找不到给 None（调用方报错
+    提示安装，不抛异常）。自动探测在不同机器结果不同，只断言形态。"""
+    import sys as _sys
+    ok("mineru-py: 显式合法优先",
+       ga._resolve_mineru_python(_sys.executable) == _sys.executable)
+    r = ga._resolve_mineru_python("Z:/no/such/python.exe")
+    ok("mineru-py: 找不到给 None 或有效文件",
+       r is None or Path(str(r)).is_file(), repr(r))
+
+
+def test_mineru_port_in_use():
+    """_port_in_use：绑住的端口 True，释放后 False（端口顺延的地基）。"""
+    import socket as _sock
+    s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+    port = s.getsockname()[1]
+    try:
+        ok("port: 监听中 True", ga._port_in_use(port) is True)
+    finally:
+        s.close()
+    ok("port: 释放后 False", ga._port_in_use(port) is False)
+
+
+def test_ensure_mineru_no_python_fails_fast():
+    """tool 环境缺失 → 立刻 (False, None)，不 spawn、不空等、不抛异常。"""
+    import time as _t
+    with patch.object(ga, "_resolve_mineru_python", return_value=None), \
+         patch.object(ga, "subprocess") as fake_sp:
+        spawned = []
+        fake_sp.Popen.side_effect = lambda *a, **k: spawned.append(a)
+        t0 = _t.time()
+        okd, used, detail = ga.ensure_mineru(url="http://127.0.0.1:9102", wait_s=60)
+        dt = _t.time() - t0
+        ok("ensure-mineru: 无环境 False", okd is False and used is None, detail)
+        ok("ensure-mineru: 无环境不 spawn", not spawned)
+        ok("ensure-mineru: 无环境不空等", dt < 10, "%.1fs" % dt)
+        ok("ensure-mineru: 提示装 mineru", "mineru" in detail, detail)
+
+
+def test_ensure_mineru_alive_reuse_no_spawn():
+    """已有实例 health 通 → 直接复用，不重复拉起。返回三元组 (ok, url, detail)。"""
+    with patch.object(ga, "server_alive", return_value=True), \
+         patch.object(ga, "subprocess") as fake_sp:
+        spawned = []
+        fake_sp.Popen.side_effect = lambda *a, **k: spawned.append(a)
+        okd, used, detail = ga.ensure_mineru(url="http://127.0.0.1:9102", wait_s=5)
+        ok("ensure-mineru: 存活复用 True", okd is True and used == "http://127.0.0.1:9102",
+           repr((okd, used, detail)))
+        ok("ensure-mineru: 复用不 spawn", not spawned)
+
+
+def test_ensure_mineru_port_roll():
+    """9102 被占（health 不通）→ 顺延 9103 拉起并返回新地址（用户拍板）。"""
+    import tempfile as _tf
+    with tempfile.TemporaryDirectory() as td, \
+         patch.object(ga, "server_alive", return_value=False), \
+         patch.object(ga, "_port_in_use", side_effect=[True, False]) as _pu, \
+         patch.object(ga, "_launch_mineru",
+                      return_value=(True, "launched")) as _ln, \
+         patch.object(ga, "MINERU_PID_FILE", Path(td) / "m.pid"), \
+         patch.object(ga, "MINERU_LOG_FILE", Path(td) / "m.log"), \
+         patch.object(ga, "_resolve_mineru_python", return_value="py"):
+        okd, used, detail = ga.ensure_mineru(url="http://127.0.0.1:9102", wait_s=5)
+        ok("ensure-mineru: 顺延后 True", okd is True, repr((okd, used, detail)))
+        ok("ensure-mineru: 返回 9103", used == "http://127.0.0.1:9103", repr(used))
+        ok("ensure-mineru: 拉起只调一次", _ln.call_count == 1, repr(_ln.call_count))
+
+
+def test_ensure_mineru_concurrent_single_launch():
+    """并发 ensure 只拉起一次（跨进程锁；生产曾开出双壳同端口）。"""
+    import tempfile as _tf
+    import threading as _th
+    import time as _t
+    with tempfile.TemporaryDirectory() as td, \
+         patch.object(ga, "ROOT", Path(td)), \
+         patch.object(ga, "MINERU_PID_FILE", Path(td) / "m.pid"), \
+         patch.object(ga, "MINERU_LOG_FILE", Path(td) / "m.log"), \
+         patch.object(ga, "_port_in_use", return_value=False), \
+         patch.object(ga, "_resolve_mineru_python", return_value="py"):
+        Path(td, "mineru_server.py").write_text("# fake script for precheck", encoding="utf-8")
+        calls = []
+        alive = {"v": False}
+        launched_url = {}
+
+        def fake_launch(*a, **k):
+            calls.append(1)
+            _t.sleep(1.0)  # 强制重叠：第二个线程必须在锁外等，不能插队开壳
+            launched_url["u"] = a[3]
+            alive["v"] = True  # 拉起后 health 转绿，后来者复用不再拉起
+            return True, "launched"
+
+        with patch.object(ga, "_launch_mineru", side_effect=fake_launch), \
+             patch.object(ga, "server_alive", side_effect=lambda *a, **k: alive["v"]):
+            out = []
+            ts = [_th.Thread(target=lambda: out.append(
+                ga.ensure_mineru(url="http://127.0.0.1:9102", wait_s=5)))
+                for _ in range(2)]
+            [t.start() for t in ts]
+            [t.join(30) for t in ts]
+        ok("ensure-mineru: 并发只拉起一次", len(calls) == 1, repr(len(calls)))
+        ok("ensure-mineru: 两边都 True",
+           all(r[0] is True for r in out), repr(out))
+        ok("ensure-mineru: 同一地址",
+           all(r[1] == "http://127.0.0.1:9102" for r in out), repr(out))
+
+
+def test_evict_mineru_dead_url_false():
+    """服务不在 → False（fail-open），绝不抛异常、不久等（9 端口恒关）。"""
+    import time as _t
+    t0 = _t.time()
+    ok("evict-mineru: 死亡地址 False",
+       ga.evict_mineru("http://127.0.0.1:9", timeout=5) is False)
+    ok("evict-mineru: 立刻返回", _t.time() - t0 < 20)
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

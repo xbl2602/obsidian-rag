@@ -332,11 +332,15 @@ function onSnapshot(snap) {
   $('kpiChunks').textContent = fmtInt(snap.chunks);
   $('kpiLast').textContent = fmtDur(snap.last_elapsed);
   if (snap.device) $('kpiDevice').textContent = (snap.device.model || '') + (snap.device.cuda === true ? ' · CUDA' : snap.device.cuda === false ? ' · CPU' : '');
-  var lock = (p.busy && !p.running);
+  // 门锁口径（问题47 附记）：不用 busy&&!running 双读拼凑（撕裂帧会冤枉 MCP），
+  // 用后端同一快照判定的 task 归属。starting = 自己刚点的、进度未到，显示启动中。
+  var t = snap.task || 'idle';
+  var lock = (t === 'foreign');
   $('btnIncr').disabled = lock || p.running;
   $('btnFull').disabled = lock || p.running;
-  $('busyNote').textContent = lock ? '另一进程正在索引（可能是 MCP 触发），本窗口暂不能启动新任务' : '';
-  $('btnStopIdx').disabled = !p.running;
+  $('busyNote').textContent = lock ? '另一进程正在索引（可能是 MCP 触发），本窗口暂不能启动新任务'
+    : (t === 'starting' ? '任务启动中…' : '');
+  $('btnStopIdx').disabled = !(p.running || t === 'starting');
   // DEAD 告警（每次进入 dead 只响一次）
   if (p.heartbeat === 'dead' && !S.deadAlarmed) {
     S.deadAlarmed = true;
@@ -1075,6 +1079,7 @@ $('labRun').addEventListener('click', function () {
     labPoll();
   });
 });
+var ROUTE_NAME = { local: '本地直提', 'mineru-text': 'MinerU 结构识别', 'ocr:mineru-cloud': 'MinerU 云端 OCR', 'ocr:mineru-local': 'MinerU 本地解析', '-': '未知通道' };
 function labPoll() {
   if (!labPolling) return;
   API.preview_poll().then(function (st) {
@@ -1083,16 +1088,28 @@ function labPoll() {
     $('labTimeout').style.display = secs > 120 ? 'flex' : 'none';
     if (st.done) {
       labReset();
-      if (st.result && st.result.ok) {
-        $('labHtml').innerHTML = st.result.rendered_html || '';
-        $('labMd').textContent = st.result.markdown || '';
+      var r = st.result || {};
+      if (r.ok && !r.reason) {
+        $('labHtml').innerHTML = r.rendered_html || '';
+        $('labMd').textContent = r.markdown || '';
         $('labEmpty').style.display = 'none';
         labShowTab(true);
-        $('labStatus').textContent = '完成 · 耗时 ' + Math.round(secs) + 's';
+        $('labStatus').textContent = '完成 · ' + (ROUTE_NAME[r.route] || r.route || '未知通道')
+          + ' · ' + (r.chars || 0) + '字 · 管线' + (r.elapsed || 0) + 's';
+      } else if (r.ok && r.reason) {
+        // 管线正常跑完但未产出（扫描件跳过/缺 Key/空文件…）：如实展示原因，
+        // 不再冒充"完成"。此前 reason 被桥丢弃，此分支永远到不了。
+        var label = REASON_LABEL[r.reason] || r.reason;
+        var advice = REASON_ADVICE[r.reason] || '';
+        $('labEmpty').style.display = 'block';
+        $('labEmpty').innerHTML = '<div class="grotesk">未产出 · ' + esc(label) + '</div><div>'
+          + esc(advice || '换个后端或检查文件后重试') + '</div>';
+        $('labStatus').textContent = '未产出 · ' + label;
+        toast('提取未产出：' + label + (advice ? '（' + advice + '）' : ''), 'warn');
       } else {
         $('labEmpty').style.display = 'block';
-        $('labStatus').textContent = '失败：' + ((st.result && st.result.error) || '未知错误');
-        toast('提取失败：' + ((st.result && st.result.error) || '未知错误'), 'err');
+        $('labStatus').textContent = '失败：' + (r.error || '未知错误');
+        toast('提取失败：' + (r.error || '未知错误'), 'err');
       }
       return;
     }

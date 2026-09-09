@@ -84,13 +84,19 @@ DEFAULTS = {
     "keep_exports": 3,
     "import_upsert_batch": 500,
 
-    # ---- 扫描件 OCR（R3a：MinerU 云端 API，默认关）----
-    "pdf_scan_backend": "none",       # none | mineru-cloud（mineru-local 属 R3b 未支持）
+    # ---- 扫描件 OCR（R3a：MinerU 云端 API，默认关；R3b：本地 pipeline 服务）----
+    "pdf_scan_backend": "none",       # none | mineru-cloud | mineru-local（R3b：本机 pipeline 解析，需配好 mineru tool 环境）
     "mineru_api_key": "",             # mineru.net 个人中心 API Token；GUI/config 双端可改
     "mineru_timeout_seconds": 600,    # 单个扫描件 提交+轮询+下载 的总预算（秒）
     "mineru_concurrency": 3,          # 云端提取并行线程数（问题35/36）；0=最大吞吐（限速闸门
                                        # 自动节流，完成一个补一个）；1=串行旧行为；≥2=固定并发
     "mineru_rate_per_minute": 45,     # 每分钟最多提交多少个文件（官方频控 50/分钟，留余量）；0 = 不限
+    "mineru_local_url": "http://127.0.0.1:9102",  # R3b 本地解析服务地址（mineru_server.py；
+                                       # 端口被占时自动顺延 9103/9104，实际地址由拉起方通告）
+    "mineru_python": "",              # R3b mineru tool 环境的 python.exe 全路径（空 = 自动探测
+                                       # uv tool 环境；mineru_server.py 由它拉起，别填 .venv/全局3.14）
+    "mineru_local_max_pages": 200,    # R3b 单文件页数上限（超限跳过记 scanned 并提示拆分；
+                                       # 串行锁下大文件会卡死整轮；0 = 不限，不推荐）
     "pdf_text_backend": "local",      # local | mineru-cloud | mineru-local（本地模型入口占位，尚未实现，选中退化为 local）
     "mineru_model_version": "vlm",    # pipeline | vlm（MinerU 云端解析模型版本；vlm 精度更高，官方推荐；
                                        # pipeline 更快更省配额，兜底用；非法值回退 vlm）
@@ -332,8 +338,24 @@ CONFIG_TEMPLATE = """\
   // 扫描件（无文字层 PDF）的 OCR 后端：
   //   none         = 不做 OCR，扫描件跳过并在指纹里记 scanned 终态（默认）
   //   mineru-cloud = 调 MinerU 云端 API（mineru.net），需在下方填 API Key
+  //   mineru-local = 本机 MinerU pipeline 解析（R3b，需先装好 mineru tool 环境，
+  //                  见 AI_GUIDE；不出内网、不花配额；服务未就绪时记 scanned 下轮重试）
   // 改动后无需重建：已跳过的扫描件会在下一轮索引自动重试转正（xsrc 失配机制）。
   "pdf_scan_backend": "none",
+
+  // R3b 本地解析服务地址（mineru_server.py 用 mineru tool 环境的 py3.12 起）。
+  // 端口被占时拉起方自动顺延 9103/9104 并以后续实际地址为准，无需手动改这里。
+  "mineru_local_url": "http://127.0.0.1:9102",
+
+  // R3b mineru tool 环境的 python.exe 全路径（uv tool install 落点，形如
+  // APPDATA 下 uv/tools/mineru/Scripts/python.exe）。空 = 自动探测 tool 环境；
+  // 找不到才报错提示安装。别填项目 .venv，也别填全局 3.14（MinerU 最高支持 3.12）。
+  "mineru_python": "",
+
+  // R3b 单文件页数上限：超限的扫描件跳过记 scanned（诊断页提示人工拆分），
+  // 下轮不自动重试该文件。串行锁下大文件会卡死整轮索引，故默认 200；
+  // 0 = 不限（不推荐，8GB 卡上数百页文件可能耗时数小时）。
+  "mineru_local_max_pages": 200,
 
   // 有文字层 PDF 的提取后端：
   //   local        = 本地直提（默认，免费、快）

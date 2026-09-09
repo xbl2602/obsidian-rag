@@ -68,6 +68,24 @@ torch 用 `pip install torch==2.11.0+cu128 --index-url https://download.pytorch.
    （`data/extract_cache/mineru_pending.json` 断点簿记），不重复消耗配额；
    Token 失效自动停掉同批剩余任务
 
+### 本地解析（MinerU 本机 pipeline，问题51 R3b，不出内网、不花配额）
+
+1. 装 uv（全局 Python 里 `pip install uv`，它只是安装器），然后：
+   `uv tool install --python 3.12 -U "mineru[all]"`
+   （Windows 上 MinerU 最高支持 Python 3.12；绝不装进项目 .venv 或全局 3.14）
+2. 若 `import torch` 显示 CPU 版，补 CUDA 轮子：
+   `uv pip install --python <tool环境python> -U torch --index-url https://download.pytorch.org/whl/cu128`
+3. 建模型目录 `E:\models\hf`，用量设 `HF_HOME`（只在跑 mineru 的窗口设，
+   不要设全局——C 盘现有 HF 缓存是 RAG 在用的）；HF_TOKEN 有则设用户变量，
+   无也可（公开模型匿名可下，15GB 旧模型就是这么来的）
+4. 冒烟：`mineru -p <一份扫描PDF> -o E:\tmp\mineru_smoke`，出 `.md` 即环境 OK
+5. 切后端：`pdf_scan_backend=mineru-local`（GUI 设置页或 config.json），下轮索引
+   自动拉起 `mineru_server.py`（:9102，被占顺延；单文件页上限
+   `mineru_local_max_pages` 默认 200，超限跳过提示拆分；服务未就绪本轮跳过
+   不落终态，下轮重试）
+6. 全量重建默认复用提取缓存（内容哈希相同即命中，不重复解析）；要连缓存
+   一起删：`python index.py --full --fresh-extract`（云端文件会重烧配额，慎用）
+
 ### 2.3 导入数据包（核心步骤）
 ```bash
 # --yes 必加：AI 非交互环境，跳过“覆盖确认”询问
