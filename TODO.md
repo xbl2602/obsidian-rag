@@ -550,3 +550,13 @@ python index.py --library "Obsidian Vault"
 - [x] guiweb：`_md_to_html` 升级 + search 带 rendered_html + read_document + mDoc 弹层
 - [x] Flet：展开态 `ft.Markdown` + 收起去标记预览 + 正文弹层
 - [x] 契约/mock/ parity 同步 + 两处测试文件新增 12 项用例
+
+## 图谱第一屏返工（问题 53，2026-09-10）
+
+> 状态：✅ 已完成。用户反馈字堆字/显存高/放大模糊/检索只出两条/像杂草。
+> 详见 TASK_LOG.md 问题 53。
+
+- [x] 标签密度策略（缩小或节点多时只留 hub/命中/选中/悬停）
+- [x] 去 will-change 常驻合成层 + 阴影瘦身 + 超量 perf 模式（显存/模糊同根因）
+- [x] 图谱检索：多取候选按文件分组（上限 12）+ 三环封顶轨道 + 非命中径向排斥
+- [x] 页图层默认关 + 锚点环形铺开 + 初始散布拉大；`G.lastSnips` 落地激活 Inspector 命中片段

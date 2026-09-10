@@ -753,7 +753,10 @@ td.g{color:var(--sec);font-size:12px}
 }
 #view-graph.on{display:block;animation:none}
 .g-stage{position:absolute;inset:0;overflow:hidden;touch-action:none}
-.g-world{position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:0 0;will-change:transform}
+.g-world{position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:0 0}
+/* 注：此处刻意不用 will-change:transform——它会把整个 world（含 12000px SVG 画布）
+   锁成巨型常驻合成层：旧光栅在放大后不清（字越放越糊）+ 常驻吃显存。
+   静止态让 Chromium 正常重绘即清晰；动画帧需要时浏览器会自动提升。 */
 .g-dots{
   position:absolute;left:-6000px;top:-6000px;width:12000px;height:12000px;
   background-image:radial-gradient(circle,var(--g-dot) 1px,transparent 1.2px);
@@ -770,13 +773,15 @@ td.g{color:var(--sec);font-size:12px}
 .gr{fill:none;stroke:var(--accent);stroke-linecap:round;opacity:0;transition:opacity .5s var(--ease)}
 .gr.on{opacity:.85}
 .gr-c{fill:none;stroke:var(--accent)}
-.g-node{position:absolute;left:0;top:0;will-change:transform;user-select:none;-webkit-user-select:none}
+.g-node{position:absolute;left:0;top:0;user-select:none;-webkit-user-select:none}
+/* 注：几百个节点各一个常驻合成层是显存大头（每个带阴影/文字光栅），故不用
+   will-change；拖拽/动画中的节点浏览器会自动提升，用完即回收。 */
 .g-card{
   position:relative;
   display:flex;align-items:center;gap:7px;transform:translate(-50%,-50%);
   background:var(--core-2);border:1px solid var(--hair);border-radius:10px;padding:6px 11px;
   white-space:nowrap;cursor:grab;
-  box-shadow:0 8px 22px rgba(0,0,0,0.38);
+  box-shadow:0 3px 10px rgba(0,0,0,0.35);
   transition:box-shadow .3s var(--ease),opacity .4s var(--ease),border-color .3s var(--ease);
 }
 [data-theme="light"] .g-card{box-shadow:0 4px 14px rgba(20,26,36,0.10)}
@@ -796,6 +801,16 @@ td.g{color:var(--sec);font-size:12px}
 body.g-mono .g-node .g-mark{background:var(--s4) !important;border-color:var(--hair-strong) !important}
 .g-node.dim{opacity:.45}
 .g-node.lit .g-card{border-color:var(--accent);box-shadow:0 0 0 1.5px var(--accent-line),0 8px 26px rgba(52,211,153,0.14)}
+/* 标签密度：缩小时或节点多时只留 hub/命中/选中/悬停的标签，其余全藏（治"字堆字"） */
+.g-stage.labels-min .g-label{display:none}
+.g-stage.labels-min .g-node.big .g-label,
+.g-stage.labels-min .g-node.lit .g-label,
+.g-stage.labels-min .g-node.sel .g-label,
+.g-stage.labels-min .g-node:hover .g-label{display:inline}
+/* 超量节点性能模式：去卡片阴影（阴影是每帧重绘的 GPU 开销大头） */
+.g-stage.perf .g-card{box-shadow:none}
+.g-stage.perf .g-node.lit .g-card{box-shadow:0 0 0 1.5px var(--accent-line)}
+.g-stage.perf .g-node.sel .g-card{box-shadow:0 0 0 2px var(--accent)}
 .g-node.sel .g-card{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
 .g-conf{
   position:absolute;left:50%;top:100%;transform:translate(-50%,4px);

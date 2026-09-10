@@ -1665,7 +1665,7 @@ window.addEventListener('log', function (e) {
 var G = {
   ready: false, nodes: [], byId: {}, links: [], owns: [], sem: [], semLoaded: false,
   libs: [], anchors: {}, themes: [],
-  ly: { bilat: true, sem: false, own: true, page: true, cache: true, pdf: true, bounds: true, th: 0.62 },
+  ly: { bilat: true, sem: false, own: true, page: false, cache: true, pdf: true, bounds: true, th: 0.62 },
   colorMode: 'lib', topK: 5,
   qNode: null, redges: [], searching: false, insOpen: false,
   cam: { x: 0, y: 0, k: 1 }, nodeEls: {}
@@ -1771,9 +1771,10 @@ function ensureGradients() {
 function gInitFrom(payload) {
   G.libs = payload.libs || [];
   G.themes = [];
-  var ANCH = [[-450, -40], [370, -290], [300, 310], [-400, 330], [430, 60], [0, -360], [-520, -280], [520, -120]];
+  // 锚点按库数环形铺开（此前 8 个固定槽位，多库共用槽位直接叠罗汉）
   G.libs.forEach(function (name, i) {
-    G.anchors[name] = { ax: ANCH[i % ANCH.length][0], ay: ANCH[i % ANCH.length][1] };
+    var a = (i / Math.max(1, G.libs.length)) * Math.PI * 2 - Math.PI / 2;
+    G.anchors[name] = { ax: Math.cos(a) * 620, ay: Math.sin(a) * 480 };
   });
   G.nodes = (payload.nodes || []).map(function (raw, i) {
     var n = {
@@ -1786,7 +1787,7 @@ function gInitFrom(payload) {
     n.t = gLabel(n);
     var an = G.anchors[n.lib] || { ax: 0, ay: 0 };
     var ang = (i * 2.399) % (Math.PI * 2);
-    var r = n.type === 'page' ? 40 : (110 + (i % 5) * 52);
+    var r = n.type === 'page' ? 40 : (150 + (i % 9) * 65);
     n.x = an.ax + Math.cos(ang) * r;
     n.y = an.ay + Math.sin(ang) * r;
     n.vx = 0; n.vy = 0;
@@ -1802,6 +1803,9 @@ function gInitFrom(payload) {
   ensureGradients();
   buildGraphDom();
   G.ready = true;
+  // 超量节点自动进性能模式（去卡片阴影，见 CSS .g-stage.perf）
+  if (G.nodes.length > 500) gStage.classList.add('perf');
+  updateLabelDensity();
   $('gpSum').textContent = fmtInt(payload.stats ? payload.stats.nodes : G.nodes.length) + ' 节点 · 实时生效';
   renderLegend();
   if (RM) { settleSync(320); fitView(100); render(); }
@@ -1966,15 +1970,41 @@ function simStep() {
     if (sp > 26) { n.vx = n.vx / sp * 26; n.vy = n.vy / sp * 26; }
     n.x += n.vx; n.y += n.vy;
   }
+  // 检索态：问题节点是辐射中心——非命中节点受径向排斥 drift 向外围，
+  // 命中节点走 orbit 轨道聚拢。只在模拟进行时生效，清除检索后自动回落。
+  if (G.qNode) {
+    var hs = G.searchHits || {};
+    for (i = 0; i < act.length; i++) {
+      n = act[i];
+      if (n.fixed || n.orbit || hs[n.id]) continue;
+      dx = n.x - G.qNode.x; dy = n.y - G.qNode.y;
+      d2 = dx * dx + dy * dy;
+      if (d2 < 360000 && d2 > 1) {
+        d = Math.sqrt(d2);
+        var push = (600 - d) / 600 * 3.4 * A;
+        n.vx += dx / d * push; n.vy += dy / d * push;
+      }
+    }
+  }
   sim.alpha *= 0.982;
   sim.frame++;
   if (sim.alpha < 0.004 || sim.frame >= 360) sim.active = false;
 }
 /* 相机 */
 function gStageRect() { return gStage.getBoundingClientRect(); }
+/* 标签密度：缩小时（k<1.05）或可见节点>350，只留 hub/命中/选中/悬停标签。
+   只做 class 翻转（状态变化时才碰 DOM），不逐节点操作。 */
+function updateLabelDensity() {
+  if (!gStage) return;
+  var min = (G.cam.k < 1.05) || (gA().length > 350);
+  if (gStage.classList.contains('labels-min') !== min) {
+    gStage.classList.toggle('labels-min', min);
+  }
+}
 function applyCam() {
   gWorld.style.transform = 'translate(' + G.cam.x + 'px,' + G.cam.y + 'px) scale(' + G.cam.k + ')';
   $('gZoomLabel').textContent = Math.round(G.cam.k * 100) + '%';
+  updateLabelDensity();
 }
 function clampK(k) { return Math.min(2.4, Math.max(0.3, k)); }
 function zoomAt(sx, sy, k2) {
@@ -2314,14 +2344,34 @@ function runGSearch(q) {
   G.searchHits = null;
   clearGLit();
   var seq = G_SEQ;
-  API.search(q, G.topK, scopeStr(), true).then(function (res) {
+  // 图谱按文件节点点亮：topK 个块常归属 2~3 个文件（"只能出来两条"的根因）。
+  // 多取候选（topK×4，至少 20）再按文件分组，展示上限 G_MAXHITS 个文件。
+  var G_MAXHITS = 12;
+  var fetchK = Math.max(G.topK * 4, 20);
+  API.search(q, fetchK, scopeStr(), true).then(function (res) {
     if (seq !== G_SEQ) return;
     G.searching = false;
     setGoBusy(false);
     if (res.error) { setGoBusy(false); toast('检索失败：' + res.error, 'err'); return; }
-    var hits = (res.results || []).map(function (r) {
-      return { id: r.lib + '|' + r.rel, conf: r.confidence, snip: r.body || '' };
-    }).filter(function (h) { return G.byId[h.id] && gVisible(G.byId[h.id]); }).slice(0, G.topK);
+    var seen = {};
+    var files = [];
+    (res.results || []).forEach(function (r) {
+      if (r.notice) return;
+      var id = r.lib + '|' + r.rel;
+      var n = G.byId[id];
+      if (!n || !gVisible(n)) return;
+      if (!seen[id]) {
+        seen[id] = { id: id, conf: r.confidence || 0, snip: r.body || '', blocks: 0 };
+        files.push(seen[id]);
+      }
+      var f = seen[id];
+      f.blocks++;
+      if ((r.confidence || 0) > f.conf) { f.conf = r.confidence; f.snip = r.body || ''; }
+    });
+    files.sort(function (a, b) { return b.conf - a.conf; });
+    var hits = files.slice(0, G_MAXHITS);
+    G.lastSnips = {};
+    files.forEach(function (f) { G.lastSnips[f.id] = f.snip; });
     if (!hits.length) { setGoBusy(false); toast('没有匹配到可见节点，换个问法或调整库范围', 'warn'); return; }
     var r0 = gStageRect();
     var c = s2w(r0.left + r0.width / 2 - 170, r0.top + r0.height * 0.36);
@@ -2334,30 +2384,32 @@ function runGSearch(q) {
     G.nodeEls.qnode = el;
     var qx = el.querySelector('.q-x');
     if (qx) qx.addEventListener('click', function (ev) { ev.stopPropagation(); clearGSearch(); });
+    // 三环封顶（此前半径 90+i*60 无界，命中一多就飞出屏幕）；半径按当前缩放折算，
+    // 保证屏幕观感一致（缩小时 world 半径放大，放大时缩小）。
+    var zk = 1 / Math.max(0.35, G.cam.k);
+    var RINGS = [130 * zk, 220 * zk, 310 * zk];
     var ringN = Math.min(3, hits.length);
     for (var ri = 0; ri < ringN; ri++) {
       var oc = document.createElementNS(SVGNS, 'circle');
       oc.setAttribute('class', 'g-orbit-ring');
       oc.setAttribute('cx', (G.qNode.x + OFF).toFixed(1));
       oc.setAttribute('cy', (G.qNode.y + OFF).toFixed(1));
-      oc.setAttribute('r', 90 + ri * 60);
+      oc.setAttribute('r', RINGS[ri].toFixed(1));
       oc.setAttribute('opacity', (0.20 - ri * 0.05).toFixed(3));
       $('gOrbitG').appendChild(oc);
     }
     var orbitDefs = [];
     (function () {
-      var rings = {};
+      var per = {};
       hits.forEach(function (h, i) {
-        var rr = 90 + i * 60;
-        (rings[rr] = rings[rr] || []).push(i);
+        var rk = RINGS[i % RINGS.length];
+        (per[rk] = per[rk] || []).push(i);
       });
-      var base = 0;
-      Object.keys(rings).forEach(function (rk) {
-        var arr = rings[rk];
+      Object.keys(per).forEach(function (rk) {
+        var arr = per[rk];
         arr.forEach(function (idx, j) {
-          orbitDefs[idx] = { r: +rk, a: -Math.PI / 2 + base * 0.9 + (j * 2 * Math.PI) / arr.length };
+          orbitDefs[idx] = { r: +rk, a: -Math.PI / 2 + (j * 2 * Math.PI) / arr.length };
         });
-        base++;
       });
     })();
     requestRender();
@@ -2419,7 +2471,8 @@ function runGSearch(q) {
       });
       gTimers.push(setTimeout(applyResults, 950));
     }
-    toast('已命中 ' + hits.length + ' 个相关节点');
+    toast('已命中 ' + files.length + ' 个相关文件'
+      + (files.length > hits.length ? '（轨道展示前 ' + hits.length + ' 个）' : ''));
   }).catch(function (err) {
     if (seq !== G_SEQ) return;
     G.searching = false;
@@ -2491,6 +2544,7 @@ function gLayerChanged() {
     var el = G.nodeEls[n.id];
     if (el) el.style.display = gVisible(n) ? '' : 'none';
   });
+  updateLabelDensity();
   if (!RM) startSim(0.45); else { settleSync(120); fitView(100); }
   updateSemCount(); updateGStatus(); updateLibCounts();
   requestRender();
