@@ -616,6 +616,25 @@
   </div></div>
 </div>
 
+<!-- 正文查看（检索命中 → GUI 内精读全文，不跳外部应用） -->
+<div class="overlay" id="mDoc">
+  <div class="shell modal modal-doc"><div class="core modal-core">
+    <h3 id="docTitle">正文</h3>
+    <p class="m-desc mono" id="docMeta">读取中…</p>
+    <div class="lab-tabs" role="tablist" style="margin-bottom:10px">
+      <button class="lab-tab on" id="docTabHtml" role="tab" aria-selected="true">渲染视图</button>
+      <button class="lab-tab" id="docTabMd" role="tab" aria-selected="false">Markdown 源码</button>
+    </div>
+    <div class="doc-body md-body" id="docHtml"><div class="doc-loading"><span class="mini-spin"></span>正在读取正文…</div></div>
+    <pre class="lab-md mono" id="docMd" style="display:none"></pre>
+    <div class="notice n-warn" id="docTrunc" style="display:none;margin-top:10px"><span id="docTruncTxt"></span></div>
+    <div class="m-ops">
+      <button class="btn" data-close>关闭</button>
+      <button class="btn btn-ghost" id="docOpen">打开源文件</button>
+    </div>
+  </div></div>
+</div>
+
 <div class="toasts" id="toastWrap"></div>
 <div class="stamp" id="mockBadge" style="display:none">演示模式 · 假数据</div>
 

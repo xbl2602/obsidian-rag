@@ -2356,3 +2356,25 @@ bge 加载时撞 HF DNS 瞬断（getaddrinfo failed）整库失败，体感“�
 (4) 非 bug：外壳 30min/内服务 5min 空闲退出是设计值，不是泄漏；试验台 41 页
 preview 解析成功但只写临时缓存，所以生产 0 local 缓存是对的。
 用户重跑全量前置条件：后端已切 mineru-local、DNS 已恢复、残留双壳已清。
+
+## 问题52：检索命中默认渲染 + GUI 内正文查看（2026-09-10）
+
+> 用户需求：GUI 里输出 md 时要看到渲染好的而不是纯字；要点开直接不离开 GUI 看正文。
+> 两套 GUI 一起改（Flet gui/ + guiweb），共享层只加只读接口，不动索引/提取管线。
+
+- 共享层：`store.read_document_text(cfg, rel)`——md/txt 读源文件，pdf/docx 只读既有
+  提取缓存（未提取报 not-cached 指引先增量重建，绝不后台触发 OCR/云端，与
+  server.read_document 同红线）；路径穿越/绝对路径拒绝；超长 20 万字截断。
+- guiweb：`bridge._md_to_html` 从极简升级为 GFM mini 渲染（h1-h4/分割线/引用/
+  ul-ol/GFM 表格/围栏代码/行内样式，先转义后套标签，XSS-safe）；`search()` 给
+  每条命中带 `rendered_html`，前端默认渲染视图 + 渲染/源码切换 + 标签感知的查询
+  高亮；新增 `read_document` + 正文弹层 mDoc（渲染默认/源码切换/字数路由抬头/
+  截断提示/打开源文件）；mock/契约/FEATURE_PARITY 同步。
+- Flet：命中展开态改 `ft.Markdown` 渲染；收起态此前只有标题行（注释与实现不符），
+  现补去标记纯文本预览；每条命中加"在窗口内查看正文"按钮 → 正文弹层（渲染/
+  源码双签，对齐提取试验台写法）+ 在外部打开。
+- 测试：test_gui_store 新增直读 5 项 + 去标记/渲染/按钮 3 项；test_guiweb 新增
+  渲染器/search 挂载/read_document/契约 parity 4 项；audit/config/extractors/
+  registry/singleton/dedup/gpu/wemm×2 回归绿；verify_export_import 按用户要求跳过未跑。
+- 教训：Windows 下 `os.path.isabs("/etc/passwd")` 为 False，绝对路径判定须显式补
+  前导 "/"（用例先红后修，见 test_read_document_text_traversal_blocked）。

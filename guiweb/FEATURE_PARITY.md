@@ -18,6 +18,8 @@
 | 结果解析（来源/标题/块号/置信度） | bridge.parse_search_text（结构化 JSON，不再前端正则） | ✅ 单测 |
 | 置信度三档徽章（≥0.75/≥0.5/其余） | 前端渲染 | ⬜ |
 | 片段展开/收起（收起 3 行预览） | 前端 | ⬜ |
+| 命中正文默认渲染视图 + 渲染/源码切换 | 后端 rendered_html（_md_to_html）+ 前端 r-viewtgl | ✅ 单测 |
+| 查看正文（GUI 内读全文，不跳外部） | read_document + 正文弹层（mDoc）| ✅ 单测 |
 | 关联笔记内联展开（懒加载+缓存） | note_relations + 前端缓存 | ⬜ |
 | 打开源文件（Obsidian URI/startfile 回退） | bridge.open_source（移植 _open_result） | ✅ 代码移植 |
 | 首次检索 30–60s 提示、耗时显示 | 前端 loading + elapsed | ⬜ |

@@ -577,7 +577,39 @@ class Bridge:
         self._log("检索「%s」%s 耗时 %.1fs"
                   % (query.strip(), ("（%s）" % libraries) if libraries else "（全部库）",
                      elapsed))
-        return {"results": parse_search_text(text), "elapsed": elapsed, "error": None}
+        results = parse_search_text(text)
+        for r in results:
+            if not r.get("notice"):
+                # 命中正文默认看渲染：后端直接带 rendered_html，前端不再裸显 MD 源码
+                r["rendered_html"] = Bridge._md_to_html(r.get("body") or "")
+        return {"results": results, "elapsed": elapsed, "error": None}
+
+    def read_document(self, lib, rel):
+        """GUI 内正文查看：读某文件的完整正文，渲染好直接给前端弹层展示。
+
+        零触发只读（调 store.read_document_text：md/txt 读源文件，pdf/docx
+        只读既有提取缓存，未提取的不后台触发 OCR/云端）；超长截断 200k 字。
+        """
+        cfg = next((c for c in store.library_entries() if c["name"] == lib), None)
+        if cfg is None:
+            return {"ok": False, "markdown": "", "rendered_html": "",
+                    "chars": 0, "truncated": False, "route": "",
+                    "error": "库不存在：%s" % lib}
+        text, route, truncated = store.read_document_text(cfg, rel or "")
+        if text is None:
+            advice = {"not-cached": "该文件尚未被索引/提取，请先增量重建后再查看",
+                      "读取失败": "源文件读取失败，可能已被移动或删除",
+                      "路径非法": "路径非法，已拒绝",
+                      "不支持该格式": "该格式暂不支持 GUI 内查看，请用系统方式打开"}.get(route, route)
+            self._log("正文查看失败 %s/%s：%s" % (lib, rel, route), is_error=True)
+            return {"ok": False, "markdown": "", "rendered_html": "",
+                    "chars": 0, "truncated": False, "route": route,
+                    "error": advice}
+        self._log("正文查看 %s/%s（%d 字%s）" % (lib, rel, len(text), "·已截断" if truncated else ""))
+        return {"ok": True, "markdown": text,
+                "rendered_html": Bridge._md_to_html(text),
+                "chars": len(text), "truncated": bool(truncated),
+                "route": route, "error": None}
 
     def note_relations(self, lib, rel):
         key = (lib, rel)
@@ -912,25 +944,163 @@ class Bridge:
             self._pv_dir = None
 
     @staticmethod
-    def _md_to_html(md):
-        """极简 Markdown→HTML（标题/列表/代码/粗体），仅试验台预览用。"""
+    def _md_inline(s):
+        """行内 Markdown→HTML（输入已是转义文本，只套白名单标签）。
+
+        顺序：代码段先占位（免得 `**` / 链接语法在代码里被误解析）→ 图片 →
+        链接（仅 http/https/obsidian/#/mailto 放行 <a>，其余退化纯文本）→
+        粗体/斜体/删除线 → 占位符还原。
+        """
         import html as _h
+        holders = {}
+
+        def _hold(html):
+            holders["\x00%d\x00" % len(holders)] = html
+            return "\x00%d\x00" % (len(holders) - 1)
+
+        s = re.sub(r"`([^`\n]+)`", lambda m: _hold("<code>%s</code>" % m.group(1)), s)
+        s = re.sub(r"!\[([^\]]*)\]\([^)]*\)",
+                   lambda m: _hold('<span class="md-img">🖼 %s</span>' % (m.group(1) or "图片")), s)
+
+        def _link(m):
+            text, url = m.group(1), (m.group(2) or "").strip()
+            scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+            if url.startswith("#") or scheme in ("http", "https", "obsidian", "mailto", ""):
+                return _hold('<a href="%s" target="_blank" rel="noreferrer">%s</a>'
+                             % (_h.escape(url, quote=True), text))
+            return _hold("%s（%s）" % (text, _h.escape(url)))
+
+        s = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _link, s)
+        s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
+        s = re.sub(r"__([^_]+)__", r"<b>\1</b>", s)
+        s = re.sub(r"~~([^~]+)~~", r"<del>\1</del>", s)
+        s = re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)", r"<i>\1</i>", s)
+        for k, v in holders.items():
+            s = s.replace(k, v)
+        return s
+
+    @staticmethod
+    def _md_to_html(md):
+        """Markdown→HTML（离线 mini 渲染，检索命中/试验台/正文查看共用）。
+
+        支持：h1-h4、分割线、引用、ul/ol、GFM 表格、围栏代码、行内样式
+        （见 _md_inline）。XSS-safe：先全文转义再套标签，不信任原文任何尖括号。
+        """
+        import html as _h
+        lines = (md or "").splitlines()
         out = []
-        for line in (md or "").splitlines():
-            s = _h.escape(line)
-            if s.startswith("### "):
-                out.append("<h3>%s</h3>" % s[4:])
-            elif s.startswith("## "):
-                out.append("<h2>%s</h2>" % s[3:])
-            elif s.startswith("# "):
-                out.append("<h1>%s</h1>" % s[2:])
-            elif s.startswith("- "):
-                out.append("<li>%s</li>" % s[2:])
-            elif s.startswith("```"):
-                out.append("<pre>")
-            else:
-                s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
-                out.append("<p>%s</p>" % s if s else "<p></p>")
+        i, n = 0, len(lines)
+        para = []
+
+        def _flush_para():
+            if para:
+                out.append("<p>%s</p>" % "<br/>".join(Bridge._md_inline(_h.escape(p)) for p in para))
+                del para[:]
+
+        def _flush_list(tag, items):
+            if items:
+                out.append("<%s>%s</%s>" % (
+                    tag, "".join("<li>%s</li>" % Bridge._md_inline(_h.escape(t)) for t in items), tag))
+                del items[:]
+
+        ul, ol = [], []
+        while i < n:
+            line = lines[i]
+            s = line.strip()
+            if not s:
+                _flush_para()
+                _flush_list("ul", ul)
+                _flush_list("ol", ol)
+                i += 1
+                continue
+            if s.startswith("```"):
+                _flush_para()
+                _flush_list("ul", ul)
+                _flush_list("ol", ol)
+                lang = _h.escape(s[3:].strip().split()[0]) if s[3:].strip() else ""
+                buf = []
+                i += 1
+                while i < n and not lines[i].strip().startswith("```"):
+                    buf.append(lines[i])
+                    i += 1
+                i += 1  # 吞掉结尾 ```
+                out.append('<pre><code%s>%s</code></pre>'
+                           % ((' class="%s"' % lang) if lang else "",
+                              _h.escape("\n".join(buf))))
+                continue
+            # GFM 表格：表头行 + 分隔行（| - : 空格）+ 若干数据行
+            if "|" in s and i + 1 < n and re.match(
+                    r"^\s*\|?[\s|:~-]+\|?[\s|:~-]*$", lines[i + 1]) and "-" in lines[i + 1]:
+                _flush_para()
+                _flush_list("ul", ul)
+                _flush_list("ol", ol)
+
+                def _cells(row):
+                    row = row.strip()
+                    if row.startswith("|"):
+                        row = row[1:]
+                    if row.endswith("|"):
+                        row = row[:-1]
+                    return [_h.escape(c.strip()) for c in row.split("|")]
+
+                head = _cells(s)
+                out.append("<table><thead><tr>%s</tr></thead><tbody>"
+                           % "".join("<th>%s</th>" % c for c in head))
+                i += 2
+                while i < n and "|" in lines[i] and lines[i].strip():
+                    out.append("<tr>%s</tr>"
+                               % "".join("<td>%s</td>" % c for c in _cells(lines[i].strip())))
+                    i += 1
+                out.append("</tbody></table>")
+                continue
+            m = re.match(r"^(#{1,4})\s+(.*)$", s)
+            if m:
+                _flush_para()
+                _flush_list("ul", ul)
+                _flush_list("ol", ol)
+                lv = len(m.group(1))
+                out.append("<h%d>%s</h%d>" % (lv, Bridge._md_inline(_h.escape(m.group(2))), lv))
+                i += 1
+                continue
+            if re.match(r"^([-*_]\s*){3,}$", s):
+                _flush_para()
+                _flush_list("ul", ul)
+                _flush_list("ol", ol)
+                out.append("<hr/>")
+                i += 1
+                continue
+            if s.startswith(">"):
+                _flush_para()
+                _flush_list("ul", ul)
+                _flush_list("ol", ol)
+                quotes = []
+                while i < n and lines[i].strip().startswith(">"):
+                    quotes.append(lines[i].strip()[1:].strip())
+                    i += 1
+                out.append("<blockquote>%s</blockquote>"
+                           % "<br/>".join(Bridge._md_inline(_h.escape(q)) for q in quotes))
+                continue
+            m = re.match(r"^[-*+]\s+(.*)$", s)
+            if m:
+                _flush_para()
+                _flush_list("ol", ol)
+                ul.append(m.group(1))
+                i += 1
+                continue
+            m = re.match(r"^\d+[.)]\s+(.*)$", s)
+            if m:
+                _flush_para()
+                _flush_list("ul", ul)
+                ol.append(m.group(1))
+                i += 1
+                continue
+            _flush_list("ul", ul)
+            _flush_list("ol", ol)
+            para.append(line.strip())
+            i += 1
+        _flush_para()
+        _flush_list("ul", ul)
+        _flush_list("ol", ol)
         return "\n".join(out)
 
     # ---------- 日志 ----------

@@ -540,3 +540,13 @@ python index.py --library "Obsidian Vault"
 - [x] 真gp- torchvision 0.23->0.26+cu128(nms ABI 断 方) + pymupdf 衡 tool 环境(页数计)
 - [x] 框 chain 通 mineru_server /parse -> md 102 字 OK
 - [x] MINERU_MIN_VRAM_GB 保 4.5(官 4GB + 余量)
+
+## 检索命中渲染 + GUI 内正文查看（问题 52，2026-09-10）
+
+> 状态：✅ 已完成。用户需求：输出 md 默认看渲染好的而非纯字；点开不离开 GUI 看正文。
+> 详见 TASK_LOG.md 问题 52。
+
+- [x] 共享层 `store.read_document_text`（零触发只读 + 穿越拒绝 + 20 万字截断）
+- [x] guiweb：`_md_to_html` 升级 + search 带 rendered_html + read_document + mDoc 弹层
+- [x] Flet：展开态 `ft.Markdown` + 收起去标记预览 + 正文弹层
+- [x] 契约/mock/ parity 同步 + 两处测试文件新增 12 项用例

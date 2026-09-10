@@ -473,3 +473,65 @@ def cpu_percent(min_interval=1.0):
         return max(0.0, min(100.0, (d_total - d_idle) * 100.0 / d_total))
     except Exception:
         return None
+
+
+DOC_VIEW_MAX_CHARS = 200000  # GUI 内正文查看截断上限（超长文档只看前 200k 字，不卡界面）
+
+_TEXT_EXTS = ("md", "txt", "markdown")
+
+
+def read_document_text(cfg, rel, max_chars=DOC_VIEW_MAX_CHARS):
+    """GUI 内正文查看：读某文件的完整正文（零触发只读，不索引不写库）。
+
+    - md/txt：直接读源文件；
+    - pdf/docx：只读既有提取缓存（extractors.read_cached_markdown），未提取过
+      的返回 (None, "not-cached", False) 提示先索引，绝不后台触发 OCR/云端
+      （与 server.read_document 同一红线，GUI 预览也不许偷跑）；
+    - 路径穿越（../ 跳出库目录、绝对路径）一律拒绝。
+
+    返回 (text|None, route_or_reason, truncated)：命中时第二项是产出路由
+    （源文件 / local / mineru-text / ocr:mineru-cloud / ocr:mineru-local），
+    失败时是原因（读取失败 / not-cached / unreadable / 不支持该格式 / 路径非法）。
+    """
+    base = str(cfg.get("path") or "")
+    raw = (rel or "").replace("\\", "/").strip()
+    # 绝对路径必须在剥离前判定（否则 "/etc/passwd" 会被 lstrip 洗成相对路径；
+    # 注意 Windows 下 os.path.isabs("/x") 为 False，需显式判前导 "/"）
+    _abs = raw.startswith("/") or os.path.isabs(raw) or (
+        len(raw) >= 3 and raw[0].isalpha() and raw[1] == ":" and raw[2] == "/")
+    if not raw or not base or raw.startswith("~") or _abs:
+        return None, "路径非法", False
+    s = raw.lstrip("/")
+    try:
+        abs_path = os.path.normpath(os.path.join(base, s))
+        # normcase：Windows 路径大小写不敏感，防 "VAULT/../vault2" 类绕过
+        if os.path.commonpath([os.path.normcase(abs_path),
+                               os.path.normcase(os.path.normpath(base))]) != \
+                os.path.normcase(os.path.normpath(base)):
+            return None, "路径非法", False
+    except (OSError, ValueError):
+        return None, "路径非法", False
+    ext = s.rsplit(".", 1)[-1].lower() if "." in s else ""
+    text, route = None, ""
+    if ext in _TEXT_EXTS:
+        try:
+            text = Path(abs_path).read_text(encoding="utf-8", errors="replace")
+            route = "源文件"
+        except OSError:
+            return None, "读取失败", False
+    elif ext in ("pdf", "docx"):
+        from extractors import read_cached_markdown
+        try:
+            text, route = read_cached_markdown(abs_path)
+        except Exception:
+            return None, "读取失败", False
+        if text is None:
+            # route 此时是未命中原因：not-cached / unreadable / unsupported
+            return None, route or "not-cached", False
+    else:
+        return None, "不支持该格式", False
+    truncated = False
+    if max_chars and len(text) > max_chars:
+        text = text[:max_chars]
+        truncated = True
+    return text, route, truncated

@@ -70,6 +70,30 @@ function hl(text, q) {
 function nl2p(html) {
   return String(html).split('\n').filter(Boolean).map(function (p) { return '<p>' + p + '</p>'; }).join('');
 }
+/* 渲染命中共用：
+   - textOf：HTML → 纯文本（给 3 行预览切片用，避免 MD 标记裸露）；
+   - hlHtml：标签感知的查询高亮（只碰标签外的文本，href/属性不动）；
+   - 后端 search() 已给每条命中带 rendered_html，无则回退旧 nl2p 路径。 */
+function textOf(html) {
+  var d = document.createElement('div');
+  d.innerHTML = String(html || '');
+  return d.textContent || d.innerText || '';
+}
+function hlHtml(html, q) {
+  if (!q) return html;
+  var terms = q.trim().split(/\s+/).filter(function (t) { return t.length > 1; }).map(escReg)
+    .sort(function (a, b) { return b.length - a.length; });
+  if (!terms.length) return html;
+  var re;
+  try { re = new RegExp('(' + terms.join('|') + ')', 'gi'); } catch (e) { return html; }
+  return String(html).split(/(<[^>]+>)/g).map(function (seg, i) {
+    return (i % 2 === 1) ? seg : seg.replace(re, '<mark>$1</mark>');
+  }).join('');
+}
+function snipTxt(r) {
+  var txt = r.rendered_html ? textOf(r.rendered_html) : String(r.body || '');
+  return txt.replace(/\s+/g, ' ').trim().slice(0, 220);
+}
 function hashStr(s) {
   var h = 0;
   for (var i = 0; i < s.length; i++) { h = ((h * 31 + s.charCodeAt(i)) >>> 0); }
@@ -397,6 +421,7 @@ function relHtml(key) {
 var lastResults = null, lastQuery = '';
 var hitSel = 0;      // 当前指定的命中条目（主区详情跟随）
 var hitOpen = null;  // 右侧列表中展开的行（单开；null=全部收起）
+var srcView = false; // 命中详情视图：false=渲染视图（默认）/ true=Markdown 源码
 
 function titleOf(r) {
   var stem = (r.rel || '').split('/').pop().replace(/\.(md|txt|docx|pdf)$/i, '');
@@ -425,8 +450,9 @@ function renderResults() {
         + (r.heading ? '<div class="hit-heading">' + esc(r.heading) + '</div>' : '')
         + '<div class="hit-chip mono">' + chunkInfo + ' · 置信度 '
         + (r.confidence != null ? r.confidence.toFixed(2) : '--') + '</div>'
-        + '<div class="hit-clip">' + hl((r.body || '').slice(0, 200), lastQuery) + '…</div>'
+        + '<div class="hit-clip">' + hl(snipTxt(r), lastQuery) + '…</div>'
         + '<div class="r-actions" style="padding:8px 0 0">'
+        + '<button class="btn btn-sm btn-ghost" data-doc="' + i + '">查看正文</button>'
         + '<button class="btn btn-sm btn-ghost" data-rel="' + i + '">' + (relOpen[i] ? '收起关联' : '关联笔记') + '</button>'
         + '<button class="btn btn-sm btn-ghost" data-open="' + i + '">打开源文件</button>'
         + '</div></div>'
@@ -450,16 +476,22 @@ function renderResults() {
       : '<div class="rel"><div class="rel-loading"><span class="mini-spin"></span>正在查询双链关系…</div></div>')
     : '';
   var bodyBlock = expandAll
-    ? '<div class="r-full" data-exp="' + hitSel + '" title="点击收起为 3 行预览">' + nl2p(hl(sel.body || '', lastQuery)) + '</div>'
-    : '<div class="r-snippet" data-exp="' + hitSel + '" title="点击展开全文">' + hl((sel.body || '').slice(0, 220), lastQuery) + '</div>';
+    ? (srcView
+      ? '<pre class="lab-md mono" data-exp="' + hitSel + '" title="点击切回渲染视图">' + esc(sel.body || '') + '</pre>'
+      : '<div class="r-full md-body" data-exp="' + hitSel + '" title="点击收起为 3 行预览">'
+        + (sel.rendered_html ? hlHtml(sel.rendered_html, lastQuery) : nl2p(hl(sel.body || '', lastQuery))) + '</div>')
+    : '<div class="r-snippet" data-exp="' + hitSel + '" title="点击展开全文">' + hl(snipTxt(sel), lastQuery) + '</div>';
   $('hitDetailCore').innerHTML =
     '<div class="r-head"><span class="r-lib">' + esc(sel.lib) + '</span><span class="r-path">' + esc(sel.rel) + '</span>' + scoreBadge(sel.confidence) + '</div>'
     + '<div class="hit-big-title">' + esc(titleOf(sel)) + '</div>'
     + (sel.heading ? '<div class="hit-heading" style="padding:2px 16px 0">' + esc(sel.heading) + '</div>' : '')
     + bodyBlock + relPart
     + '<div class="r-actions">'
+    + '<button class="btn btn-sm btn-primary" data-doc="' + hitSel + '">查看正文</button>'
     + '<button class="btn btn-sm btn-ghost" data-rel="' + hitSel + '">' + (relOpen[hitSel] ? '收起关联' : '关联笔记') + '</button>'
     + '<button class="btn btn-sm btn-ghost" data-open="' + hitSel + '">打开源文件</button>'
+    + '<span class="r-viewtgl"><button data-view="html" class="' + (!srcView ? 'on' : '') + '">渲染</button>'
+    + '<button data-view="src" class="' + (srcView ? 'on' : '') + '">源码</button></span>'
     + (sel.chunk_total ? '<span class="r-more mono">命中块 ' + (sel.chunk_idx + 1) + '/' + sel.chunk_total + '</span>' : '<span class="r-more mono">整段命中</span>')
     + '</div>';
   $('searchWrap').style.display = 'block';
@@ -526,9 +558,16 @@ $('searchWrap').addEventListener('click', function (e) {
     renderResults();
     return;
   }
-  var t = e.target.closest('[data-exp],[data-rel],[data-open]');
+  var t = e.target.closest('[data-exp],[data-rel],[data-open],[data-doc],[data-view]');
   if (!t) return;
-  if (t.hasAttribute('data-exp')) {
+  if (t.hasAttribute('data-view')) {
+    srcView = (t.getAttribute('data-view') === 'src');
+    if (!$('expandTgl').checked) $('expandTgl').checked = true;
+    renderResults();
+  } else if (t.hasAttribute('data-doc')) {
+    var dr = lastResults.results.filter(function (r) { return !r.notice; })[+t.getAttribute('data-doc')];
+    if (dr) openDoc(dr.lib, dr.rel, dr.heading || '');
+  } else if (t.hasAttribute('data-exp')) {
     var ei = t.getAttribute('data-exp');
     bodyOpen[ei] = !bodyOpen[ei];
     renderResults();
@@ -554,6 +593,55 @@ $('searchWrap').addEventListener('click', function (e) {
       toast('已调用系统打开源文件');
     }).catch(function () { toast('打开失败', 'err'); });
   }
+});
+
+/* ============ 正文查看（检索命中 → GUI 内精读全文，不跳外部） ============ */
+var DOC = { lib: '', rel: '', heading: '' };
+function docShowTab(htmlMode) {
+  $('docTabHtml').classList.toggle('on', htmlMode);
+  $('docTabMd').classList.toggle('on', !htmlMode);
+  $('docTabHtml').setAttribute('aria-selected', htmlMode ? 'true' : 'false');
+  $('docTabMd').setAttribute('aria-selected', !htmlMode ? 'true' : 'false');
+  $('docHtml').style.display = htmlMode ? '' : 'none';
+  $('docMd').style.display = htmlMode ? 'none' : '';
+}
+function openDoc(lib, rel, heading) {
+  DOC.lib = lib; DOC.rel = rel; DOC.heading = heading || '';
+  $('docTitle').textContent = rel.split('/').pop() || rel;
+  $('docMeta').textContent = lib + ' · ' + rel;
+  $('docHtml').innerHTML = '<div class="doc-loading"><span class="mini-spin"></span>正在读取正文…</div>';
+  $('docMd').textContent = '';
+  $('docTrunc').style.display = 'none';
+  docShowTab(true);
+  openModal('mDoc');
+  API.read_document(lib, rel).then(function (res) {
+    if (!res.ok) {
+      $('docMeta').textContent = lib + ' · ' + rel;
+      $('docHtml').innerHTML = '<div class="empty"><div class="grotesk">正文不可用</div><div>'
+        + esc(res.error || '未知错误') + '</div></div>';
+      return;
+    }
+    $('docHtml').innerHTML = res.rendered_html || '';
+    $('docMd').textContent = res.markdown || '';
+    $('docMeta').textContent = lib + ' · ' + rel + ' · ' + (res.chars || 0) + '字 · '
+      + (ROUTE_NAME[res.route] || res.route || '未知通道');
+    if (res.truncated) {
+      $('docTruncTxt').textContent = '文档超长，仅展示前 ' + (res.chars || 0)
+        + ' 字，余下部分请用「打开源文件」查看。';
+      $('docTrunc').style.display = 'flex';
+    }
+  }).catch(function (err) {
+    $('docHtml').innerHTML = '<div class="empty"><div class="grotesk">读取失败</div><div>'
+      + esc(err && err.message ? err.message : String(err)) + '</div></div>';
+  });
+}
+$('docTabHtml').addEventListener('click', function () { docShowTab(true); });
+$('docTabMd').addEventListener('click', function () { docShowTab(false); });
+$('docOpen').addEventListener('click', function () {
+  if (!DOC.lib) return;
+  API.open_source(DOC.lib, DOC.rel, DOC.heading).then(function () {
+    toast('已调用系统打开源文件');
+  }).catch(function () { toast('打开失败', 'err'); });
 });
 
 /* ============ 库 ============ */
@@ -1079,7 +1167,7 @@ $('labRun').addEventListener('click', function () {
     labPoll();
   });
 });
-var ROUTE_NAME = { local: '本地直提', 'mineru-text': 'MinerU 结构识别', 'ocr:mineru-cloud': 'MinerU 云端 OCR', 'ocr:mineru-local': 'MinerU 本地解析', '-': '未知通道' };
+var ROUTE_NAME = { local: '本地直提', 'mineru-text': 'MinerU 结构识别', 'ocr:mineru-cloud': 'MinerU 云端 OCR', 'ocr:mineru-local': 'MinerU 本地解析', '源文件': '源文件直读', '-': '未知通道' };
 function labPoll() {
   if (!labPolling) return;
   API.preview_poll().then(function (st) {

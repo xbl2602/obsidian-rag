@@ -18,13 +18,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import CFG  # noqa: E402
-from theme import DARK, LIGHT, FONT_UI, SIZE  # noqa: E402
+from theme import DARK, LIGHT, FONT_MONO, FONT_UI, SIZE  # noqa: E402
 from store import (  # noqa: E402
     STATE_NONE,
     index_state, index_busy, meta_stats, progress_ratio,
     heartbeat_state, heartbeat_note, read_progress, library_entries,
     library_snapshot, meta_issues_for, ISSUE_TEXT,
-    is_library_dir, note_relations_for, gpu_stats, cpu_percent,
+    is_library_dir, note_relations_for, read_document_text,
+    gpu_stats, cpu_percent,
 )
 from worker import IndexWorker, read_history  # noqa: E402
 from widgets import (  # noqa: E402
@@ -175,7 +176,8 @@ class App:
         self.progress.btn_inc.on_click = lambda e: self._start_index(False)
         self.progress.btn_full.on_click = self._confirm_full
         self.search = SearchCard(self._do_search, on_open=self._open_result,
-                                 on_relations=self._note_relations)
+                                 on_relations=self._note_relations,
+                                 on_view=self._view_document)
         self.log_view = LogView()
         self.device = DeviceBar(self._open_vault, self._open_logs)
         self.lib_picker = LibraryPicker(self._on_library_selected)
@@ -690,6 +692,110 @@ class App:
         if lib_cfg is None:
             return {"resolved": False, "file": None, "outlinks": [], "inlinks": []}
         return note_relations_for(lib_cfg, inner)
+
+    _DOC_ROUTE_LABEL = {
+        "源文件": "源文件直读", "local": "本地提取",
+        "mineru-text": "MinerU 结构识别",
+        "ocr:mineru-cloud": "MinerU 云端 OCR",
+        "ocr:mineru-local": "MinerU 本地解析",
+    }
+    _DOC_FAIL_ADVICE = {
+        "not-cached": "该文件尚未被索引/提取，请先增量重建后再查看",
+        "读取失败": "源文件读取失败，可能已被移动或删除",
+        "路径非法": "路径非法，已拒绝",
+        "不支持该格式": "该格式暂不支持窗口内查看，请用系统方式打开",
+    }
+
+    def _view_document(self, rel, heading=""):
+        """GUI 内查看正文：弹层展示完整 Markdown（渲染默认），不跳外部。
+
+        零触发只读：md/txt 读源文件，pdf/docx 只读既有提取缓存（经
+        store.read_document_text），未提取的不后台触发 OCR/云端。
+        """
+        lib_name, inner = self._split_lib_rel(rel)
+        lib_cfg = self._lib_by_name.get(lib_name) if lib_name else None
+        if lib_cfg is None and lib_name is None:
+            # 无库前缀的旧格式：仅当只注册了一个库时才能定位，否则拒绝猜测
+            only = list(self._lib_by_name.values())
+            if len(only) == 1:
+                lib_cfg = only[0]
+                lib_name = lib_cfg.get("name", "")
+        if lib_cfg is None:
+            self._snack("找不到该笔记所属库（可能已移除）：%s" % rel,
+                        is_error=True)
+            return
+        text, route, truncated = read_document_text(lib_cfg, inner)
+        if text is None:
+            advice = self._DOC_FAIL_ADVICE.get(route or "", route or "")
+            self._snack("正文不可用：%s" % advice, is_error=True)
+            self._log_line("── 正文查看失败 %s：%s" % (rel, route))
+            return
+        self._open_document_dialog(lib_name or "", rel, inner, text, route,
+                                   truncated, heading)
+
+    def _open_document_dialog(self, lib_name, rel, inner, text, route,
+                              truncated, heading=""):
+        """正文查看弹层：渲染视图默认 + Markdown 源码切换（对齐提取试验台写法）。"""
+        colors = self.colors
+        fname = inner.replace("\\", "/").rsplit("/", 1)[-1]
+        meta_txt = "%s · %d 字 · %s%s" % (
+            lib_name, len(text),
+            self._DOC_ROUTE_LABEL.get(route or "", route or ""),
+            " · 超长仅展示前 %d 字" % len(text) if truncated else "")
+        md_ext = getattr(ft, "MarkdownExtensionSet", None)
+        md_kw = {"extension_set": md_ext.GITHUB_WEB} if md_ext else {}
+        md_view = ft.Markdown(value=text, selectable=True, **md_kw)
+        src_view = ft.TextField(value=text, multiline=True, read_only=True,
+                                border=ft.InputBorder.NONE, filled=False,
+                                text_size=12, expand=True,
+                                text_style=ft.TextStyle(font_family=FONT_MONO,
+                                                        size=12))
+        render_box = ft.Container(
+            content=ft.Column([md_view], scroll=ft.ScrollMode.AUTO,
+                              expand=True),
+            expand=True)
+        src_box = ft.Container(content=src_view, expand=True, visible=False)
+        btn_render = ft.TextButton("渲染视图")
+        btn_src = ft.TextButton("Markdown 源码")
+        dlg_holder = {}
+
+        def _switch(idx):
+            render_box.visible = idx == 0
+            src_box.visible = idx == 1
+            try:
+                dlg_holder["dlg"].update()
+            except (RuntimeError, AttributeError, AssertionError):
+                pass
+
+        btn_render.on_click = lambda _: _switch(0)
+        btn_src.on_click = lambda _: _switch(1)
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(fname, size=17, weight=ft.FontWeight.W_600,
+                          font_family=FONT_UI),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(meta_txt, size=11, color=colors["t3"],
+                            font_family=FONT_MONO),
+                    ft.Row([btn_render, btn_src], spacing=4),
+                    render_box,
+                    src_box,
+                ], spacing=8, expand=True),
+                width=920, height=640),
+            actions=[
+                ft.TextButton(
+                    "在外部打开",
+                    on_click=lambda _: (self._close_dialog(dlg),
+                                        self._open_result(rel, heading))),
+                ft.TextButton("关闭",
+                              on_click=lambda _: self._close_dialog(dlg)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=SIZE["radius_panel"]),
+        )
+        dlg_holder["dlg"] = dlg
+        self._log_line("── 窗口内查看正文 %s" % rel)
+        self.page.show_dialog(dlg)
 
     @staticmethod
     def _split_lib_rel(rel):

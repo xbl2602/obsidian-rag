@@ -474,6 +474,83 @@ def test_wemm_status_rows_are_objects():
                out["exists"] is True and out["total_pages"] == 10)
 
 
+def test_md_to_html_blocks():
+    """_md_to_html 升级（检索命中/试验台/正文查看共用渲染器）：标题/表格/
+    围栏代码/引用/列表/行内样式都要成标签，且原文尖括号必须转义。"""
+    from guiweb.bridge import Bridge
+    h = Bridge._md_to_html
+    _check("md: h1/h2", "<h1>标题</h1>" in h("# 标题") and "<h2>小节</h2>" in h("## 小节"),
+           repr(h("# 标题"))[:60])
+    _check("md: 粗体+行内代码", "<b>重点</b>" in h("这是 **重点**") and "<code>片段</code>" in h("用 `片段`"),
+           repr(h("这是 **重点**"))[:80])
+    _check("md: GFM 表格", "<table>" in h("| A | B |\n|---|---|\n| 1 | 2 |") and "<th>A</th>" in h("| A | B |\n|---|---|\n| 1 | 2 |"))
+    _check("md: 围栏代码转义", "<pre><code" in h("```py\nprint(1)\n```") and "print(1)" in h("```py\nprint(1)\n```"))
+    _check("md: 引用+列表", "<blockquote>" in h("> 警告") and "<ul>" in h("- 一\n- 二") and "<ol>" in h("1. 甲\n2. 乙"))
+    _check("md: XSS 转义", "<script>" not in h("<script>alert(1)</script>") and "&lt;script&gt;" in h("<script>alert(1)</script>"))
+    _check("md: 空输入", h("") == "" and h(None) == "")
+    _check("md: 旧断言不回归", "标题" in h("# 标题\n正文"))
+
+
+def test_search_attaches_rendered_html():
+    """search() 给非 notice 命中带 rendered_html（前端默认看渲染）。"""
+    from guiweb.bridge import Bridge
+    text = ("[来源] 技术笔记/foo.md (## 小节) [块 1/2] [置信度 0.72]\n"
+            "#  real标题\n\n表格 **加粗**\n---\n"
+            "（本次查询整体置信度偏低，以下结果仅供参考）")
+    with patch("retriever.hybrid_search", return_value=text):
+        out = Bridge().search("测试", top_k=5, libraries="", include_body=True)
+    _check("search: 无 error", out["error"] is None, repr(out["error"]))
+    _check("search: 两条（命中+notice）", len(out["results"]) == 2, repr(out["results"])[:120])
+    hit = out["results"][0]
+    _check("search: 命中带 rendered_html",
+            "<h1>" in hit.get("rendered_html", "") and "<b>加粗</b>" in hit.get("rendered_html", ""),
+            repr(hit.get("rendered_html"))[:120])
+    _check("search: notice 不带 rendered_html",
+            "rendered_html" not in out["results"][1], repr(out["results"][1])[:120])
+
+
+def test_read_document_ok_and_failures():
+    """read_document：命中给全文+渲染；未知库/未提取/非法路径给 ok:false。"""
+    from guiweb.bridge import Bridge
+    with patch("store.library_entries",
+               return_value=[{"name": "T", "path": "D:/vault", "collection": "c"}]), \
+         patch("store.read_document_text",
+               return_value=("# 全文\n\n**重点**", "源文件", False)):
+        out = Bridge().read_document("T", "a.md")
+        _check("doc: ok+全文", out["ok"] is True and out["markdown"] == "# 全文\n\n**重点**", repr(out)[:120])
+        _check("doc: 渲染", "<h1>全文</h1>" in out["rendered_html"] and "<b>重点</b>" in out["rendered_html"],
+               repr(out["rendered_html"])[:120])
+        _check("doc: 字数/路由", out["chars"] == len("# 全文\n\n**重点**") and out["route"] == "源文件"
+               and out["truncated"] is False)
+    with patch("store.library_entries", return_value=[]):
+        bad = Bridge().read_document("NOPE", "a.md")
+        _check("doc: 未知库失败", bad["ok"] is False and "库不存在" in bad["error"], repr(bad)[:80])
+    with patch("store.library_entries",
+               return_value=[{"name": "T", "path": "D:/vault", "collection": "c"}]), \
+         patch("store.read_document_text", return_value=(None, "not-cached", False)):
+        nc = Bridge().read_document("T", "p.pdf")
+        _check("doc: 未提取指引先索引",
+                nc["ok"] is False and "增量重建" in nc["error"] and nc["route"] == "not-cached",
+                repr(nc)[:120])
+
+
+def test_read_document_contract_parity():
+    """read_document 契约/mock/前端三处同形（对齐 preview 的 parity 用例写法）。"""
+    from pathlib import Path as _P
+    base = _P(__file__).resolve().parent.parent
+    md = (base / "guiweb" / "contracts.md").read_text(encoding="utf-8")
+    _check("contracts: read_document 章节存在", "### read_document(" in md)
+    ui = base / "guiweb" / "ui"
+    mock = (ui / "mock.js").read_text(encoding="utf-8")
+    _check("mock: read_document 存在", "read_document:" in mock)
+    js = (ui / "app.js").read_text(encoding="utf-8")
+    _check("app: 调用 read_document", "API.read_document(" in js)
+    _check("app: 正文弹层 id 全挂载",
+            all(i in (ui / "index.html").read_text(encoding="utf-8")
+                for i in ("mDoc", "docTitle", "docMeta", "docHtml", "docMd",
+                          "docTabHtml", "docTabMd", "docTrunc", "docOpen")))
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

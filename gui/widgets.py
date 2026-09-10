@@ -445,13 +445,16 @@ class SearchCard:
     on_open(rel, heading)：点击结果项时回调（跳转源文件）。
     on_relations(rel)：点击"关联笔记"按钮时回调（查双链出链/入链），返回
     resolve_note_relations 的结果字典；与正文展开是两个独立开关。
+    on_view(rel)：点击"查看正文"按钮时回调（GUI 内弹层看全文，不跳外部）。
     """
 
     TOP_K_CHOICES = (3, 5, 8, 10, 15)
 
-    def __init__(self, on_search, on_open=None, on_relations=None, colors=DARK):
+    def __init__(self, on_search, on_open=None, on_relations=None, on_view=None,
+                 colors=DARK):
         self._on_open = on_open
         self._on_relations = on_relations
+        self._on_view = on_view
         self.title = ft.Text("语义检索", size=15, weight=ft.FontWeight.W_600,
                              color=colors["t1"], font_family=FONT_UI)
         self.input = ft.TextField(
@@ -596,19 +599,22 @@ class SearchCard:
             rel, heading, conf = _parse_src(b["src"])
             conf_txt = _conf_label(conf)
             conf_color = _conf_color(conf, colors) if conf is not None else colors["t3"]
-            # 收起态 = 前 3 行预览；展开态 = 完整正文（表格/长块不再被 GUI 砍断）
+            # 收起态 = 去标记纯文本预览；展开态 = 渲染好的 Markdown（表格/长块不再被 GUI 砍断）
             body_full = "\n".join(b["body"]) if show_body else ""
-            body_preview = "\n".join(b["body"][:3]) if show_body else ""
+            body_preview = _strip_md("\n".join(b["body"][:3]))[:220] if show_body else ""
             src = b["src"] if show_body else rel
             is_open = i in expanded and bool(body_full)
             rel_open = i in st["relations_shown"]
 
-            body_text = ft.Text(body_full if is_open else body_preview,
-                                size=13, font_family=FONT_UI, color=colors["t1"],
-                                max_lines=None if is_open else 6,
-                                overflow=ft.TextOverflow.ELLIPSIS,
-                                selectable=True)
-            body_box = ft.Container(content=body_text,
+            md_ext = getattr(ft, "MarkdownExtensionSet", None)
+            md_kw = {"extension_set": md_ext.GITHUB_WEB} if md_ext else {}
+            body_ctrl = (ft.Markdown(value=body_full, selectable=True, **md_kw)
+                         if is_open else
+                         ft.Text(body_preview, size=13, font_family=FONT_UI,
+                                 color=colors["t1"], max_lines=6,
+                                 overflow=ft.TextOverflow.ELLIPSIS,
+                                 selectable=True))
+            body_box = ft.Container(content=body_ctrl,
                                     padding=ft.Padding.only(top=6))
 
             def make_rel_toggle(i=i, rel=rel):
@@ -623,6 +629,13 @@ class SearchCard:
                 tooltip="在 Obsidian 中打开源文件",
                 on_click=(lambda e, r=rel, h=heading: self._fire_open(r, h))
                          if self._on_open else None,
+            )
+            view_btn = ft.IconButton(
+                icon=ft.Icons.ARTICLE_OUTLINED, icon_size=14,
+                icon_color=colors["accent"], padding=2, width=24, height=24,
+                tooltip="在窗口内查看正文（不跳外部）",
+                on_click=(lambda e, r=rel: self._fire_view(r))
+                         if self._on_view else None,
             )
             rel_btn = ft.IconButton(
                 icon=ft.Icons.HUB, icon_size=14,
@@ -648,6 +661,7 @@ class SearchCard:
                     visible=bool(conf_txt),
                 ),
                 rel_btn,
+                view_btn,
                 open_btn,
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
@@ -669,7 +683,8 @@ class SearchCard:
                 on_click=make_toggle() if body_full else None,
             )
             card_controls = [head_container]
-            if is_open:
+            if body_full or body_preview:
+                # 收起态也给去标记纯文本预览（点标题行展开看渲染好的 Markdown）
                 card_controls.append(body_box)
             if rel_open:
                 rel_data = st["relations_cache"].get(i) or {}
@@ -706,6 +721,10 @@ class SearchCard:
         if self._on_open:
             self._on_open(rel, heading)
 
+    def _fire_view(self, rel):
+        if self._on_view:
+            self._on_view(rel)
+
     def set_banner(self, visible, colors):
         pass  # 索引中提示并入状态条，不单独横幅
 
@@ -740,6 +759,27 @@ def _conf_label(conf):
     if conf is None:
         return ""
     return "%d%%" % int(round(conf * 100))
+
+
+def _strip_md(text):
+    """Markdown → 纯文本摘要（检索结果收起态预览用，不让 # ** ` 等标记裸露）。
+
+    轻量启发式：去围栏代码/行内 code tick、标题/引用/列表前缀、加粗斜体标记、
+    链接取文本、图片取 alt，多余空白折叠。只供预览切片，不求完整。
+    """
+    s = text or ""
+    s = re.sub(r"```.*?```", " ", s, flags=re.S)
+    s = re.sub(r"`([^`]+)`", r"\1", s)
+    s = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", s)
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)
+    s = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", s)
+    s = re.sub(r"(?m)^\s{0,3}>\s?", "", s)
+    s = re.sub(r"(?m)^\s*([-*+]\s+|\d+[.)]\s+)", "", s)
+    s = re.sub(r"(\*\*|__)([^*_]+)\1", r"\2", s)
+    s = re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)", r"\1", s)
+    s = re.sub(r"~~([^~]+)~~", r"\1", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 class LogView:

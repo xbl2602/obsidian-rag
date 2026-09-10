@@ -18,14 +18,14 @@ from gui.store import (  # noqa: E402
     heartbeat_state, heartbeat_note, progress_ratio, meta_stats_for,
     library_state,
     library_snapshot, is_library_dir, meta_issues_for, ISSUE_TEXT,
-    note_relations_for,
+    note_relations_for, read_document_text,
     file_index_rows_for, wemm_status_for, wemm_service_probe,
     gpu_stats, cpu_percent, index_busy,
 )
 import gui.store as _storemod  # noqa: E402 缓存复位用（与上面同一模块对象）
 from gui.app import format_elapsed, format_mmss, App  # noqa: E402 纯函数，不触发窗口
 from gui.theme import DARK  # noqa: E402
-from gui.widgets import _parse_src, _conf_color, _conf_label  # noqa: E402
+from gui.widgets import _parse_src, _conf_color, _conf_label, _strip_md  # noqa: E402
 from unittest.mock import patch
 
 
@@ -904,6 +904,93 @@ def test_search_card_without_on_relations_toggle_is_inert_but_safe():
     assert card._render_state["relations_cache"] == {}, "无回调不应产生缓存条目"
 
 
+def _collect_markdowns(controls):
+    """递归收集控件树里所有 ft.Markdown 的 value（渲染视图断言用）。"""
+    from gui.widgets import ft
+    out = []
+    stack = list(controls or [])
+    while stack:
+        c = stack.pop()
+        if isinstance(c, ft.Markdown):
+            out.append(c.value or "")
+            continue
+        content = getattr(c, "content", None)
+        if content is not None:
+            stack.append(content)
+        inner = getattr(c, "controls", None)
+        if inner:
+            stack.extend(inner)
+    return out
+
+
+def _md_result_text():
+    return ("[来源] 测试库/docs/foo.md (## 小节标题) [置信度 0.87]\n"
+            "# 真标题\n\n表格 **加粗** `代码`\n"
+            "---\n")
+
+
+def test_search_card_expanded_renders_markdown():
+    """展开态用 ft.Markdown 渲染（表格/标题成型）；收起态是去标记纯文本预览。"""
+    from gui.widgets import SearchCard
+    from gui.theme import DARK
+
+    card = SearchCard(on_search=lambda q: None)
+    card.show_results(_md_result_text(), DARK)
+    # 收起态：无 Markdown 控件，正文预览里不应裸露 # ** ` 标记
+    # （标题行的 [来源]…(## …) 元信息行不算，那是来源元数据不是正文）
+    from gui.widgets import ft as _ft
+
+    def _body_texts(controls):
+        out = []
+        stack = list(controls or [])
+        while stack:
+            c = stack.pop()
+            if isinstance(c, _ft.Text) and getattr(c, "size", None) == 13:
+                out.append(c.value or "")
+                continue
+            content = getattr(c, "content", None)
+            if content is not None:
+                stack.append(content)
+            inner = getattr(c, "controls", None)
+            if inner:
+                stack.extend(inner)
+        return out
+
+    assert _collect_markdowns(card.results.controls) == [], "收起态不应有渲染控件"
+    joined = "\n".join(_body_texts(card.results.controls))
+    assert joined and "#" not in joined and "**" not in joined and "`" not in joined, \
+        "收起预览不应裸露 MD 标记：%r" % joined
+    # 展开态：Markdown 控件 carrying 完整源码（由控件负责渲染）
+    card._render_state["expanded"].add(0)
+    card._render_results()
+    mds = _collect_markdowns(card.results.controls)
+    assert len(mds) == 1, "展开态应恰有一个 Markdown 渲染控件"
+    assert "# 真标题" in mds[0] and "**加粗**" in mds[0], repr(mds[0])[:80]
+
+
+def test_search_card_view_button_fires_on_view():
+    """每条命中 header 有"在窗口内查看正文"按钮，点击透传 rel 给 on_view；
+    未接 on_view 时按钮无动作且 _fire_view 是空操作。"""
+    from gui.widgets import SearchCard, ft
+    from gui.theme import DARK
+
+    seen = []
+    card = SearchCard(on_search=lambda q: None,
+                      on_view=lambda rel: seen.append(rel))
+    card.show_results(_sample_result_text(), DARK)
+    head = card.results.controls[0].content.controls[0].content
+    btns = [c for c in head.controls if isinstance(c, ft.IconButton)]
+    views = [b for b in btns if (b.tooltip or "").startswith("在窗口内查看正文")]
+    assert len(views) == 1, "应恰有一个查看正文按钮"
+    assert views[0].on_click is not None, "接了 on_view 就应可点"
+    card._fire_view("测试库/docs/foo.md")
+    assert seen == ["测试库/docs/foo.md"], seen
+
+    bare = SearchCard(on_search=lambda q: None)
+    bare.show_results(_sample_result_text(), DARK)
+    bare._fire_view("测试库/docs/foo.md")  # 不应抛异常
+
+
 # ---------- 问题32：停滞宽限（GUI 判定侧 / C2） ----------
 
 def test_heartbeat_grace_running_then_expired_then_dead():
@@ -1167,6 +1254,82 @@ def test_index_task_owner_branches():
         assert index_task_owner(make_progress(running=False), 111) == "starting"
         assert index_task_owner(make_progress(running=False), None) == "idle"
         assert index_task_owner({}) == "idle"
+
+
+def _doc_cfg(tmpdir, files=None):
+    """正文查看用例：建临时库目录 + 写文件，返回 cfg。"""
+    base = Path(tmpdir)
+    base.mkdir(parents=True, exist_ok=True)
+    for rel, content in (files or {}).items():
+        p = base / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+    return {"name": "T", "path": str(base)}
+
+
+def test_read_document_text_md():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _doc_cfg(td, {"a.md": "# 标题\n\n正文 **加粗**",
+                            "sub/note.txt": "子目录纯文本"})
+        text, route, trunc = read_document_text(cfg, "a.md")
+        assert text == "# 标题\n\n正文 **加粗**", repr(text)
+        assert route == "源文件", route
+        assert trunc is False
+        # 子目录 + 反斜杠分隔同样定位
+        text2, _, _ = read_document_text(cfg, "sub\\note.txt")
+        assert text2 == "子目录纯文本", repr(text2)
+
+
+def test_read_document_text_missing_and_unsupported():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _doc_cfg(td, {})
+        assert read_document_text(cfg, "gone.md")[0] is None
+        assert read_document_text(cfg, "gone.md")[1] == "读取失败"
+        assert read_document_text(cfg, "a.xlsx") == (None, "不支持该格式", False)
+        assert read_document_text(cfg, "")[1] == "路径非法"
+
+
+def test_read_document_text_traversal_blocked():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _doc_cfg(td, {"a.md": "x"})
+        for evil in ("../outside.md", "..\\outside.md", "/etc/passwd", "C:/Windows/a.md"):
+            text, reason, _ = read_document_text(cfg, evil)
+            assert text is None and reason == "路径非法", (evil, reason)
+
+
+def test_read_document_text_truncates():
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _doc_cfg(td, {"long.md": "啊" * 100})
+        text, route, trunc = read_document_text(cfg, "long.md", max_chars=10)
+        assert text == "啊" * 10 and trunc is True and route == "源文件"
+
+
+def test_read_document_text_pdf_cache_only():
+    """pdf 只读既有缓存：命中透传路由；未命中报 not-cached（绝不触发提取）。"""
+    import tempfile
+    import extractors
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _doc_cfg(td, {})
+        with patch.object(extractors, "read_cached_markdown",
+                          return_value=("# PDF\n文字", "local")) as m:
+            text, route, trunc = read_document_text(cfg, "p.pdf")
+            assert text == "# PDF\n文字" and route == "local" and trunc is False
+            assert m.call_count == 1
+        with patch.object(extractors, "read_cached_markdown",
+                          return_value=(None, "not-cached")):
+            assert read_document_text(cfg, "p.pdf") == (None, "not-cached", False)
+
+
+def test_strip_md_for_snippet():
+    assert _strip_md("# 标题\n\n正文 **加粗** `代码`") == "标题 正文 加粗 代码", \
+        _strip_md("# 标题\n\n正文 **加粗** `代码`")
+    assert _strip_md("[文字](http://x) ![图](a.png)") == "文字 图"
+    assert _strip_md("> 引用\n- 项一\n1. 项二") == "引用 项一 项二"
+    assert _strip_md("") == ""
 
 
 if __name__ == "__main__":

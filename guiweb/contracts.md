@@ -86,12 +86,26 @@
 {"results":[
   {"lib":"技术笔记","rel":"20-Projects/Obsidian RAG/WEMM 设计.md",
    "heading":"WEMM 页级向量","chunk_idx":1,"chunk_total":3,
-   "confidence":0.87,"body":"…块全文…"},
+   "confidence":0.87,"body":"…块全文（MD 源码）…",
+   "rendered_html":"<h2>…</h2><p>…</p>"},
   {"lib":"","rel":"","confidence":null,"body":"（本次查询整体置信度偏低…）","notice":true}],
  "elapsed": 12.3, "error": null}
 ```
 - `notice:true` 的条目是整体提示横幅（低置信提示/截断提示），渲染成横幅不算结果。
+- `rendered_html`：命中正文的渲染视图（后端 `_md_to_html` 生成，与试验台/
+  正文查看同一渲染器）；前端默认展示渲染视图，`body` 留作 Markdown 源码切换。
 - 双链不在此处：单条结果按需调 `note_relations`。
+
+### read_document(lib, rel) → GUI 内正文查看（零触发只读，不跳外部）
+```json
+{"ok":true,"markdown":"…全文 MD…","rendered_html":"<h1>…</h1>…",
+ "chars":12345,"truncated":false,"route":"源文件","error":null}
+```
+- md/txt 读源文件；pdf/docx 只读既有提取缓存，未提取过返回
+  `{ok:false, error:"该文件尚未被索引/提取，请先增量重建后再查看"}`，
+  绝不后台触发 OCR/云端。超长文档截断 20 万字（`truncated:true`）。
+- `route`：源文件 / local / mineru-text / ocr:mineru-cloud / ocr:mineru-local。
+- 前端在检索结果卡提供「查看正文」按钮，用本方法弹层展示（渲染视图默认）。
 
 ### note_relations(lib, rel) → {resolved, file, outlinks:[rel], inlinks:[rel]}
 

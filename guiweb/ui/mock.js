@@ -231,6 +231,17 @@
   ];
 
   /* ---------- 检索语料 ---------- */
+  // 演示用极简 MD→HTML（与真桥 _md_to_html 同语义：转义后套白名单标签）
+  function mockMd(md) {
+    return String(md || '').split('\n').filter(Boolean).map(function (ln) {
+      var s = ln.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      var m = s.match(/^(#{1,3})\s+(.*)$/);
+      if (m) return '<h' + m[1].length + '>' + m[2] + '</h' + m[1].length + '>';
+      if (/^\s*[-*+]\s+/.test(s)) return '<li>' + s.replace(/^\s*[-*+]\s+/, '') + '</li>';
+      s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+      return '<p>' + s + '</p>';
+    }).join('');
+  }
   var WEMM_RESULTS = [
     { lib: '技术笔记', rel: '20-Projects/Obsidian RAG/WEMM 设计.md', heading: 'WEMM 页级向量', chunk_idx: 1, chunk_total: 3, confidence: 0.87,
       body: '页级视觉导航把每一页渲染成图片后编码为页面向量，写入独立 collection <collection>.wemm。检索时先页后块两段式返回：页命中给出「第几页」，块命中给出正文。终态与成功条目带 xsrc=wemm:<模型>:<维度>:<DPI> 签名，失败每轮真重试、改档自动重渲染。' },
@@ -473,9 +484,21 @@
         var fk = r.lib + '|' + r.rel;
         perFile[fk] = (perFile[fk] || 0) + 1;
         if (perFile[fk] > cap) continue;
-        results.push(JSON.parse(JSON.stringify(r)));
+        var cp = JSON.parse(JSON.stringify(r));
+        cp.rendered_html = mockMd(cp.body);   // 对齐真桥：命中默认看渲染视图
+        results.push(cp);
       }
       return { results: results, elapsed: ms / 1000 + Math.random() * 0.4, error: null };
+      });
+    },
+
+    read_document: function (lib, rel) {
+      return delay(400).then(function () {
+        var md = '# ' + rel.split('/').pop() + '\n\n> 演示模式假正文 · 未读取真实文件\n\n'
+          + '这是「' + lib + '/' + rel + '」的演示全文，**渲染视图**默认展示。\n\n'
+          + '- 命中片段只给一块，点「查看正文」读整篇\n- 不离开本窗口\n\n`行内代码` 示例。';
+        return { ok: true, markdown: md, rendered_html: mockMd(md),
+                 chars: md.length, truncated: false, route: '源文件', error: null };
       });
     },
 
