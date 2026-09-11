@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 data/
+
+# 固定隐藏测试库：由 tests/make_hidden_vault.py 确定性重造（幂等），
+# 且部分 fixture 是构造出来的"无 NUL 字节"PDF，入库会被 CRLF 转换改坏。
+tests/hidden-vault/
