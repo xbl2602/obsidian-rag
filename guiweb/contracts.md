@@ -62,16 +62,18 @@
 ```json
 {"effective": {"extensions":["md","pdf","docx"],"exclude_dirs":[…],"chunk_char_limit":600,…},
  "overrides": {"extensions":["md","pdf"],"chunk_char_limit":600},
- "all_keys": ["extensions","exclude_dirs","exclude_files","exclude_patterns",
+ "all_keys": ["extensions","agent_formats","exclude_dirs","exclude_files","exclude_patterns",
               "chunk_char_limit","short_doc_char_limit","collection"]}
 ```
 `overrides` 里有的键 = 该库显式覆盖；没有 = 继承全局（effective 里可见继承值）。
-可覆盖键以 `all_keys` 为准。
+可覆盖键以 `all_keys` 为准（= library.OVERRIDE_KEYS；门禁持久键是 `agent_formats`，
+`agent_allowed` 只是索引运行参数名，不可持久化）。
 
 ### add_library(path, name) → {ok: true} | {ok:false, error:"…"}
 ### remove_library(name, drop) → {ok: true}（drop=false 仅注销 / true 连数据删除）
 ### set_library_config(name, updates:{key:value}) → {ok, errors:{key:msg}, cloud_confirm?:false}
 - `extensions` 传字符串如 `"md,pdf"`；空字符串 = 恢复继承（内部转 unset）。
+- `agent_formats` 只收已启用格式中的二进制子集（如 `"pdf,docx"`）；空字符串 = 撤销授权。
 ### unset_library_config(name, keys:[...]) → {ok}
 
 ### start_index(full, libraries) → {ok, already_running?}
@@ -88,10 +90,12 @@
    "heading":"WEMM 页级向量","chunk_idx":1,"chunk_total":3,
    "confidence":0.87,"body":"…块全文（MD 源码）…",
    "rendered_html":"<h2>…</h2><p>…</p>"},
-  {"lib":"","rel":"","confidence":null,"body":"（本次查询整体置信度偏低…）","notice":true}],
+  {"lib":"","rel":"","confidence":null,"body":"（多条高置信命中…把 top_k 调大）","notice":true}],
  "elapsed": 12.3, "error": null}
 ```
-- `notice:true` 的条目是整体提示横幅（低置信提示/截断提示），渲染成横幅不算结果。
+- `notice:true` 的条目是提示横幅（2026-09-11 问题55 起主要是**结果建议**：多条强命中
+  该调大 top_k、命中含非笔记库、同名不同目录是两篇笔记…；另有整体低置信与同篇封顶说明），
+  渲染成横幅不算结果。规则：**任何不以 `[来源]` 开头的游离行都归这里**（两套 GUI 同规则）。
 - `rendered_html`：命中正文的渲染视图（后端 `_md_to_html` 生成，与试验台/
   正文查看同一渲染器）；前端默认展示渲染视图，`body` 留作 Markdown 源码切换。
 - 双链不在此处：单条结果按需调 `note_relations`。

@@ -7,7 +7,9 @@ CLI 入口（AI 可调）：
   python library.py config <名> --set key=value [--unset key]
 
 每库可覆盖字段：exclude_dirs / exclude_files / exclude_patterns /
-chunk_char_limit / short_doc_char_limit / extensions / collection。
+chunk_char_limit / short_doc_char_limit / extensions / collection /
+agent_formats（Agent 长期授权的二进制格式；注意持久键叫 agent_formats，
+agent_allowed 只是 index_library/server 的运行期参数名，不要混用）。
 null = 继承 config.json 全局值。embedding 模型保持全局（跨库并查要求同一向量空间）。
 
 选择语义（search_knowledge 的 libraries/exclude）：
@@ -704,9 +706,11 @@ def main():
                 cfg = effective_config(entry)
                 print(f"库名：{cfg['name']}")
                 print(f"路径：{cfg['path']}")
-                print(f"collection：{cfg['collection']}")
-                print(f"扩展名：{cfg['extensions']}")
                 for k in GLOBAL_KEYS:
+                    v = entry.get(k)
+                    tag = "" if v is None else "（覆盖）"
+                    print(f"{k}：{cfg[k]}{tag}")
+                for k in ("extensions", "agent_formats", "collection"):
                     v = entry.get(k)
                     tag = "" if v is None else "（覆盖）"
                     print(f"{k}：{cfg[k]}{tag}")

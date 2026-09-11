@@ -41,8 +41,18 @@ def _fmt_ts(ts):
 # 置信度标记可带·分档词后缀（问题43，如 [置信度 0.87·高相关]），也可无后缀（兼容旧输出）
 _RE_CONF = re.compile(r"\[置信度 ([\d.]+)(?:·[^\]]*)?\]")
 _RE_CHUNK = re.compile(r"\[块 (\d+)/(\d+)\]")
-_RE_HEAD = re.compile(r"\((##+ [^)]+)\)")
 _RE_LOWNOTE = re.compile(r"（低置信度 [\d.]+，仅供参考）$")
+
+# 解析纪律（2026-09-11 修复，方案说明见下）：
+#   rel 必须**严格等于**库内相对路径——它是 read_document/open_source 的唯一输入，
+#   多一个字符就会「查看正文」报不支持该格式、打开源文件被 Obsidian 判为不存在。
+#   因此：
+#   1) 以「置信度标记」为截断点：它之后的全部内容都是协议尾巴（低置信注记、
+#      [已回填父节全文]、未来新增标记），一律不参与 rel/heading；
+#   2) 标题用 find(" (## ") 定位、剥末尾一个 ")"，**不用 \((##+ [^)]+)\) 这类正则**——
+#      标题是完整路径，编号小节天然含 ")"（如「要点 / 5) ui-ux-pro-max — 行业感知的
+#      设计系统」），正则从第一个 ")" 截断，会把标题残渣留在 rel 里（本次案发现场）；
+#   3) 无标题行再按首个 " [" 兜底切一刀（与 Flet 版 gui/widgets._parse_src 同规则）。
 
 
 def parse_search_text(text):
@@ -50,8 +60,9 @@ def parse_search_text(text):
     {lib, rel, heading, chunk_idx, chunk_total, confidence, body, notice?}。
 
     - 来源行真实格式（retriever._format_results）：
-      `[来源] 库/rel (## 标题) [块 k/N] [置信度 0.87]（低置信度 0.42，仅供参考）?`
-      尾三个标记可选；「仅供参考」尾巴只出现在低置信行，剥掉避免混进 rel。
+      `[来源] 库/rel (## 标题路径) [块 k/N] [置信度 0.87·分档词]（低置信度…）? [已回填父节全文]?`
+      尾部标记全部可选、且顺序由 retriever 决定；解析只认「定位锚点」不认位置，
+      详见文件顶部的解析纪律注释。
     - 非 [来源] 开头的游离行（「本次查询整体置信度偏低…」「同一文件最多展示…」
       等整体提示，Flet 版会被当成幽灵结果渲染成畸形来源行）在这里归为
       notice=True 的提示条目，前端渲染为提示横幅而非结果卡。
@@ -77,14 +88,28 @@ def parse_search_text(text):
             s = s[len("[来源] "):]
             conf_m = _RE_CONF.search(s)
             conf = float(conf_m.group(1)) if conf_m else None
-            s = _RE_CONF.sub("", s).strip()
+            if conf_m:
+                # 置信度标记之后 = 协议尾巴，整段丢弃（见文件顶部解析纪律）
+                s = s[:conf_m.start()].rstrip()
             chunk_m = _RE_CHUNK.search(s)
             chunk_idx = int(chunk_m.group(1)) if chunk_m else None
             chunk_total = int(chunk_m.group(2)) if chunk_m else None
-            s = _RE_CHUNK.sub("", s).strip()
-            head_m = _RE_HEAD.search(s)
-            heading = head_m.group(1) if head_m else None
-            s = _RE_HEAD.sub("", s).strip()
+            if chunk_m:
+                s = s[:chunk_m.start()].rstrip()
+            heading = None
+            sep = s.find(" (## ")
+            if sep != -1:
+                head = s[sep + 2:].strip()   # "## 标题路径)"
+                if head.endswith(")"):
+                    head = head[:-1].strip()  # 只剥外层包壳的一个 ")"，标题自带的 ')' 保留
+                if not head.strip("#").strip():
+                    head = ""                 # "(## )"：空标题（与旧行为一致 → None）
+                heading = head or None
+                s = s[:sep].strip()
+            else:
+                cut = s.find(" [")   # 无标题：协议标记一律不属于 rel（同 Flet 规则）
+                if cut != -1:
+                    s = s[:cut].rstrip()
             lib, rel = "", s
             if "/" in s:
                 lib, rel = s.split("/", 1)
@@ -284,7 +309,7 @@ class Bridge:
         cfg = effective_config(entry)
         overrides = {k: v for k, v in entry.items()
                      if k in OVERRIDE_KEYS and v is not None}
-        all_keys = ["extensions", "exclude_dirs", "exclude_files",
+        all_keys = ["extensions", "agent_formats", "exclude_dirs", "exclude_files",
                     "exclude_patterns", "chunk_char_limit",
                     "short_doc_char_limit", "collection"]
         return {"effective": cfg, "overrides": overrides, "all_keys": all_keys}
@@ -622,7 +647,15 @@ class Bridge:
         return out
 
     def open_source(self, lib, rel, heading=""):
-        """打开源文件：Obsidian vault 走 URI，普通目录直接打开（移植 Flet 逻辑）。"""
+        """打开源文件：Obsidian vault 走 URI，普通目录直接打开（移植 Flet 逻辑）。
+
+        heading 参数保留（前端契约不变）但**不拼进 URI**（2026-09-11）：Obsidian 的
+        标题跳转要求把标题 %23 编码后塞进 file 参数值里（file=note%23标题），而原实现
+        是字面 "#" 追加在查询串尾部（URL 片段语义）——规范解析器下片段被丢弃（跳转静默
+        失效），非规范解析器下会被当成 file 值的一部分 → Obsidian 报「文件不存在」，
+        与本函数本职（打开文件）冲突。跳标题要在本机 Obsidian 版本上实测通过后再按
+        %23 形式回填；在此之前宁可只保「打开文件」。
+        """
         import os
         import urllib.parse
         cfg = next((c for c in store.library_entries() if c["name"] == lib), None)
@@ -634,8 +667,6 @@ class Bridge:
                 file_part = urllib.parse.quote(rel, safe="/")
                 url = "obsidian://open?vault=%s&file=%s" % (
                     urllib.parse.quote(Path(vault_path).name), file_part)
-                if heading:
-                    url += "#" + urllib.parse.quote(heading)
                 os.startfile(url)
             self._log("打开 %s" % rel)
             return {"ok": True}

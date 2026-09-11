@@ -122,7 +122,7 @@ padding 用 ft.Padding。
    **WEMM 同理——终态条目必须可重试，"待重试"不能是死寂**
 3. API Key 不进日志
 4. GUI 是零侵入观察者：不直写 Chroma，只读进度/meta 文件
-5. 测试先于修改：十件套全绿才能提交
+5. 测试先于修改：`tests/run.py` 14 套全绿才能提交
 6. **查询路径零写副作用**（retriever 用 get_collection，不建空库）
 7. **长驻进程配置现读**：任务边界调 `config.reload_config()`，不读 import 快照
 8. **GPU 显存仲裁 fail-open**：探测失败绝不阻塞路径；同一时刻只让一个模型驻留显存
@@ -133,16 +133,8 @@ padding 用 ft.Padding。
 
 ```powershell
 $env:PYTHONIOENCODING = "utf-8"
-.venv\Scripts\python tests\audit_regression_test.py      # 38
-.venv\Scripts\python tests\library_registry_test.py      # 15
-.venv\Scripts\python tests\server_singleton_test.py      # 5
-.venv\Scripts\python tests\test_config_editor.py         # 0
-.venv\Scripts\python tests\test_gui_store.py             # 0
-.venv\Scripts\python tests\test_extractors.py            # 72
-.venv\Scripts\python tests\test_wemm_indexer.py          # 36
-.venv\Scripts\python tests\test_wemm_retriever.py        # 13
-.venv\Scripts\python tests\test_dedup.py                 # 23
-.venv\Scripts\python tests\verify_export_import.py       # 39（最后跑，会动真库）
+.venv\Scripts\python tests\run.py   # 统一入口：14 套全绿 + 计时 Top10（约 45 秒，真模型只加载 1 次）
+# 调试单套：python tests/run.py --suite test_dedup（各文件也可单独跑，用法不变）
 ```
 
 ---
@@ -157,4 +149,4 @@ $env:PYTHONIOENCODING = "utf-8"
 
 ---
 
-> 下次接手时：先读本 HANDOFF + AGENTS.md，核对十件套是否仍全绿，再决定从 Backlog 哪个条目继续。
+> 下次接手时：先读本 HANDOFF + AGENTS.md，跑一遍 `tests/run.py` 核对 14 套是否仍全绿，再决定从 Backlog 哪个条目继续。

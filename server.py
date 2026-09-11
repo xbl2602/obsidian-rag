@@ -426,7 +426,11 @@ def note_relations(path: str, library: str = "") -> str:
 @server.tool()
 def search_knowledge(query: str, top_k: int = None, libraries: str = "", exclude: str = "",
                      folder: str = "", include_body: bool = True) -> str:
-    """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 默认库（配置 default_libraries，本机为 Obsidian Vault 单库，test/agents/skills 等非笔记库不参与）；"all" = 全部库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 默认库) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径]、[块 k/N] 与 [置信度 x.xx·分档词] 位置标记。置信度解读（重要）：显示的是经零点重标定的相关度分（2026-09-06 问题45）——0.00≈无关噪音（重排器"无法判断"已归零，不再是旧版的 0.50），0.20 以下弱相关，0.20~0.85 中相关，0.85+ 高相关，1.00=实测最强命中档；同一次查询内分数越高越相关且排序越靠前，但跨查询比较分数没有意义。优先引用排序靠前的结果；弱相关档结果对口语化 query 也可能是有效命中，作为依据引用前应向用户核实。命中低于内部 warn 阈值（对应展示分 0.20）时标注（低置信度，仅供参考）。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
+    """语义搜索知识库（混合检索：向量语义 + 关键词）。query 为自然语言问题。库选择（先调 list_libraries 查看可用库名）：libraries 为空 = 默认库（配置 default_libraries，本机为 Obsidian Vault 单库，test/agents/skills 等非笔记库不参与）；"all" = 全部库；"A,B" 多库并查；exclude="B" = 全部库排除 B（反选）；最终范围 = (libraries 非空 ? libraries : 默认库) − exclude，未知名会报错并列出可用库。folder 可按库内子目录过滤（如 ROCKETRY 或 AI Knowledge System，须是完整目录名）。返回最相关的笔记段落与来源文件路径，来源行带 [库名/路径]、[块 k/N] 与 [置信度 x.xx·分档词] 位置标记。置信度解读（重要，2026-09-11 问题54 起为**真分尺度**）：数值 = 重排器判定的"该块与查询相关的概率"（0~1）——<0.30 弱相关（会被标注"低置信度，仅供参考"），0.30~0.75 中相关，≥0.75 高相关；0.5 = 重排器"无法判断"。同一次查询内分数越高越相关且排序越靠前，但跨查询比较分数没有意义。优先引用排序靠前且高相关的结果；弱相关档对口语化 query 也可能是有效命中，作为依据引用前应向用户核实。include_body=False 时只返回来源清单（文件名+标题+块位置，无正文），用于两阶段检索：先低成本枚举全量候选，再对命中少数精读。
+
+正文前的"（…）"行是**系统给你的建议/提示，不是检索结果**：正文行只以 [来源] 开头。建议是系统根据这一批结果的形态自动给出的下一步动作，请照做，常见的几种：多条高置信命中 → 说明该主题内容集中，把 top_k 调大（如 15~20）能拿到更多小节；只有 1 条可信 → 只引用那一条，其余用 read_document 读整篇补上下文；命中含非笔记库（agents/skills）→ 那不是用户的笔记，只要笔记请传 libraries；同名不同目录 → 那是**两篇不同笔记**（标题一样、内容不同），引用与打开用完整路径区分；整批相关度偏低 → 换用笔记里的原始术语重搜，或先 include_body=false 枚举候选文件。
+
+用法剧本：① 想读全文/看上下文 → read_document（PDF/Word 给已提取的 Markdown 全文）；② 要看图、表格、扫描页 → navigate_knowledge（页级视觉导航）；③ 想摸清有哪些相关文件 → include_body=false 拿清单再挑 1~3 条精读；④ 命中好但嫌少 → 调大 top_k；嫌噪音多 → 收窄 folder 或 libraries；⑤ 想知道某篇连到哪些笔记 → note_relations。注意：会话首次调用或 Vault 变更后首次调用需加载模型并重建关键词索引，耗时数十秒属正常。"""
     try:
         _touch_gpu_activity()
         note = ensure_fresh()

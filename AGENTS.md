@@ -57,6 +57,15 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   未授权二进制文件被冻结（保留条目与块）；批准一次长期有效、可撤销
 - 笔记双链关系查询（出链/入链）：GUI 语义检索卡结果可内联展开"关联笔记"，
   另有 MCP 工具 `note_relations`
+- **检索结果自适应建议（问题55，`advice.py`）**：检索返回里随结果给 1~2 条"下一步怎么做"
+  （≥3 条强命中 → 提醒调大 top_k；≥2 条同标题不同路径 → 那是两篇笔记；命中落 agents/skills
+  非笔记库 → 只要笔记请传 libraries；整批偏低 → 换笔记里的原始术语或先 `include_body=false`
+  摸底；含 pdf/docx → `read_document`/`navigate_knowledge`；已折叠回填 → 要原文用
+  `read_document`…共 12 条规则，表见模块 docstring）。纯规则零 I/O、同一输入必然同一输出，
+  `tests/audit_regression_test.test_result_advice_rules` 逐条钉住；阈值与
+  `retriever.CONF_TIER_STRONG` / `confidence_warn_threshold` 同尺度，**换打分模型要重测**。
+  纪律：建议行一律不以 `[来源]` 开头 → 两套 GUI 都按提示横幅渲染，改这个协议要同时改
+  `guiweb.parse_search_text` 与 `gui/widgets._render_results`（后者曾把提示行渲染成畸形结果卡）
 - **WEMM 页级视觉导航（问题37/38，默认开启 `wemm_backend=on`）**：`wemm_server.py`（全局
   Python 跑，懒加载 + 空闲卸载显存 + 空闲自退出；由 gpu_arbiter.ensure_server 懒拉起——且建页库已接入索引管线：index_library 文字索引完成后自动同步页库（问题41 附记），异常只记日志绝不波及文字索引）+ `wemm_indexer.py`（页向量独立 collection
   `<collection>.wemm` / 独立 meta / 独立 WEMM_VERSION；终态与成功条目带
@@ -79,22 +88,25 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 # Python 3.14 + .venv；跑任何 python 前建议：
 $env:PYTHONIOENCODING = "utf-8"
 
-# 回归测试十件套（改动后必须全绿才算完成；另有 tests/test_guiweb.py 随 guiweb 回归）
-.venv\Scripts\python tests\audit_regression_test.py      # 39 用例
-.venv\Scripts\python tests\library_registry_test.py      # 15 用例
-.venv\Scripts\python tests\server_singleton_test.py      # 5 用例
-.venv\Scripts\python tests\test_config_editor.py         # 静态契约套件
-.venv\Scripts\python tests\test_gui_store.py             # 53 用例
-.venv\Scripts\python tests\test_extractors.py            # 73 用例（含 mock HTTP）
-.venv\Scripts\python tests\verify_export_import.py       # 39 检查项（会动真库，最后跑）
-.venv\Scripts\python tests\test_wemm_indexer.py          # 49 用例（WEMM 页级索引）
-.venv\Scripts\python tests\test_wemm_retriever.py        # 13 用例（页级检索）
-.venv\Scripts\python tests\test_dedup.py                 # 23 用例（近似去重）
-.venv\Scripts\python tests\test_gpu_arbiter.py           # 28 用例（GPU 显存仲裁）
+# 回归测试（改动后必须全绿才算完成；单进程 A→B→C，实测约 45 秒）
+.venv\Scripts\python tests\run.py                  # 统一入口：14 套全跑 + 套级计时 Top10
+.venv\Scripts\python tests\run.py --suite test_dedup   # 只跑某套（调试用）
+.venv\Scripts\python tests\run.py --list           # 只列分组与顺序
+# 各文件仍可单独跑（用法不变，断言一个没删）：
+# audit / library_registry / server_singleton / test_config_editor /
+# test_gui_store / test_extractors / verify_export_import / test_wemm_indexer /
+# test_wemm_retriever / test_dedup / test_gpu_arbiter / test_selection /
+# test_guiweb（随 guiweb 回归）+ tests/smoke_gui.py（手动冒烟，不进回归）
 ```
 
 - 管道环境跑测试必须带 `$env:PYTHONIOENCODING='utf-8'`（交互控制台可省）
-- `verify_export_import` 会做真库导出/导入副本演练与一次真检索（加载模型数十秒）
+- `tests/hidden-vault/` 是固定隐藏测试库（14 种文档全覆盖，平时不可见、
+  永不进 `libraries.json`）：`verify_export_import` 默认连它，真 `data/` 与真
+  Vault 零触碰；缺失时自动由 `tests/make_hidden_vault.py` 重造。
+  `--vault <路径>` 可显式指定真实库做里程碑前手动演练
+- `verify_export_import` 真模型只加载 1 次（隐藏库索引 embedding + 1 次真检索，
+  进程内复用）；两库对比走向量余弦免模型；导出/导入/损坏/留3个全部进程内
+  直接调函数，零子进程
 
 ## 架构红线（改代码前必读，违反 = 生产事故）
 
@@ -130,6 +142,15 @@ $env:PYTHONIOENCODING = "utf-8"
   逐用例 PASS/FAIL、`_run_all()` 运行器）；修 bug 先写复现用例再修
 - 索引集成测试用 `_IsoEnv`（重定向落盘路径 + 假编码器 numpy 零向量），绝不碰真实模型/Chroma
 - 外部 HTTP（MinerU）用注入 fake `requests` 模块测；真实 Key 冒烟单独人工执行
+- 跨模块落盘补丁必须全覆盖 import 期绑定值：`retriever.CHROMA_DIR` 是
+  `from index import` 绑定的旧值，打 `index.CHROMA_DIR` 补丁够不着——漏改会让
+  检索单例连真实库并建空 collection 污染真库（2026-09-10 verify 隔离化实测：
+  真库多了个空 `kb_hidden-test`，已清理）。改完用真库 collection 清单核对
+  （应为 9 个，无新增）。同理 `export/import.py` 的 `CHROMA_DIR/DATA_DIR` 与
+  `EXPORT_DIR/IMPORT_WORK_DIR/VAULT_EXPORT_DIR/ARCHIVE_DIR` 常量也要同步改，
+  且绝不 `reload(import)`（会把补丁重置回真实路径）
+- 单进程跑全量时各套件前后快照/还原共享全局（见 `tests/run.py`），新测试文件
+  若引入新的模块级落盘路径，记得加进快照表
 
 ## 提交与文档
 

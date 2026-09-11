@@ -10,6 +10,7 @@ import chromadb
 from config import CFG
 from index import CHROMA_DIR, COLLECTION_NAME, encode_safe
 from library import effective_config, meta_path, resolve_entries
+from advice import advice_for
 
 # 检索类配置一律在调用时读 CFG，不在导入时快照——GUI 设置页改完会调
 # config_editor.reload_cfg() 原地更新 CFG，模块级常量拿不到新值，
@@ -22,6 +23,18 @@ def _chunk_limit():
 
 def _max_chunks_per_file():
     return CFG["max_chunks_per_file"]  # 正文模式下同一文件最多展示块数（防同文件饱和）
+
+
+# 同节折叠（2026-09-11 问题54）：同一小节的多个命中只交付一份正文，折叠掉的候选不占
+# top_k 名额，故正文模式下按 top_k × 该倍数取候选窗口，由 _format_results 边折叠边计数
+# 凑满 top_k。4 倍足够：极端"整窗同节"也要同篇封顶 3 块先过滤一遍。
+FOLD_WINDOW_FACTOR = 4
+
+
+def _candidate_window(top_k):
+    """正文模式的候选窗口大小（≥top_k；折叠吃掉的候选由窗口补位）。"""
+    k = max(1, int(top_k or 1))
+    return k * FOLD_WINDOW_FACTOR
 
 
 # 共享 PersistentClient：此前每次 get_collection 都新建 client，并发搜索时
@@ -314,21 +327,28 @@ def _expand_parent(collection, file, chunk_idx, hp, min_len=300):
     return parent
 
 
-# ---------- 置信度语义锚（2026-09-06 问题43） ----------
-# 实测（九组查询：3 确定命中 / 3 模糊口语 / 3 库中不存在）：重排 sigmoid 绝对分的
-# 有效动态范围只有 0.50~0.73——噪音地板 0.50~0.52（logit≈0，"无法判断"而非"半相关"），
-# 确定命中的 top1 也很难破 0.73。数字差值与语义差距严重非线性错位，人和 LLM 都会
-# 按百分比直觉误读（0.73 vs 0.50 看着只差 23%，实际是"精确命中"vs"完全无关"）。
-# 因此展示层附分档词；边界取自实测分布，中/弱分界直接对齐 warn 阈值（单一事实来源）。
-# 只影响展示文本，排序与阈值过滤逻辑不变。
-CONF_TIER_STRONG = 0.65
+# ---------- 置信度尺度与分档（2026-09-11 问题54 重标定） ----------
+# 尺度本体：BAAI/bge-reranker-v2-m3 经 sentence_transformers.CrossEncoder 取分时，
+# 模型自带 sigmoid 激活（实测 ce.predict == sigmoid(HF logits)，逐元素相等），
+# 所以 `rr_scores` **本身已经是"该块与查询相关的概率"**（0~1，0.5=无法判断）。
+# 此前在 hybrid_search 里又套了一次 sigmoid（见该处注释），把全体分数压进
+# (0.5, 0.731)——那才是问题43/45 记录的"噪音地板 0.50~0.52"与"强命中上限 0.73"
+# 的真正来源，也是一整套零点重标定的由来。现改为**只 sigmoid 一次**：
+# 原始分即展示分，_CONF_ANCHORS / _conf_display 随其服务的压缩一起删除。
+#
+# 分档线在真分尺度上重测（2026-09-11 九组查询实测，同一台机器/同一模型）：
+#   确定命中 top1 = 0.98 / 0.89 / 0.98；同篇次优节 0.76；模糊口语 top1 = 0.28 /
+#   0.04 / 0.14；库里不存在的查询 top1 = 0.60（重排器误判）/ 0.009 / 0.017；
+#   池内噪音块普遍 <0.05。故 高相关线取 0.75（真命中主力 ≥0.86；0.60 的误判留在
+#   中相关，不再被夸成高相关），中/弱分界直接对齐 warn 阈值（单一事实来源）。
+# **换重排/嵌入打分模型后必须重测这两条线**，否则档位失真。
+CONF_TIER_STRONG = 0.75
 
 
 def _conf_tier(conf, warn_c):
     """置信度 → 分档词（高相关/中相关/弱相关），附在 [置信度 x.xx·档位] 里。
 
-    参数与比较都在**原始分**（重排 sigmoid）尺度上进行；展示数值另行经
-    _conf_display 重标定。"""
+    参数与比较都在真分尺度（重排器自己的相关概率）上；展示数值即该分数本身。"""
     if conf >= CONF_TIER_STRONG:
         return "高相关"
     if conf >= warn_c:
@@ -336,36 +356,10 @@ def _conf_tier(conf, warn_c):
     return "弱相关"
 
 
-# ---------- 展示分重标定（2026-09-06 问题45） ----------
-# 问题45 前半只加了档位词，数值本身的零点错位仍在：重排 sigmoid 把"证据=0"（完全无关）
-# 映射到 0.50，导致未命中也显示 50%。这里按实测锚点做分段线性重映射，把零点挪回
-# 真正的"无关"位置：噪音地板 0.50 → 显示 0.00，实测强命中上限 0.73 → 显示 1.00。
-# 锚点取自 2026-09-06 九组真库查询实测分布（3 确定命中 top1 0.61~0.73、
-# 3 模糊口语 0.50~0.56、3 库中不存在 0.50~0.52）。**换重排/嵌入打分模型后必须重测
-# 锚点**，否则映射失真——此约束同时写在 TASK_LOG 问题45 与 AI_GUIDE。
-# 只影响展示数值；排序、drop/warn 阈值过滤、HyDE 触发判断全部仍用原始分。
-_CONF_ANCHORS = (  # (原始分, 展示分)，原始分升序；展示分随原始分单调
-    (0.50, 0.00),  # 噪音地板：logit≈0（"无法判断"）→ 归零
-    (0.55, 0.20),  # warn 阈值线：弱相关的上界
-    (0.65, 0.85),  # 高相关分档线（CONF_TIER_STRONG）
-    (0.73, 1.00),  # 实测强命中上限；更高一律钳到 1.00
-)
-
-
-def _conf_display(raw):
-    """原始 sigmoid 分 → 展示分（分段线性重标定，保序；锚点外线性外推后钳位 0~1）。"""
-    a = _CONF_ANCHORS
-    if raw <= a[0][0]:
-        return 0.0
-    for (x0, y0), (x1, y1) in zip(a, a[1:]):
-        if raw <= x1:
-            return min(1.0, max(0.0, y0 + (raw - x0) / (x1 - x0) * (y1 - y0)))
-    return 1.0
-
-
-def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=False,
-                    scores=None, small_to_big=False):
-    """多库格式化：pairs = [(库名, cid)] 按最终排序；col_map = {库名: collection}。
+def _format_results(col_map, pairs, file_counts=None, include_body=True,
+                    scores=None, small_to_big=False, fold_sections=False, limit=None,
+                    cap=None, query=""):
+    """选交付 + 格式化：pairs = [(库名, cid)] 按最终排序；col_map = {库名: collection}。
 
     include_body=False 时只返回 [来源] 清单（文件名+标题+块位置），不返回正文——
     供"先探查全量、再精读个别"的两阶段检索，避免正文整体塞进上下文。
@@ -374,6 +368,20 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
     small_to_big=True 时，命中碎片块的来源行标 [已回填父节全文]，正文整体替换为
     该块所属整节（按原文顺序、已剥锚点前缀），供 LLM 在碎片命中有完整上下文
     （2026-08-13 v5 小块索引 + 2026-08-14 F18 修正的配套）。
+
+    **名额施加在"实际交付"上**（2026-09-11 问题54）——传送进来的是候选窗口，
+    本函数按序边走边定交付：
+    - limit：最多交付几条（正文模式 = top_k）；折叠/封顶/丢弃掉的候选不占名额。
+    - cap：同一文件最多交付几条（正文模式 = max_chunks_per_file）。此前按"命中块数"
+      封顶，而 small_to_big 交付的是整节正文：三块命中同一小节 → 送三份逐字节相同的
+      正文（实测 md5 相同）、还挤掉别节别篇内容，与"让更多内容进上下文"相反。
+    - fold_sections：同一小节的多个命中只交付一次（留分数最高那块当代表），
+      块级名次 / [块 k/N] / 置信度标记一概不变；小到不值得回填的节
+      （_expand_parent 返回空）不折叠，各块照常交付。
+    list 模式三个开关都不生效（无正文可重复，[块 k/N] 即完整性提示）。
+
+    query 只用于结果建议（advice.py：把"结果形态 → 下一步怎么做"教给 agent），
+    不参与检索与排序。
     """
     got_map = {}
     by_lib = {}
@@ -389,11 +397,19 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
         for cid in cids:
             got_map[(name, cid)] = (meta_map.get(cid) or {}, doc_map.get(cid) or "")
     lines = []
-    shown = 0          # 实际输出的来源数（低置信过滤后）
-    max_shown_conf = 0.0  # 输出结果中的最高置信度（整体低置信提示用）
+    shown = 0          # 实际交付的来源数（低置信过滤 + 折叠 + 封顶后）
     warn_c = CFG.get("confidence_warn_threshold", 0.35)
     drop_c = CFG.get("confidence_drop_threshold", 0.15)
+    cap_used = cap if cap is not None else _max_chunks_per_file()
+    capped = False
+    parent_cache = {}   # (库, rel, hp) → 父节全文：同节多块只查一次（此前每块一次重复 get）
+    emitted_sections = set()   # 已交付过正文的小节（同节折叠的去重键）
+    per_file = {}       # (库, rel) → 已交付条数（同篇封顶数交付数，不数命中块）
+    folded = 0          # 被同节折叠掉的块数（结果建议用）
+    hits_info = []      # 每条交付的形态（结果建议用，见 advice.py）
     for name, cid in pairs:
+        if limit is not None and shown >= limit:
+            break              # 已交付够 limit 条（折叠/封顶/丢弃掉的候选不计入）
         meta, doc = got_map[(name, cid)]
         rel = meta.get("file", "")
         src = f"[来源] {name}/{rel} (## {meta.get('heading', '')})"
@@ -401,36 +417,52 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
         n = (file_counts or {}).get((name, rel))
         if k is not None and n is not None:
             src += f" [块 {int(k) + 1}/{n}]"
+        # 父节正文先算（带缓存）：fold_sections 要按"实际交付的正文"判重，
+        # 而小到不值得回填的节（_expand_parent 返回空）仍按块各自交付、不折叠。
+        hp = meta.get("hp") or ""
+        parent = ""
+        if include_body and small_to_big and hp:
+            sec_key = (name, rel, hp)
+            if sec_key not in parent_cache:
+                parent_cache[sec_key] = _expand_parent(
+                    col_map[name], rel, int(k) if k is not None else 0, hp)
+            parent = parent_cache[sec_key]
+            if parent and fold_sections and sec_key in emitted_sections:
+                folded += 1
+                continue          # 这一节的正文已交付过 → 该块不占名额
+        if include_body and cap is not None and per_file.get((name, rel), 0) >= cap:
+            capped = True         # 该文件交付额度已满（折叠掉的候选不算数）
+            continue
         conf = (scores or {}).get((name, cid))
         if conf is not None:
-            # 展示数值经 _conf_display 重标定（零点=无关），排序/阈值判断仍用原始 conf
-            shown_conf = _conf_display(conf)
-            src += f" [置信度 {shown_conf:.2f}·{_conf_tier(conf, warn_c)}]"
+            # 展示数值 = conf 本身（真分尺度：重排器给出的相关概率），不再重标定
+            src += f" [置信度 {conf:.2f}·{_conf_tier(conf, warn_c)}]"
             if conf < drop_c:
                 # 低置信护栏（drop）：噪音命中直接不输出，宁缺毋滥——
                 # 防止 LLM 把不相关来源当真引用（实测"火箭冷却"混入 agents/test 噪音）。
-                # 注意（2026-09-06 实测）：重排 sigmoid 的噪音地板在 0.50~0.52，
-                # 默认 drop=0.40 下此护栏几乎不会触发；真正日常起作用的是下面的
-                # warn 标注 + 整体低置信提示。drop 保留作兜底（重排降级到 RRF 分
-                # 或未来换打分模型时分布会变，单路第 2 名 0.375 这类仍需要它）。
+                # 2026-09-11 尺度修正后此护栏**真的会触发**了（此前被 sigmoid 两次压进
+                # (0.5, 0.731)，drop=0.40 数学上不可达）。当前默认 drop=0.0 = 关闭：
+                # "低于及格线就少给几条"是产品决策，用户明确先放着；真要开，实测建议
+                # 0.05~0.10（池内噪音普遍 <0.05，真命中 ≥0.14），会少于 top_k。
                 continue
             if conf < warn_c:
-                # 低置信护栏（warn）：照常输出但显式标注，供调用方判断（数值同展示尺度）
-                src += f"（低置信度 {shown_conf:.2f}，仅供参考）"
+                # 低置信护栏（warn）：照常输出但显式标注，供调用方判断（同一真分尺度）
+                src += f"（低置信度 {conf:.2f}，仅供参考）"
         shown += 1
-        max_shown_conf = max(max_shown_conf, conf if conf is not None else 1.0)
+        hits_info.append({"lib": name, "rel": rel, "title": meta.get("title") or "",
+                          "score": conf, "backfilled": bool(parent)})
         if not include_body:
             lines.append(src)
             continue
-        hp = meta.get("hp") or ""
+        if parent and fold_sections:
+            emitted_sections.add((name, rel, hp))   # 该节正文已交付（后续同节块折叠掉）
+        per_file[(name, rel)] = per_file.get((name, rel), 0) + 1
         doc = _strip_ctx(doc, meta)
-        if small_to_big and hp:
-            parent = _expand_parent(col_map[name], rel, int(k) if k is not None else 0, hp)
-            if parent:
-                # 父节已含命中块且按原文顺序，整体替换即可——再拼一次命中块只会重复。
-                # 命中的是哪一块，来源行的 [块 k/N] 已经标了。
-                doc = parent
-                src += " [已回填父节全文]"
+        if parent:
+            # 父节已含命中块且按原文顺序，整体替换即可——再拼一次命中块只会重复。
+            # 命中的是哪一块，来源行的 [块 k/N] 已经标了。
+            doc = parent
+            src += " [已回填父节全文]"
         if len(doc) > _chunk_limit():
             doc = _truncate_at_line(doc)
         lines.append(src)
@@ -441,13 +473,20 @@ def _format_results(col_map, pairs, file_counts=None, include_body=True, capped=
             return "未找到相关内容（检索到的命中均低于置信度下限，已过滤；" \
                    "可尝试换关键词、扩库范围或检查是否索引了相关内容）。"
         return "未找到相关内容。"
-    if scores and max_shown_conf < warn_c:
-        # 白话/模糊输入场景：整体置信度偏低但不隐藏（用户可能说人话问事），
-        # 在头部统一提示，让 LLM 知道这批结果需要谨慎引用。
-        # 判断用原始分，提示数值用重标定后的展示分（与来源行同尺度）。
-        lines.insert(0, f"（本次查询整体置信度偏低（最高 {_conf_display(max_shown_conf):.2f}），以下结果仅供参考）")
+    # 结果建议（问题55）：把"这一批结果该怎么用"直接教给 agent —— 例如多条强命中
+    # 说明该主题内容集中、应把 top_k 调大；命中落在非笔记库；两篇同名不同目录的笔记。
+    # 纯规则、随结果给出、不以 [来源] 开头（两套 GUI 都按提示横幅渲染）。
+    # 原先单独那条"整体置信度偏低"提示已并入 advice 规则 1（同条件触发，避免重复两行）。
+    advice = advice_for(hits_info, query=query, mode="body" if include_body else "list",
+                        top_k=limit, capped=capped, folded=folded,
+                        default_libraries=CFG.get("default_libraries"),
+                        warn=warn_c)
+    if advice:
+        lines[:0] = ["（%s）" % a for a in advice]
     if capped:
-        lines.append(f"（同一文件最多展示 {_max_chunks_per_file()} 块，完整内容请打开源文件）")
+        lines.append(f"（同一文件最多展示 {cap_used} 块"
+                     f"{'、同一小节只交付一次全文' if fold_sections else ''}，"
+                     f"完整内容请打开源文件）")
     return "\n".join(lines)
 
 
@@ -547,7 +586,8 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
     全局精排；重排不可用时按库归一化融合分合并。结果来源行带 <库名>/<相对路径> 前缀。
 
     置信度（with_scores=True 时附在来源行）与最终排序**同源**：
-      重排生效 → sigmoid(重排器 logit)；重排不可用 → RRF 双路一致度归一化。
+      重排生效 → 重排器给出的相关概率本身（0~1，0.5=无法判断；模型自带 sigmoid，
+      此处不再二次激活，见下方 all_scores 处注释）；重排不可用 → RRF 双路一致度归一化。
       2026-08-14 修：此前排序用重排分、置信度却用 RRF 分，两套体系无关，
       结果常出现"越往下置信度越高"的单调递增（审计 F6）。
 
@@ -628,7 +668,7 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
         lib_results.append((name, collection, combined, ranked_all))
 
     # 跨库全局排序
-    rr_conf = {}  # {(库名, cid): 重排器 logit}；非空 = 重排真的生效了
+    rr_conf = {}  # {(库名, cid): 重排器给出的相关概率}；非空 = 重排真的生效了
     if reranker is not None and lib_results:
         # 每库融合 top rerank_candidates 进全局重排池（保留融合已认定的强相关块，只做局部调序）
         pool = []
@@ -667,32 +707,29 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
     else:
         merged = _merge_normalized(lib_results)
 
-    # 同文件封顶：正文模式下每文件最多 max_chunks_per_file 块（按分数保留最高），
-    # 边迭代边计数以填满 top_k；(库名, 相对路径) 为去重键，同名文件跨库不互封顶；
-    # list 模式不封顶（[块 k/N] 标记即完整性提示）
-    cap = _max_chunks_per_file()
-    capped = False
+    # 正文模式：交**候选窗口**给 _format_results，由它按"实际交付"施加同篇封顶与 top_k
+    # （2026-09-11 问题54）。封顶与截断都改到交付侧的原因：同节折叠会吃掉候选——三块
+    # 命中同一小节只交付一份正文，若在挑选阶段就按块数封顶/截断，被折叠的候选会白占
+    # 名额、真正的第 4 名（别节别篇）反而进不来（实测案发现场）。
+    # (库名, 相对路径) 为封顶键，同名文件跨库不互封顶。
+    # list 模式不封顶不折叠（[块 k/N] 标记即完整性提示，无正文可重复）。
     if include_body:
-        ranked_pairs = []
-        per_file = {}
-        for name, collection, cid in merged:
-            rel = _chunk_file(cid)
-            if per_file.get((name, rel), 0) >= cap:
-                capped = True
-                continue
-            ranked_pairs.append((name, cid))
-            per_file[(name, rel)] = per_file.get((name, rel), 0) + 1
-            if len(ranked_pairs) >= top_k:
-                break
+        ranked_pairs = [(n, c) for n, _, c in merged[:_candidate_window(top_k)]]
     else:
         ranked_pairs = [(n, c) for n, _, c in merged[:top_k]]
 
     # 置信度必须与最终排序同源，否则会出现"越往下分越高"的自相矛盾输出。
     all_scores = {}
     if rr_conf:
-        # 重排生效：用重排器 logit 的 sigmoid。语义 = 该块与查询的绝对相关度。
+        # 重排生效：**直接用重排器给的分，不再套 sigmoid**（2026-09-11 问题54）。
+        # 原因：sentence_transformers.CrossEncoder 对 BAAI/bge-reranker-v2-m3 自带
+        # Sigmoid 激活（实测 ce.predict == sigmoid(HF logits) 逐元素相等），
+        # `reranker.predict` 交出来的已经就是"该块与查询相关的概率"（0.5=无法判断）。
+        # 此前这里再套一次 1/(1+exp(-s))，把所有置信度压进 (0.5, 0.731)：
+        # "肯定无关"显示成 50%（假的噪音地板）、真·中段被系统性夸大、
+        # 而 drop 阈值 0.40 在数学上不可达（护栏成死代码）。只钳位，不二次激活。
         for key, s in rr_conf.items():
-            all_scores[key] = 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, s))))
+            all_scores[key] = max(0.0, min(1.0, float(s)))
     else:
         # 重排未生效（关闭/加载失败/池空）：退回 RRF 双路一致度。
         # RRF 分上限 = (w_dense + w_bm25)/(k+1)（两路都第一），除以它归一化到 0-1。
@@ -704,9 +741,13 @@ def hybrid_search(query, top_k=None, libraries="", exclude="", folder="",
                                            if rrf_max > 0 else 0.0)
 
     text = _format_results(col_map, ranked_pairs, file_counts=file_counts,
-                           include_body=include_body, capped=capped,
+                           include_body=include_body,
                            scores=all_scores if with_scores else None,
-                           small_to_big=small_to_big)
+                           small_to_big=small_to_big,
+                           fold_sections=include_body and small_to_big,
+                           limit=top_k if include_body else None,
+                           cap=_max_chunks_per_file() if include_body else None,
+                           query=query)
     top_conf = all_scores.get(ranked_pairs[0]) if ranked_pairs else None
     return _out(text, top_conf)
 

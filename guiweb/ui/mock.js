@@ -382,7 +382,7 @@
       Object.keys(GLOBAL_CFG).forEach(function (k) { eff[k] = ov[k] !== undefined ? ov[k] : GLOBAL_CFG[k]; });
       return delay(150).then(function () {
         return { effective: eff, overrides: JSON.parse(JSON.stringify(ov)),
-          all_keys: ['extensions', 'agent_allowed', 'exclude_dirs', 'exclude_files', 'exclude_patterns',
+          all_keys: ['extensions', 'agent_formats', 'exclude_dirs', 'exclude_files', 'exclude_patterns',
                      'chunk_char_limit', 'short_doc_char_limit', 'collection'] };
       });
     },
@@ -417,7 +417,7 @@
             if (isNaN(n) || n <= 0) { errors[k] = '需为正整数'; return; }
             ov[k] = n; return;
           }
-          if (k === 'extensions' || k === 'agent_allowed' || k === 'exclude_dirs' || k === 'exclude_files' || k === 'exclude_patterns') {
+          if (k === 'extensions' || k === 'agent_formats' || k === 'exclude_dirs' || k === 'exclude_files' || k === 'exclude_patterns') {
             ov[k] = v.split(',').map(function (s) { return s.trim(); }).filter(Boolean); return;
           }
           ov[k] = v;

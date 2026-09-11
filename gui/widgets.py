@@ -577,17 +577,32 @@ class SearchCard:
         expanded = st["expanded"]
         blocks = []
         cur = {"src": None, "body": []}
+        notice = []      # 连续的非 [来源] 行 = 提示横幅（与 guiweb.parse_search_text 同规则）
         for line in text.splitlines():
             if not line.strip():
                 continue
             if line == "---":
+                if notice:
+                    blocks.append({"src": None, "notice": "\n".join(notice)})
+                    notice = []
                 if cur["src"] is not None:
                     blocks.append(cur)
                 cur = {"src": None, "body": []}
-            elif cur["src"] is None:
+                continue
+            if cur["src"] is None and not line.startswith("[来源]"):
+                # 游离提示行：整体低置信 / 结果建议（问题55）/ 同篇封顶说明。
+                # 此前会被当成"结果"渲染成畸形来源行（幽灵卡：文件名位置显示整句提示）。
+                notice.append(line)
+                continue
+            if notice:
+                blocks.append({"src": None, "notice": "\n".join(notice)})
+                notice = []
+            if cur["src"] is None:
                 cur["src"] = line
             else:
                 cur["body"].append(line)
+        if notice:
+            blocks.append({"src": None, "notice": "\n".join(notice)})
         if cur["src"] is not None:
             blocks.append(cur)
         if not blocks:
@@ -596,6 +611,15 @@ class SearchCard:
             return
         controls = []
         for i, b in enumerate(blocks):
+            if b.get("notice"):
+                controls.append(ft.Container(
+                    content=ft.Text(b["notice"], size=12, font_family=FONT_UI,
+                                    color=colors["warning"], selectable=True),
+                    padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                    border_radius=SIZE["radius_badge"],
+                    bgcolor=ft.Colors.with_opacity(0.10, colors["warning"]),
+                ))
+                continue
             rel, heading, conf = _parse_src(b["src"])
             conf_txt = _conf_label(conf)
             conf_color = _conf_color(conf, colors) if conf is not None else colors["t3"]
@@ -743,14 +767,15 @@ class SearchCard:
 
 
 def _conf_color(conf, colors):
-    """置信度标签配色：≥0.85 绿 / ≥0.20 青 / 其余橙。
+    """置信度标签配色：≥0.75 绿 / ≥0.30 青 / 其余橙。
 
-    2026-09-06 问题45 起解析到的是**重标定后的展示分**（retriever._conf_display：
-    噪音地板归 0、实测强命中上限 1.0），档位随之换算——0.85 展示分 = 原始 0.65
-    （高相关线），0.20 展示分 = 原始 0.55（warn 阈值线）。"""
-    if conf >= 0.85:
+    阈值与 retriever.CONF_TIER_STRONG（0.75 高相关线）、config 的
+    confidence_warn_threshold（0.30 低置信线）**同一尺度**：2026-09-11 问题54 起
+    来源行里的数值就是重排器给出的相关概率本身（此前是 sigmoid 两次压进
+    (0.5,0.731) 后再重标定回来的展示分，两套尺度）。改阈值时两边一起改。"""
+    if conf >= 0.75:
         return colors["success"]
-    if conf >= 0.20:
+    if conf >= 0.30:
         return colors["accent"]
     return colors["warning"]
 

@@ -399,12 +399,17 @@ var relOpen = {};
 var bodyOpen = {};
 var searching = false;
 function scoreBadge(s) {
-  // 2026-09-06 问题45 起解析到的是重标定后的展示分（retriever._conf_display：
-  // 噪音归 0、强命中 1.0），档位随之换算——0.85 = 原始 0.65（高相关线），
-  // 0.20 = 原始 0.55（warn 线）。
+  // 来源行里的数值就是重排器给出的相关概率本身（0~1，0.5 = 无法判断）。
+  // 2026-09-11 问题54：此前重排分被 sigmoid 两次压进 (0.5,0.731)、再由后端
+  // 重标定回展示分，这里才需要 0.85/0.2 这套换算过的阈值；现在两套尺度合一，
+  // 阈值对齐后端同一批常量——0.75 = retriever.CONF_TIER_STRONG（高相关线），
+  // 0.30 = config.confidence_warn_threshold（低置信线）。改后端就要改这里。
+  // 真没有分数时不得冒充 0──JS 里 Math.round(null*100) === 0，
+  // 会把「无分数」画成「0 低置信」，与展开态的 '--'、与「有分数但极低」都冲突。
+  if (s == null || isNaN(s)) return '<span class="badge badge-lo">-- 无分数</span>';
   var pct = Math.round(s * 100);
-  if (s >= 0.85) return '<span class="badge badge-hi">' + pct + ' 高置信</span>';
-  if (s >= 0.2) return '<span class="badge badge-mid">' + pct + ' 中置信</span>';
+  if (s >= 0.75) return '<span class="badge badge-hi">' + pct + ' 高置信</span>';
+  if (s >= 0.30) return '<span class="badge badge-mid">' + pct + ' 中置信</span>';
   return '<span class="badge badge-lo">' + pct + ' 低置信</span>';
 }
 function relHtml(key) {
@@ -944,7 +949,7 @@ $('addOk').addEventListener('click', function () {
 /* 库配置弹层：覆盖 vs 继承 */
 var CFG_KEYS = [
   { key: 'extensions', label: '索引格式 extensions', kind: 'fmt' },
-  { key: 'agent_allowed', label: 'Agent 门禁（二进制放行）', kind: 'gate' },
+  { key: 'agent_formats', label: 'Agent 门禁（二进制放行）', kind: 'gate' },
   { key: 'exclude_dirs', label: '排除目录 exclude_dirs', kind: 'list', ph: '如 .obsidian,.trash' },
   { key: 'exclude_files', label: '排除文件 exclude_files', kind: 'list', ph: '如 ~$*,desktop.ini' },
   { key: 'exclude_patterns', label: '排除前缀 exclude_patterns', kind: 'list', ph: '如 draft-*' },
@@ -973,10 +978,14 @@ function openCfg(lib) {
           return '<label class="ck' + (on ? ' on' : '') + '"><input type="checkbox" value="' + f + '"' + (on ? ' checked' : '') + '>' + f + '</label>';
         }).join('') + '</div>';
       } else if (k.kind === 'gate') {
+        // agent_formats 后端只收二进制子集（pdf/docx 中已启用的）；无二进制格式
+        // 启用时开关禁用（与 Flet 端一致），免得"开了也落不了授权"误导人。
         var approved = Array.isArray(val) && val.length > 0;
+        var binOn = ['pdf', 'docx'].filter(function (f) { return (eff.extensions || []).indexOf(f) >= 0; });
+        var noBin = binOn.length === 0;
         ctl = '<div class="cfg-ctl" style="display:flex;align-items:center;gap:10px">'
-          + '<label class="switch"><input type="checkbox" data-gate="1"' + (approved ? ' checked' : '') + '><i></i></label>'
-          + '<span class="cfg-hint" style="margin:0">' + (approved ? '已批准 Agent 自动索引二进制格式' : 'Agent 触发的索引只处理文本类') + '</span></div>'
+          + '<label class="switch"><input type="checkbox" data-gate="1"' + (approved && !noBin ? ' checked' : '') + (noBin ? ' disabled' : '') + '><i></i></label>'
+          + '<span class="cfg-hint" style="margin:0">' + (noBin ? '未启用二进制格式，无可授权项' : (approved ? '已批准 Agent 自动索引二进制格式' : 'Agent 触发的索引只处理文本类')) + '</span></div>'
           + '<div class="notice n-warn cfg-gate-warn"><span>AI Agent 将无法自动索引该库的二进制文件；批准一次长期有效，可随时撤销。</span></div>';
       } else if (k.kind === 'num') {
         ctl = '<div class="cfg-ctl"><input class="in-text in-num" data-ck="' + k.key + '" type="text" value="' + esc(val == null ? '' : val) + '"></div>';
@@ -991,7 +1000,7 @@ function openCfg(lib) {
   }).catch(function () { toast('库配置加载失败', 'err'); });
 }
 var GLOBAL_EFF = { // 继承值参考（全局默认，仅用于弹层里的「继承值」展示）
-  extensions: 'md,pdf,docx', agent_allowed: '', exclude_dirs: '.obsidian,.trash',
+  extensions: 'md,pdf,docx', agent_formats: '', exclude_dirs: '.obsidian,.trash',
   exclude_files: '~$*', exclude_patterns: 'draft-*', chunk_char_limit: '600',
   short_doc_char_limit: '200', collection: ''
 };
@@ -1029,7 +1038,10 @@ $('cfgOk').addEventListener('click', function () {
   });
   updates.extensions = fmtOn.join(',');
   var gate = $('cBody').querySelector('[data-gate]');
-  updates.agent_allowed = gate && gate.checked ? (eff.extensions || []).join(',') : '';
+  // 开 = 对话框里已勾选格式中的二进制交集（以后端刚存的 extensions 为准，
+  // 用陈旧 eff 会在"取消 pdf 勾选+开门禁"时触发后端"未启用无法授权"）；关/禁用 = 空串转 unset
+  var binOn = ['pdf', 'docx'].filter(function (f) { return fmtOn.indexOf(f) >= 0; });
+  updates.agent_formats = (gate && gate.checked && !gate.disabled) ? binOn.join(',') : '';
   Array.prototype.forEach.call($('cBody').querySelectorAll('[data-ck]'), function (inp) {
     updates[inp.getAttribute('data-ck')] = inp.value.trim();
   });

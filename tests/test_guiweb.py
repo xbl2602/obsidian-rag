@@ -57,6 +57,97 @@ def test_parse_full_source_line():
     _check("parse: 低置信值", r1["confidence"] == 0.42, str(r1["confidence"]))
 
 
+def test_parse_numbered_heading_with_paren():
+    r"""2026-09-11 案发现场回归：标题是**完整路径**，编号小节天然含 ")"（「要点 / 5) …」）。
+    旧实现用 \((##+ [^)]+)\) 从第一个 ")" 截断，把「 ui-ux-pro-max — 行业感知的设计系统)」留在
+    rel 里 —— GUI「查看正文」报「不支持该格式」、打开源文件被 Obsidian 判为文件不存在，
+    且增量重建永远修不好（坏的是解析，不是索引）。rel 必须严格等于库内相对路径。"""
+    rel_true = "10-Areas/AI/工具/OpenCode 五个高价值 Skill 清单.md"
+    head = "## OpenCode 五个高价值 Skill 清单 / 要点 / 5) ui-ux-pro-max — 行业感知的设计系统"
+    r = parse_search_text("[来源] Obsidian Vault/" + rel_true + " (" + head + ")"
+                          " [块 18/21] [置信度 0.99·高相关]\n正文A")[0]
+    _check("paren: rel 严格等于库内相对路径", r["rel"] == rel_true, r["rel"])
+    _check("paren: 库名", r["lib"] == "Obsidian Vault", r["lib"])
+    _check("paren: 标题不截断（含 ')' 原样保留）", r["heading"] == head, str(r["heading"]))
+    _check("paren: 块号/置信度照常",
+           (r["chunk_idx"], r["chunk_total"], r["confidence"]) == (18, 21, 0.99),
+           str((r["chunk_idx"], r["chunk_total"], r["confidence"])))
+
+
+def test_parse_protocol_tail_never_enters_rel():
+    """协议尾巴不进 rel。[已回填父节全文]（small_to_big 回填标记）追加在置信度标记**之后**，
+    低置信注记也可能不在行尾（旧规则带 $ 锚点，剥不到）——两者都必须丢弃。"""
+    rel_true = "10-Areas/AI/工具/Vibe-Coding-工具清单.md"
+    r = parse_search_text(
+        "[来源] Obsidian Vault/" + rel_true + " (## Vibe Coding 工具清单 / 要点 / 2) UI 组件库)"
+        " [块 3/7] [置信度 0.04·弱相关]（低置信度 0.04，仅供参考） [已回填父节全文]\n正文")[0]
+    _check("tail: rel 不含回填标记/低置信注记", r["rel"] == rel_true, r["rel"])
+    _check("tail: 置信度与块号仍解析", (r["confidence"], r["chunk_idx"]) == (0.04, 3),
+           str((r["confidence"], r["chunk_idx"])))
+    r2 = parse_search_text("[来源] Obsidian Vault/foo/bar.md (## ) [块 1/2]"
+                           " [置信度 0.72·高相关] [已回填父节全文]\n正文")[0]
+    _check("tail: 空标题行 rel 干净且 heading=None",
+           r2["rel"] == "foo/bar.md" and r2["heading"] is None, repr(r2))
+    r3 = parse_search_text("[来源] Obsidian Vault/foo/bar.md [块 1/2]"
+                           " [置信度 0.72·高相关] [已回填父节全文]\n正文")[0]
+    _check("tail: 无标题行 rel 干净", r3["rel"] == "foo/bar.md", repr(r3))
+
+
+def test_parse_roundtrip_from_producer():
+    """生产者↔消费者契约哨兵：拿 retriever._format_results **真实吐出**的来源行喂解析，
+    rel 必须原样回到库内相对路径。这是本类 bug 的正确防线——协议由 retriever 单方演化，
+    解析端只靠手写字面样例必然滞后。用假 collection，不碰 Chroma、不加载模型。"""
+    import retriever  # 局部导入：本套件整体保持"不加载模型"（import 期无模型）
+
+    rel = "10-Areas/AI/工具/OpenCode 五个高价值 Skill 清单.md"
+    head = "OpenCode 五个高价值 Skill 清单 / 要点 / 5) ui-ux-pro-max"   # 故意的含 ")"
+    docs = {rel + "::0": "甲" * 200, rel + "::1": "乙" * 200}      # 父节 >300 字才触发回填
+
+    class _Col:
+        """只实现 _format_results / _expand_parent 用到的两种 get 形态。"""
+
+        def get(self, ids=None, where=None, include=None):
+            cids = list(ids) if ids is not None else list(docs)
+            metas = [{"file": rel, "heading": head, "hp": head,
+                      "chunk": c.rsplit("::", 1)[-1]} for c in cids]
+            return {"ids": cids, "metadatas": metas,
+                    "documents": [docs[c] for c in cids]}
+
+    text = retriever._format_results(
+        {"L": _Col()}, [("L", rel + "::0"), ("L", rel + "::1")],
+        file_counts={("L", rel): 2}, scores={("L", rel + "::0"): 0.5},
+        small_to_big=True)
+    _check("roundtrip: 生产端确实吐出了回填标记", "[已回填父节全文]" in text, text[:200])
+    rs = parse_search_text(text)
+    rows = [r for r in rs if not r.get("notice")]     # 首行可能是结果建议（notice 横幅）
+    _check("roundtrip: rel 原样回传", rows and rows[0]["rel"] == rel, repr(rs)[:200])
+    _check("roundtrip: 标题原样回传", rows and rows[0]["heading"] == "## " + head,
+           str(rows[0]["heading"] if rows else None))
+    _check("roundtrip: 建议行不污染结果（非 [来源] 行一律 notice）",
+           all(r.get("notice") or r["rel"] == rel for r in rs), repr(rs)[:200])
+
+
+def test_parse_multiple_advice_lines_before_results():
+    """结果建议（问题55）可能连着两行、且都不以 [来源] 开头：必须全部归为 notice 横幅，
+    第一条真实结果的 rel/标题/置信度不受影响（Flet 版曾把这类行当结果、后续行被吞进正文）。
+    末尾的同篇封顶说明同样归 notice。"""
+    rel = "10-Areas/Aerospace/概念/FLUENT 配置与求解设置.md"
+    text = ("（注意同名不同目录：「FLUENT配置与求解设置」下有两篇不同笔记）\n"
+            "（多条高置信命中：把 top_k 调大（如 15~20））\n"
+            "[来源] Obsidian Vault/" + rel + " (## 小节) [块 1/8] [置信度 0.98·高相关]\n"
+            "正文A\n---\n"
+            "（同一文件最多展示 3 块、同一小节只交付一次全文，完整内容请打开源文件）")
+    rs = parse_search_text(text)
+    notices = [r for r in rs if r.get("notice")]
+    rows = [r for r in rs if not r.get("notice")]
+    _check("advice: 三行提示都归 notice", len(notices) == 3, repr(notices)[:120])
+    _check("advice: 结果只有一条", len(rows) == 1, repr(rows)[:120])
+    _check("advice: 结果 rel/标题/置信度不受污染",
+           rows[0]["rel"] == rel and rows[0]["heading"] == "## 小节"
+           and rows[0]["confidence"] == 0.98, repr(rows[0])[:160])
+    _check("advice: 正文没被提示行吞掉", "正文A" in rows[0]["body"], repr(rows[0])[:120])
+
+
 def test_parse_confidence_tier_suffix():
     """问题43（2026-09-06）：retriever 来源行置信度标记升级为 [置信度 x.xx·分档词]，
     解析必须取到数字本身且剥掉整个标记（含分档词），旧格式（无后缀）继续兼容。"""
@@ -335,6 +426,28 @@ def test_settings_choices_guard():
     _check("settings: 真桥 get_settings 的 choices 均为数组", not bad, str(bad))
 
 
+def test_score_badge_guards_missing_score():
+    """徽章不得把「没有置信度」冒充成 0 分（2026-09-11）。
+
+    JS 里 Math.round(null*100) === 0，旧实现会把「无分数」画成「0 低置信」——
+    既和展开态身体里的 '--' 自相矛盾，也和「有分数但极低（0.3%）」撞成同一个显示。
+    重排池之外的尾部队列命中会走到这一格。本套件不装 JS 引擎，沿用静态检查风格：
+    断言空值守卫在百分比换算**之前**，且走独立文案。
+    """
+    import re
+    from pathlib import Path as _P
+    js = (_P(__file__).resolve().parent.parent / "guiweb" / "ui" / "app.js").read_text(encoding="utf-8")
+    m = re.search(r"function scoreBadge\(s\)\s*\{(?P<body>.*?)\n\}", js, re.S)
+    _check("badge: function scoreBadge 存在", bool(m))
+    body = m.group("body") if m else ""
+    guard = body.find("s == null")
+    pct = body.find("var pct = Math.round")   # 只认换算语句本身，别撞注释里的同名文字
+    _check("badge: 空值守卫先于换算语句", guard != -1 and pct != -1 and guard < pct,
+           "guard=%s pct=%s" % (guard, pct))
+    _check("badge: NaN 也走守卫", "isNaN" in body, body[:120])
+    _check("badge: 无分数显示 '--'（不冒充 0）", "-- 无分数" in body, body[:160])
+
+
 def test_snapshot_sys_fields_contract():
     """快照占用字段契约（问题47）：contracts/mock/app 三处同形。
 
@@ -549,6 +662,94 @@ def test_read_document_contract_parity():
             all(i in (ui / "index.html").read_text(encoding="utf-8")
                 for i in ("mDoc", "docTitle", "docMeta", "docHtml", "docMd",
                           "docTabHtml", "docTabMd", "docTrunc", "docOpen")))
+
+
+def test_library_config_key_contract():
+    """2026-09-11 案发现场回归：guiweb 库配置弹层曾用持久化层不存在的键
+    `agent_allowed`（后端持久键是 `agent_formats`）——保存 100% 报"非法配置键"，
+    且开关因读不到 `effective.agent_allowed` 永远显示关闭。
+    前端 CFG_KEYS / mock all_keys / bridge all_keys 必须与
+    library.OVERRIDE_KEYS 同源，运行时参数名不得混入持久键面。"""
+    import re
+    from pathlib import Path as _P
+    base = _P(__file__).resolve().parent.parent
+    ui = base / "guiweb" / "ui"
+    app_js = (ui / "app.js").read_text(encoding="utf-8")
+    mock_js = (ui / "mock.js").read_text(encoding="utf-8")
+    bridge_py = (base / "guiweb" / "bridge.py").read_text(encoding="utf-8")
+    import library as _lib
+    m = re.search(r"var CFG_KEYS = \[(.*?)\];", app_js, re.S)
+    _check("cfgkeys: CFG_KEYS 块存在", bool(m))
+    front_keys = re.findall(r"key:\s*'([a-z_]+)'", m.group(1)) if m else []
+    _check("cfgkeys: 弹层键 ⊆ 后端可写键",
+            bool(front_keys) and not (set(front_keys) - set(_lib.OVERRIDE_KEYS)),
+            "越界=%s" % sorted(set(front_keys) - set(_lib.OVERRIDE_KEYS)))
+    _check("cfgkeys: 门禁挂持久键 agent_formats", "agent_formats" in front_keys, str(front_keys))
+    _check("cfgkeys: 运行时参数名 agent_allowed 不得做持久键",
+            "'agent_allowed'" not in app_js and "'agent_allowed'" not in mock_js)
+
+    def _all_keys(src, pat):
+        mm = re.search(pat, src, re.S)
+        # bridge.py 用双引号、mock.js 用单引号，两边都认
+        return re.findall(r"['\"]([a-z_]+)['\"]", mm.group(1)) if mm else []
+    mock_keys = _all_keys(mock_js, r"all_keys:\s*\[(.*?)\]")
+    bridge_keys = _all_keys(bridge_py, r"all_keys\s*=\s*\[(.*?)\]")
+    _check("cfgkeys: mock all_keys == bridge all_keys",
+            mock_keys and mock_keys == bridge_keys, "%s vs %s" % (mock_keys, bridge_keys))
+    _check("cfgkeys: all_keys == OVERRIDE_KEYS",
+            set(bridge_keys) == set(_lib.OVERRIDE_KEYS),
+            "差=%s" % sorted(set(_lib.OVERRIDE_KEYS) ^ set(bridge_keys)))
+
+
+def test_gate_roundtrip_through_bridge():
+    """门禁开关经真桥的端到端语义：开 = 二进制交集落 agent_formats；
+    关（空串）= unset 恢复继承；旧前端曾发的 agent_allowed 必须继续被拒
+    （后端持久键唯一，禁别名）。"""
+    import library as _lib
+    from guiweb.bridge import Bridge
+    with tempfile.TemporaryDirectory() as td:
+        old = (_lib.LIBRARIES_FILE, _lib.DATA_DIR, _lib.CFG)
+        _lib.LIBRARIES_FILE = Path(td) / "libraries.json"
+        _lib.DATA_DIR = Path(td)
+        _lib.CFG = {"vault": "", "collection_name": "obsidian_kb",
+                    "exclude_dirs": [], "exclude_files": [], "exclude_patterns": [],
+                    "chunk_char_limit": 600, "short_doc_char_limit": 200}
+        try:
+            folder = Path(td) / "kb_gate"
+            folder.mkdir()
+            _lib.save_registry([])
+            _lib.add_library(str(folder))
+            b = Bridge()
+            b._log = lambda *a, **k: None  # 不写真实日志
+            # 开：修好后的前端只发二进制交集
+            r = b.set_library_config("kb_gate", {"extensions": "md,pdf,docx",
+                                                 "agent_formats": "pdf,docx"})
+            _check("gate: 开无错", r["ok"] and not r["errors"], repr(r))
+            eff = _lib.effective_config(_lib.load_registry()[0])
+            _check("gate: 开落持久授权", eff["agent_formats"] == ["pdf", "docx"],
+                   repr(eff["agent_formats"]))
+            got = b.get_library_config("kb_gate")
+            _check("gate: 回读带授权",
+                   got["effective"]["agent_formats"] == ["pdf", "docx"]
+                   and got["overrides"].get("agent_formats") == ["pdf", "docx"],
+                   repr(got["overrides"]))
+            # 关：空串转 unset
+            r2 = b.set_library_config("kb_gate", {"agent_formats": ""})
+            _check("gate: 关无错", r2["ok"] and not r2["errors"], repr(r2))
+            eff2 = _lib.effective_config(_lib.load_registry()[0])
+            _check("gate: 关恢复继承(空)", eff2["agent_formats"] == [], repr(eff2["agent_formats"]))
+            # 旧键：必须继续被拒（防以后有人加别名和泥）
+            r3 = b.set_library_config("kb_gate", {"agent_allowed": "md,pdf,docx"})
+            _check("gate: 旧键 agent_allowed 仍非法",
+                   not r3["ok"] and "agent_allowed" in r3["errors"]
+                   and "非法配置键" in r3["errors"]["agent_allowed"], repr(r3))
+            # 值语义：agent_formats 只收二进制（前端发全量 extensions 必须被挡，
+            # 修好后的前端只发交集，此处钉住后端底线）
+            r4 = b.set_library_config("kb_gate", {"agent_formats": "md,pdf,docx"})
+            _check("gate: 非二进制值被拒",
+                   not r4["ok"] and "agent_formats" in r4["errors"], repr(r4))
+        finally:
+            _lib.LIBRARIES_FILE, _lib.DATA_DIR, _lib.CFG = old
 
 
 def _run_all():

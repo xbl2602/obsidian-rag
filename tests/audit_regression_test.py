@@ -422,59 +422,245 @@ def test_fusion_weights_affect_ranking():
     assert "return_top_confidence" in sig.parameters
 
 
-def test_confidence_matches_display_order():
-    """置信度必须与最终排序同源（重排生效时用重排分）。"""
+def test_confidence_matches_rank_and_no_double_sigmoid():
+    """置信度必须与最终排序同源（重排生效时用重排分），且**只 sigmoid 一次**。
+
+    问题54（2026-09-11）：sentence_transformers.CrossEncoder 对
+    BAAI/bge-reranker-v2-m3 自带 Sigmoid 激活（实测 ce.predict == sigmoid(HF logits)
+    逐元素相等），reranker.predict 交出来的已经就是"该块与查询相关的概率"。
+    旧实现在 hybrid_search 里又套一次 1/(1+exp(-s))，把全体置信度压进 (0.5, 0.731)：
+    假的"噪音地板 0.50"、真·中段被系统性夸大（真 0.44 显示成 0.59）、
+    drop 阈值 0.40 在数学上不可达（护栏成死代码）。本用例锁死"不得二次激活"，
+    防止日后有人按旧注释"修回去"。
+    """
     import retriever
     src = inspect.getsource(retriever.hybrid_search)
-    assert "rr_conf" in src and "math.exp" in src, "重排生效时应以重排分派生置信度"
+    assert "rr_conf" in src, "重排生效时应以重排分派生置信度"
+    assert "math.exp" not in src, "重排分不得再套 sigmoid（模型已自带激活）"
+    assert not hasattr(retriever, "_conf_display"), "零点重标定随它所补的压缩一起删除"
+    assert not hasattr(retriever, "_CONF_ANCHORS"), "锚点表同理必须删除"
     assert "_top1_confidence" not in dir(retriever), "HyDE 不应再靠多跑一轮检索取置信度"
 
 
-def test_confidence_tier_semantic_anchor():
-    """问题43/45（2026-09-06）：重排 sigmoid 绝对分实测挤在 0.50~0.73（噪音地板
-    0.50~0.52，强命中上限 ~0.73），数字差值与语义差距非线性错位，人和 LLM 都会按
-    百分比直觉误读。两层修复都必须在位：
-    - 展示层附分档词（[置信度 x.xx·高相关/中相关/弱相关]），边界 0.65/warn；
-    - 展示数值经 _conf_display 零点重标定：噪音地板 0.50→0.00、强命中 0.73→1.00，
-      未命中不再显示 50%；单调保序；锚点外钳位 0~1。
-    - 两套 GUI 配色档位与展示分档一致（高 0.85 / 弱 0.20），解析正则兼容带档位格式。
-    分档/重标定只改展示文本，排序与阈值过滤不得受影响。
-    **换重排/嵌入打分模型后必须重测锚点与档位边界。**"""
+def _fmt_source_line(score, rel="d/f.md"):
+    """用 _format_results 造一行真实来源行（假 collection，不碰 Chroma/模型）。"""
     import retriever
-    assert retriever.CONF_TIER_STRONG == 0.65, "高相关分档线实测标定值 0.65，改前先重测分布"
-    assert retriever._conf_tier(0.65, 0.55) == "高相关"
-    assert retriever._conf_tier(0.61, 0.55) == "中相关"
-    assert retriever._conf_tier(0.55, 0.55) == "中相关"
-    assert retriever._conf_tier(0.51, 0.55) == "弱相关"
-    # 零点重标定：无关归零、强命中满档、单调保序、钳位
-    assert retriever._conf_display(0.50) == 0.0, "噪音地板必须归零（问题45 的核心）"
-    assert retriever._conf_display(0.49) == 0.0
-    assert retriever._conf_display(0.73) == 1.0, "实测强命中上限应映射为满档"
-    assert retriever._conf_display(0.80) == 1.0, "锚点之上钳位 1.0"
-    raws = [0.30, 0.50, 0.52, 0.55, 0.58, 0.61, 0.65, 0.70, 0.73]
-    disp = [retriever._conf_display(x) for x in raws]
-    assert disp == sorted(disp), "重标定必须单调保序"
-    assert all(0.0 <= d <= 1.0 for d in disp)
-    assert abs(retriever._conf_display(0.55) - 0.20) < 1e-9, "warn 线锚点应落在展示分 0.20"
-    assert abs(retriever._conf_display(0.65) - 0.85) < 1e-9, "高相关线锚点应落在展示分 0.85"
+    cid = rel + "::0"
+
+    class _Col:
+        def get(self, ids=None, where=None, include=None):
+            return {"ids": [cid],
+                    "metadatas": [{"file": rel, "heading": "h", "hp": "h", "chunk": "0"}],
+                    "documents": ["正文"]}
+
+    text = retriever._format_results({"L": _Col()}, [("L", cid)],
+                                     file_counts={("L", rel): 1},
+                                     scores={("L", cid): score}, small_to_big=False)
+    return next(l for l in text.splitlines() if l.startswith("[来源]"))
+
+
+def test_confidence_scale_is_passthrough_and_tiers_on_true_scale():
+    """真分尺度契约（问题54）：来源行里的数值 = 重排分原样，分档词在同一尺度上，
+    两套 GUI 的阈值与后端常量同步。分档只改展示文本，排序/阈值过滤不受影响。
+
+    标定值（2026-09-11 九组真库查询实测）：确定命中 top1 0.89~0.98、同篇次优节 0.76、
+    模糊口语 top1 0.04~0.28、库中不存在 top1 0.009~0.60（含重排器误判）、池内噪音 <0.05。
+    **换重排/嵌入打分模型后必须重测 0.75 / 0.30 这两条线。**
+    """
+    import re
+    import retriever
+    assert retriever.CONF_TIER_STRONG == 0.75, "高相关线为真分实测标定值，改前先重测分布"
+    assert config.DEFAULTS["confidence_warn_threshold"] == 0.30, "warn 线为真分实测标定值"
+    assert config.DEFAULTS["confidence_drop_threshold"] == 0.0, "默认口径 = 不丢弃（给满 top_k）"
+    warn_c = 0.30
+    assert retriever._conf_tier(0.98, warn_c) == "高相关"
+    assert retriever._conf_tier(0.75, warn_c) == "高相关"
+    assert retriever._conf_tier(0.44, warn_c) == "中相关"
+    assert retriever._conf_tier(0.30, warn_c) == "中相关"
+    assert retriever._conf_tier(0.28, warn_c) == "弱相关"
+    assert retriever._conf_tier(0.002, warn_c) == "弱相关"
+    # 行为锚（本用例的核心）：数值原样进来源行——旧实现在这等号右边是 0.59 / 0.50
+    assert "[置信度 0.44·中相关]" in _fmt_source_line(0.44)
+    assert "[置信度 0.02·弱相关]" in _fmt_source_line(0.02)
+    assert "[置信度 0.98·高相关]" in _fmt_source_line(0.98)
     fmt_src = inspect.getsource(retriever._format_results)
     assert "_conf_tier" in fmt_src, "来源行置信度必须附分档词"
-    assert "_conf_display" in fmt_src, "来源行数值必须经零点重标定"
-    # 分档/重标定只进展示：_rrf_combine / 排序路径不得引用
+    assert "_conf_display" not in fmt_src, "来源行数值不再重标定"
     rrf_src = inspect.getsource(retriever._rrf_combine)
-    assert "_conf_tier" not in rrf_src and "_conf_display" not in rrf_src
-    # flet GUI：解析兼容带档位格式 + 配色档位与展示分尺度一致
+    assert "_conf_tier" not in rrf_src, "分档只进展示，排序路径不得引用"
+    # flet GUI：解析兼容带档位格式 + 配色档位与真分尺度一致
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui"))
     import gui.widgets as widgets
     assert r"\[置信度 ([\d.]+)(?:·[^\]]*)?\]" in inspect.getsource(widgets._parse_src), \
         "flet 解析正则必须兼容·分档词后缀"
     color_src = inspect.getsource(widgets._conf_color)
-    assert "0.85" in color_src and "0.2" in color_src, \
-        "flet 配色档位应与展示分尺度（0.85/0.20）一致"
-    # guiweb 桥：解析兼容带档位格式
+    assert "0.75" in color_src and "0.30" in color_src, \
+        "flet 配色档位须与真分尺度（0.75/0.30）一致"
+    # guiweb 桥：解析兼容带档位格式；徽章阈值与后端同一批常量
     import guiweb.bridge as bridge
     assert r"\[置信度 ([\d.]+)(?:·[^\]]*)?\]" in inspect.getsource(bridge), \
         "guiweb 解析正则必须兼容·分档词后缀"
+    app_js = (Path(__file__).resolve().parent.parent / "guiweb" / "ui" / "app.js").read_text(encoding="utf-8")
+    badge = re.search(r"function scoreBadge\(s\)\s*\{(?P<body>.*?)\n\}", app_js, re.S)
+    assert badge and "s >= 0.75" in badge.group("body") and "s >= 0.30" in badge.group("body"), \
+        "guiweb 徽章档位须与真分尺度（0.75/0.30）一致"
+
+
+def test_section_folding_delivers_section_text_once():
+    """同节折叠（问题54，2026-09-11）：名额是稀缺资源（同篇封顶 + top_k），而
+    small_to_big 会把命中块回填成**整节**正文——同一小节的多个命中交付的是逐字节
+    相同的文字（实测三块 md5 相同），此前会重复送三份并挤掉别节别篇的内容，与
+    "让更多内容进上下文"的导航意图相反。
+
+    契约：① 同一节的正文只交付一次（留最高分那块当代表）；② 被折叠的候选不占名额
+    ——候选窗口补位，交付条数仍达 limit；③ 小到不值得回填的节（_expand_parent 返回空）
+    不折叠，各块照常交付；④ 块级名次/置信度标记不变。
+    """
+    import retriever
+    rel = "n/一篇笔记.md"
+    sec_a, sec_b, sec_c = "小节A / 小节标题", "小节B", "小节C"
+    body = "甲" * 200
+    docs = {rel + "::0": body, rel + "::1": body,          # 同节两块（回填后逐字节相同）
+            rel + "::2": "乙" * 200, rel + "::3": "丙" * 200}
+    secs = {rel + "::0": sec_a, rel + "::1": sec_a, rel + "::2": sec_b, rel + "::3": sec_c}
+    metas = {c: {"file": rel, "heading": secs[c], "hp": secs[c], "chunk": str(i)}
+             for i, c in enumerate(docs)}
+
+    class _Col:
+        def get(self, ids=None, where=None, include=None):
+            cids = list(ids) if ids is not None else [c for c in docs
+                                                     if (where or {}).get("file") in c]
+            return {"ids": cids, "metadatas": [metas[c] for c in cids],
+                    "documents": [docs[c] for c in cids]}
+
+    pairs = [("L", rel + "::0"), ("L", rel + "::1"), ("L", rel + "::2")]
+    scores = {pairs[0]: 0.90, pairs[1]: 0.80, pairs[2]: 0.70}
+    common = dict(file_counts={("L", rel): 4}, scores=scores, small_to_big=True)
+
+    folded = retriever._format_results({"L": _Col()}, pairs, fold_sections=True,
+                                       limit=2, **common)
+    blocks = [b for b in folded.split("---") if "[来源]" in b]
+    assert len(blocks) == 2, "折叠吃掉候选后仍应交付 limit 条（窗口补位），实得 %d" % len(blocks)
+    assert "0.90" in blocks[0] and "0.70" in blocks[1], "第二条应是折叠块之后的下一节"
+    assert "[已回填父节全文]" in blocks[0], "代表块仍标回填"
+    assert folded.count(body) == 2, "同节正文只交付一次（父节自身含两块，故 2 次）"
+
+    flat = retriever._format_results({"L": _Col()}, pairs, fold_sections=False,
+                                    limit=2, **common)
+    assert flat.count(body) == 4, "关掉折叠即旧行为：同节两块各交付一份（逐字节重复）"
+
+    # 同篇封顶数的是"交付条数"：同节两块折叠成 1 条后，该篇仍能再交付 2 条别节；
+    # 旧实现按"命中块数"封顶，第 4 块（小节C）会被同一小节的块挤掉、永远见不到。
+    scores4 = dict(scores)
+    scores4[("L", rel + "::3")] = 0.60
+    wide = retriever._format_results({"L": _Col()}, pairs + [("L", rel + "::3")],
+                                     fold_sections=True, limit=3, cap=3,
+                                     file_counts={("L", rel): 4}, scores=scores4,
+                                     small_to_big=True)
+    assert wide.count("丙" * 200) == 1, "第 4 块所在小节应能交付（旧行为会被同小节的块挤掉）"
+    assert wide.count("乙" * 200) == 1 and wide.count(body) == 2, "另两节各交付一份"
+    assert wide.count("[来源]") == 3, "交付 3 条、三条属于三个不同小节"
+
+    hs = inspect.getsource(retriever.hybrid_search)
+    assert "_candidate_window" in hs and "fold_sections" in hs, \
+        "正文模式必须走候选窗口 + 同节折叠（不可在截断 top_k 后再折叠）"
+    assert "cap=" in hs, "同篇封顶必须施加在交付侧（_format_results）"
+    assert retriever._candidate_window(8) >= 8
+
+
+def test_result_advice_rules():
+    """结果建议（问题55，advice.py）：把"这一批结果该怎么用"随结果教给 agent。
+
+    逐场景断言**具体那条建议**（不是笼统"有返回"）：整批偏低 / 只有一条相关 /
+    中相关沾边 / 同名不同目录 / 命中落非笔记库 / 多条强命中应调大 top_k /
+    命中集中在一篇 / 含 PDF / 已回填折叠 / 清单模式 / 命中太少 / 关键词式查询；
+    以及"最多两行"和"空输入不炸"。
+    """
+    from advice import advice_for
+    V = "Obsidian Vault"
+
+    def hits(*specs):
+        out = []
+        for spec in specs:
+            rel, score = spec[0], spec[1]
+            title = spec[2] if len(spec) > 2 else rel.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            out.append({"lib": V, "rel": rel, "title": title, "score": score})
+        return out
+
+    def one(**kw):
+        return advice_for(kw.pop("hits"), **kw)
+
+    # 1 整批偏低（原"整体置信度偏低"提示并入本条，不再单独输出一行）
+    a = one(hits=hits(("x/a.md", 0.04), ("x/b.md", 0.01)), query="帮我看看电脑卡不卡", top_k=8)
+    assert any("相关度都偏低" in s and "include_body=false" in s for s in a), a
+
+    # 2 只有一条真正相关
+    a = one(hits=hits(("x/a.md", 0.98), ("x/b.md", 0.02)), query="UIUX", top_k=8)
+    assert any("只有 1 条真正相关" in s for s in a), a
+
+    # 3 中相关：沾边但非直答
+    a = one(hits=hits(("x/a.md", 0.44), ("x/b.md", 0.12)), query="MinerU 本地部署", top_k=8)
+    assert any("中相关" in s and "read_document" in s for s in a), a
+
+    # 4 同名不同目录 = 两篇笔记（实测 FLUENT 案：标题只差一个空格）
+    a = one(hits=hits(("20-Projects/ROCKETRY/概念/FLUENT配置与求解设置.md", 0.99,
+                       "FLUENT 配置与求解设置"),
+                      ("10-Areas/Aerospace/概念/FLUENT 配置与求解设置.md", 0.98,
+                       "FLUENT 配置与求解设置")),
+            query="FLUENT配置", top_k=5)
+    assert any("同名不同目录" in s and "两篇不同笔记" in s for s in a), a
+
+    # 5 命中落在非笔记库
+    a = advice_for([{"lib": V, "rel": "a.md", "score": 0.40},
+                    {"lib": "skills", "rel": "s/SKILL.md", "score": 0.35}],
+                   query="UIUX", top_k=5, default_libraries=[V])
+    assert any("非笔记库" in s and "skills" in s and V in s for s in a), a
+    # 默认库为空（= 全部库）时不判越界
+    a = advice_for([{"lib": "skills", "rel": "s/SKILL.md", "score": 0.4}],
+                   query="x", top_k=5, default_libraries=[])
+    assert not any("非笔记库" in s for s in a), a
+
+    # 6 多条强命中 → 调大 top_k（用户点名要的场景）
+    a = one(hits=hits(("x/a.md", 0.99), ("x/a.md", 0.98), ("y/b.md", 0.96)),
+            query="FLUENT配置", top_k=5)
+    assert a and "把 top_k 调大" in a[0], a
+
+    # 7 命中集中在一篇
+    a = one(hits=hits(("x/a.md", 0.6), ("x/a.md", 0.5), ("y/b.md", 0.4)),
+            query="某主题", top_k=8)
+    assert any("命中集中在" in s and "exclude=" in s for s in a), a
+
+    # 8 含 PDF/Word
+    a = one(hits=hits(("x/讲义.pdf", 0.44), ("x/文档.docx", 0.35)), query="流体力学", top_k=8)
+    assert any("read_document" in s and "navigate_knowledge" in s for s in a), a
+
+    # 9 已回填/折叠：正文是整节、同节只交付一次
+    a = advice_for([{"lib": V, "rel": "a.md", "score": 0.8, "backfilled": True}],
+                   query="x", top_k=5, folded=2)
+    assert any("同一小节只交付一次" in s and "note_relations" in s for s in a), a
+
+    # 10 清单模式：挑几条再精读
+    a = one(hits=hits(("x/a.md", 0.9)), query="x", top_k=8, mode="list")
+    assert any("候选清单" in s for s in a), a
+
+    # 11 命中太少
+    a = one(hits=hits(("x/a.md", 0.44)), query="某主题", top_k=8)
+    assert any("命中很少" in s for s in a), a
+
+    # 12 关键词式查询
+    a = one(hits=hits(("x/a.md", 0.44), ("x/b.md", 0.4), ("x/c.md", 0.39), ("x/d.md", 0.1)),
+            query="RAG 重排", top_k=8)
+    assert any("关键词式查询" in s for s in a), a
+    # 问句不触发该条
+    a = one(hits=hits(("x/a.md", 0.44), ("x/b.md", 0.4), ("x/c.md", 0.39), ("x/d.md", 0.1)),
+            query="怎么提高检索质量？", top_k=8)
+    assert not any("关键词式查询" in s for s in a), a
+
+    # 边界：最多两行、空输入不炸
+    many = hits(("x/a.md", 0.99), ("x/b.md", 0.98), ("x/c.md", 0.97), ("x/d.md", 0.96))
+    a = advice_for(many, query="关键词", top_k=4, default_libraries=[V], folded=1)
+    assert 0 < len(a) <= 2, a
+    assert advice_for([]) == []
 
 
 def test_terminal_reason_constants_single_source_of_truth():

@@ -152,14 +152,15 @@ def test_parse_src_spacey_path():
 
 
 def test_conf_color_levels():
-    # 2026-09-06 问题45 起解析到的是重标定后的展示分（retriever._conf_display：
-    # 噪音归 0、强命中 1.0），配色档位随之换算：0.85 展示分 = 原始 0.65（高相关线），
-    # 0.20 展示分 = 原始 0.55（warn 阈值线）。
+    # 问题54（2026-09-11）起解析到的是真分——重排器给出的相关概率本身；
+    # 配色档位与 retriever.CONF_TIER_STRONG（0.75 高相关线）、
+    # config 的 confidence_warn_threshold（0.30 低置信线）同一尺度。
     assert _conf_color(0.9, DARK) == DARK["success"]
-    assert _conf_color(0.85, DARK) == DARK["success"]
+    assert _conf_color(0.75, DARK) == DARK["success"]
     assert _conf_color(0.6, DARK) == DARK["accent"]
-    assert _conf_color(0.2, DARK) == DARK["accent"]
-    assert _conf_color(0.15, DARK) == DARK["warning"]
+    assert _conf_color(0.3, DARK) == DARK["accent"]
+    assert _conf_color(0.28, DARK) == DARK["warning"]
+    assert _conf_color(0.02, DARK) == DARK["warning"]
     assert _conf_color(0.0, DARK) == DARK["warning"]
 
 
@@ -966,6 +967,52 @@ def test_search_card_expanded_renders_markdown():
     mds = _collect_markdowns(card.results.controls)
     assert len(mds) == 1, "展开态应恰有一个 Markdown 渲染控件"
     assert "# 真标题" in mds[0] and "**加粗**" in mds[0], repr(mds[0])[:80]
+
+
+def test_search_card_renders_notice_lines_as_banners():
+    """游离提示行必须渲染成提示横幅，不得被当成"结果"渲染成畸形来源行（幽灵卡）。
+
+    2026-09-11 问题55：retriever 现在会在结果前插入"结果建议"（advice.py，可能两行），
+    且末尾会有同篇封顶说明。此前 Flet 的块切分把第一个非 [来源] 行当成某块的 src、
+    后续行全吞进它的正文——结果是第一张卡的文件名位置显示整句提示、真实结果错位。
+    规则与 guiweb.parse_search_text 一致：非 [来源] 开头、且当前还没有来源行 = 提示。
+    """
+    from gui.widgets import SearchCard, ft
+    from gui.theme import DARK
+
+    text = ("（注意同名不同目录：「X」下有两篇不同笔记）\n"
+            "（多条高置信命中：把 top_k 调大（如 15~20））\n"
+            "[来源] 测试库/docs/foo.md (## 小节) [块 1/2] [置信度 0.99]\n正文一。\n---\n"
+            "[来源] 测试库/docs/bar.md (## 小节) [块 2/2] [置信度 0.98]\n正文二。\n---\n"
+            "（同一文件最多展示 3 块，完整内容请打开源文件）")
+    card = SearchCard(on_search=lambda q: None)
+    card.show_results(text, DARK)
+
+    banners, src_lines = [], []
+
+    def _walk(controls):
+        stack = list(controls or [])
+        while stack:
+            c = stack.pop()
+            txt = getattr(c, "value", None)
+            if isinstance(txt, str) and txt.startswith("[来源]"):
+                src_lines.append(txt)
+            if isinstance(c, ft.Text) and getattr(c, "size", None) == 12:
+                banners.append(c.value or "")
+            content = getattr(c, "content", None)
+            if content is not None:
+                stack.append(content)
+            stack.extend(getattr(c, "controls", None) or [])
+
+    _walk(card.results.controls)
+    assert len(card.results.controls) == 4, \
+        "顶层应为 2 提示横幅 + 2 结果卡，实得 %d" % len(card.results.controls)
+    # 连续提示行合并成一个横幅（读起来是一块提示，不刷屏）；末尾封顶说明单独一块
+    assert len(banners) == 2, "提示横幅数：%r" % banners
+    joined = "\n".join(banners)
+    assert "同名不同目录" in joined and "top_k" in joined and "最多展示" in joined, banners
+    assert len(src_lines) == 2, "两张结果卡各自保留自己的 [来源] 行：%r" % src_lines
+    assert not any("同名不同目录" in s for s in src_lines), "提示行不得混进来源行"
 
 
 def test_search_card_view_button_fires_on_view():
