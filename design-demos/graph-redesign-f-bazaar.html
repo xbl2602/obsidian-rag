@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图谱重构 F · 墟集 Bazaar — obsidian-rag</title>
+<style>
+/* F · 墟集：分库卡片墙 + 下钻。离线/系统字体/零 backdrop-filter/零 will-change */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--font-ui:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;--font-mono:"Cascadia Code",Consolas,monospace;--ease:cubic-bezier(.32,.72,0,1)}
+[data-theme="dark"]{
+  --canvas:#0B0908;--float:#141110;--core2:#1B1614;--card:#161211;
+  --ink:#F5EFE9;--body:#CFC4B8;--sec:#97897B;--ph:#655C52;
+  --hair:rgba(255,235,210,.10);--hair2:rgba(255,235,210,.22);
+  --accent:#FB923C;--accent-dim:rgba(251,146,60,.13);--accent-line:rgba(251,146,60,.5);
+  --c-tech:#34D399;--c-paper:#7DB8FF;--c-meet:#FBBF24;
+  --ok:#34D399;--part:#7DB8FF;--fail:#F87171;
+  --shadow:0 10px 26px rgba(0,0,0,.5);
+}
+[data-theme="light"]{
+  --canvas:#F6F1E9;--float:#FFFFFF;--core2:#F3EDE1;--card:#FFFFFF;
+  --ink:#211912;--body:#3A332A;--sec:#6E6455;--ph:#93887A;
+  --hair:rgba(90,60,20,.12);--hair2:rgba(90,60,20,.26);
+  --accent:#C2570B;--accent-dim:rgba(194,87,11,.10);--accent-line:rgba(194,87,11,.5);
+  --c-tech:#0E9F6E;--c-paper:#1D6FD1;--c-meet:#B45309;
+  --ok:#0E9F6E;--part:#1D6FD1;--fail:#DC2626;
+  --shadow:0 10px 24px rgba(90,60,20,.13);
+}
+html,body{height:100%}
+body{background:var(--canvas);color:var(--body);font-family:var(--font-ui);font-size:14px;overflow:hidden}
+.top{position:fixed;top:0;left:0;right:0;height:56px;z-index:30;display:flex;align-items:center;gap:12px;padding:0 16px;background:var(--float);border-bottom:1px solid var(--hair)}
+.brand{display:flex;align-items:center;gap:9px;color:var(--ink);font-weight:700;font-size:14px;white-space:nowrap}
+.brand i{width:16px;height:16px;background:var(--accent);display:inline-block;border-radius:50% 50% 4px 4px;opacity:.9}
+.tag{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:2px 10px;white-space:nowrap}
+.scope{display:flex;gap:6px}.scope button{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:4px 12px;background:transparent}
+.scope button.on{color:var(--ink);border-color:var(--accent-line);background:var(--accent-dim)}
+.spacer{flex:1}.theme-btn{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:9px;padding:5px 12px;background:transparent}
+.dock{position:fixed;top:70px;left:16px;z-index:25;width:442px;max-width:calc(100vw - 32px)}
+.island{display:flex;align-items:center;gap:8px;background:var(--float);border:1px solid var(--hair2);border-radius:14px;padding:8px 8px 8px 13px;box-shadow:var(--shadow)}
+.island input{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--ink);font-size:13.5px;height:30px}
+.island input::placeholder{color:var(--ph)}
+.island select{background:var(--core2);color:var(--sec);border:1px solid var(--hair);border-radius:8px;font-size:12px;padding:4px 6px}
+.btn{background:var(--accent);color:#2A1503;border:none;border-radius:9px;font-size:13px;font-weight:700;padding:7px 16px}
+[data-theme="light"] .btn{color:#fff}
+.hints{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
+.hints button{font-size:11.5px;color:var(--sec);background:var(--float);border:1px solid var(--hair);border-radius:99px;padding:4px 12px}
+.layout{position:fixed;inset:56px 0 0 0;display:flex}
+.side{width:230px;flex:none;overflow:auto;background:var(--float);border-right:1px solid var(--hair);padding:150px 0 70px}
+.side h3{font-size:13px;color:var(--ink);display:flex;justify-content:space-between;padding:0 14px}
+.side h3 span{font-family:var(--font-mono);font-size:10px;color:var(--ph);font-weight:400}
+.cap{font-size:10px;color:var(--ph);letter-spacing:.08em;margin:10px 14px 2px}
+.row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;padding:4px 14px;gap:8px}
+.row input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
+.row input[type=range]{flex:1;accent-color:var(--accent)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:8px;overflow:hidden}
+.seg button{font-size:11px;color:var(--sec);padding:3px 8px;background:transparent;border:none}
+.seg button.on{background:var(--accent-dim);color:var(--ink)}
+.thv{font-family:var(--font-mono);font-size:10.5px;color:var(--accent)}
+.main{flex:1;min-width:0;overflow:auto;padding:150px 20px 90px}
+.banner{display:none;background:var(--float);border:1px solid var(--accent-line);border-radius:13px;padding:11px 15px;margin-bottom:14px;box-shadow:var(--shadow);align-items:center;gap:10px}
+.banner.on{display:flex}.banner b{color:var(--ink)}
+.banner .x{margin-left:auto;border:1px solid var(--hair);border-radius:50%;width:22px;height:22px;color:var(--sec);background:transparent}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.toolbar select{background:var(--float);color:var(--sec);border:1px solid var(--hair);border-radius:8px;font-size:12px;padding:5px 8px}
+.toolbar .one{font-family:var(--font-mono);font-size:10.5px;color:var(--ph)}
+.avenues{display:flex;gap:14px;align-items:flex-start}
+.ave{flex:1;min-width:0;border-radius:16px;padding:12px;background:var(--float);border:1px solid var(--hair);border-top:4px solid var(--sec)}
+.ave-h{display:flex;align-items:baseline;gap:8px;margin-bottom:4px}
+.ave-h b{font-size:13.5px;color:var(--ink)}
+.ave-h span{font-family:var(--font-mono);font-size:10px;color:var(--ph)}
+.ave-s{font-family:var(--font-mono);font-size:10px;color:var(--sec);margin-bottom:10px}
+.cardwall{display:flex;flex-direction:column;gap:10px}
+.post{background:var(--card);border:1px solid var(--hair);border-radius:13px;padding:12px 13px;box-shadow:var(--shadow);cursor:pointer;transition:opacity .3s,border-color .2s;position:relative}
+.post:hover{border-color:var(--hair2)}
+.post.dim{opacity:.3}
+.post.hit{border-color:var(--accent-line)}
+.post.sel{border-color:var(--accent)}
+.prow{display:flex;align-items:center;gap:7px}
+.st{width:8px;height:8px;border-radius:50%;flex:none}
+.pt{font-size:13.5px;color:var(--ink);font-weight:700;line-height:1.45;margin-top:7px}
+.ps{font-size:12.5px;color:var(--sec);line-height:1.7;margin-top:5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ps mark{background:var(--accent-dim);color:var(--ink);border-radius:3px;padding:0 3px}
+.pt mark{background:var(--accent-dim);color:var(--ink);border-radius:3px;padding:0 3px}
+.tags{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+.tags span{font-family:var(--font-mono);font-size:10px;color:var(--ph);border:1px solid var(--hair);border-radius:99px;padding:1px 8px}
+.pmeta{display:flex;gap:10px;font-family:var(--font-mono);font-size:10px;color:var(--ph);margin-top:8px;flex-wrap:wrap}
+.scorebadge{font-family:var(--font-mono);font-size:10px;color:var(--accent);border:1px solid var(--accent-line);border-radius:6px;padding:1px 7px;display:none;margin-left:auto}
+.post.hit .scorebadge{display:inline-block}
+.strip{display:flex;align-items:center;gap:5px;margin-top:9px;padding-top:8px;border-top:1px dashed var(--hair)}
+.strip .lbl{font-family:var(--font-mono);font-size:9.5px;color:var(--ph)}
+.mdot{width:11px;height:11px;border-radius:50%;flex:none;border:1px solid rgba(0,0,0,.25)}
+.mdot.dia{border-radius:3px;transform:rotate(45deg);width:9px;height:9px}
+.strip .more{font-family:var(--font-mono);font-size:9.5px;color:var(--ph)}
+.drill{position:fixed;top:56px;right:0;bottom:0;width:400px;max-width:94vw;z-index:28;background:var(--float);border-left:1px solid var(--hair);box-shadow:var(--shadow);transform:translateX(105%);transition:transform .38s var(--ease);display:flex;flex-direction:column}
+.drill.on{transform:none}
+.drill-h{padding:16px 18px 12px;border-bottom:1px solid var(--hair)}
+.drill-h .prow{display:flex;gap:8px;align-items:center}
+.libchip{font-size:11px;border-radius:6px;padding:2px 9px;color:#fff;font-weight:700}
+.chip{font-family:var(--font-mono);font-size:10.5px;padding:2px 9px;border-radius:6px}
+.chip.ok{background:var(--accent-dim);color:var(--accent)}
+.chip.wait{background:rgba(251,191,36,.14);color:var(--c-meet)}
+.chip.bad{background:rgba(248,113,113,.14);color:var(--fail)}
+.drill-t{font-size:17px;font-weight:700;color:var(--ink);margin-top:8px;line-height:1.4}
+.drill-p{font-family:var(--font-mono);font-size:10.5px;color:var(--ph);margin-top:3px;word-break:break-all}
+.drill-m{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);margin-top:8px;display:flex;gap:12px}
+.drill-b{flex:1;overflow:auto;padding:14px 18px}
+.sec{margin-bottom:16px}.sec h5{font-size:11px;color:var(--ph);margin-bottom:7px;letter-spacing:.06em;font-weight:500}
+.snip{font-size:13px;line-height:1.8;background:var(--core2);border:1px solid var(--hair);border-radius:10px;padding:10px 12px}
+.snip mark{background:var(--accent-dim);color:var(--ink);border-radius:3px;padding:0 3px}
+.rel{display:flex;gap:8px;width:100%;text-align:left;padding:7px 10px;border-radius:8px;font-size:12.5px;color:var(--body);background:transparent;border:1px solid transparent}
+.rel:hover{background:var(--core2);color:var(--ink)}
+.rel .s{font-family:var(--font-mono);font-size:10.5px;color:var(--accent);margin-left:auto}
+.drill-f{padding:12px 18px;border-top:1px solid var(--hair);display:flex;gap:8px}
+.legend{position:fixed;left:246px;bottom:52px;z-index:25;background:var(--float);border:1px solid var(--hair);border-radius:12px;padding:9px 13px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;box-shadow:var(--shadow);max-width:calc(100vw - 300px)}
+.li{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--sec)}
+.swd{width:9px;height:9px;border-radius:50%;display:inline-block}
+.info{width:22px;height:22px;border-radius:50%;border:1px solid var(--hair2);color:var(--sec);font-size:11px;font-weight:700;background:transparent}
+.zoom{position:fixed;right:16px;bottom:52px;z-index:25;display:flex;flex-direction:column;gap:7px;align-items:flex-end}
+.zoom button{width:34px;height:34px;border-radius:10px;background:var(--float);border:1px solid var(--hair);color:var(--sec);font-size:15px}
+.zlab{font-family:var(--font-mono);font-size:10.5px;color:var(--ph)}
+.status{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:25;font-family:var(--font-mono);font-size:11px;color:var(--sec);background:var(--float);border:1px solid var(--hair);border-radius:99px;padding:4px 16px;white-space:nowrap;max-width:calc(100vw - 32px);overflow:hidden;text-overflow:ellipsis}
+.status b{color:var(--ink)}
+.tip{position:fixed;z-index:40;pointer-events:none;opacity:0;transition:opacity .15s;background:var(--float);border:1px solid var(--hair2);border-radius:10px;padding:8px 12px;max-width:320px;box-shadow:var(--shadow);transform:translate(-50%,calc(-100% - 12px))}
+.tip.show{opacity:1}.tip .p{font-family:var(--font-mono);font-size:10.5px;color:var(--ink);word-break:break-all}.tip .m{font-size:10.5px;color:var(--ph);margin-top:3px}
+.mech{position:fixed;left:246px;bottom:112px;z-index:26;width:350px;background:var(--float);border:1px solid var(--hair);border-radius:13px;box-shadow:var(--shadow);padding:13px 15px;display:none}
+.mech.on{display:block}.mech h4{font-size:12.5px;color:var(--ink);margin-bottom:7px}.mech p{font-size:11.5px;color:var(--sec);line-height:1.7;margin-bottom:5px}.mech b{color:var(--body)}
+.main.big .pt{font-size:15px}.main.big .ps{-webkit-line-clamp:3;font-size:13px}
+.main.small .ps{display:none}.main.small .post{padding:9px 11px}
+@media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
+@media (max-width:1150px){.avenues{flex-direction:column}.ave{width:100%}.side{width:200px}.legend{left:216px}}
+</style>
+</head>
+<body>
+<header class="top"><span class="brand"><i></i>Obsidian RAG · 图谱</span><span class="tag">F · 墟集 demo · 卡片墙 16 ＋ 下钻</span>
+<nav class="scope" id="scope"><button data-s="" class="on">全部库</button><button data-s="技术笔记">技术笔记</button><button data-s="论文阅读">论文阅读</button><button data-s="会议记录">会议记录</button></nav>
+<span class="spacer"></span><button class="theme-btn" id="themeBtn">切换浅色</button></header>
+<div class="dock"><div class="island"><span style="color:var(--sec)">⌕</span><input id="q" placeholder="提问 → 卡片按置信度浮起，照样分库站队"><select id="topk"><option>3</option><option selected>5</option><option>8</option></select><button class="btn" id="go">检索</button></div>
+<div class="hints"><button>混合检索的重排策略？</button><button>WEMM 页库哪些失败了？</button><button>扫描件 PDF 如何处理？</button></div></div>
+<div class="layout">
+  <aside class="side">
+    <h3>图层 <span id="sum"></span></h3>
+    <div class="cap">迷你关系（作用于卡片下沿）</div>
+    <label class="row"><span>显式双链</span><input type="checkbox" id="lB" checked></label>
+    <label class="row"><span>语义相似边</span><input type="checkbox" id="lS"></label>
+    <div class="row"><input type="range" id="th" min="0.5" max="0.85" step="0.01" value="0.62"><span class="thv" id="thv">0.62</span></div>
+    <label class="row"><span>归属边</span><input type="checkbox" id="lO" checked></label>
+    <div class="cap">卡片内容</div>
+    <label class="row"><span>WEMM 页节点</span><input type="checkbox" id="lP"></label>
+    <label class="row"><span>PDF→MD 缓存</span><input type="checkbox" id="lC" checked></label>
+    <label class="row"><span>PDF 原件</span><input type="checkbox" id="lPdf" checked></label>
+    <div class="cap">显示</div>
+    <div class="row"><span>着色</span><span class="seg" id="seg"><button data-m="lib" class="on">按库</button><button data-m="state">按生效</button><button data-m="mono">单色</button></span></div>
+    <label class="row"><span>库大街（分界列）</span><input type="checkbox" id="lBd" checked></label>
+    <label class="row"><span>仅看命中</span><input type="checkbox" id="lHit"></label>
+  </aside>
+  <main class="main" id="main">
+    <div class="banner" id="banner"><span>⌖</span><span id="bannerTx"></span><button class="x" id="bx">✕</button></div>
+    <div class="toolbar"><select id="sort"><option value="rel">排序：相关度（检索态）</option><option value="upd">排序：更新时间</option><option value="chunks">排序：块数</option></select><span class="one" id="wallInfo"></span></div>
+    <div class="avenues" id="aves"></div>
+  </main>
+</div>
+<div class="legend" id="legend"></div>
+<div class="mech" id="mech"><h4>墟集力学（聚落卡片墙）</h4><p><b>一库一条大街：</b>技术笔记／论文阅读／会议记录各一列，列头色带＋计数＋生效统计即库分界。</p><p><b>一张卡＝一篇：</b>标题＋两行摘要＋标签＋块/链/更新＋迷你关系（5 点封顶，颜色＝邻居的库）。</p><p><b>检索态：</b>命中卡描边＋◈ 角标＋列内浮顶，非命中压暗 30%；“仅看命中”即过滤器。</p><p><b>下钻：</b>点卡开 Inspector（管线／双链／语义／片段／打开源文件），与现状 Inspector 同数据。</p></div>
+<div class="zoom"><button id="zin" aria-label="放大">＋</button><button id="zout" aria-label="缩小">－</button><button id="zfit" aria-label="重置">⤢</button><span class="zlab" id="zlab">100%</span></div>
+<div class="status" id="status"></div>
+<aside class="drill" id="drill"><div class="drill-h"><div class="prow"><span id="dDot" class="swd"></span><span id="dLib" style="font-size:11.5px;color:var(--sec)"></span><span id="dBadge"></span><span style="flex:1"></span><button class="theme-btn" id="dX">关闭</button></div><div class="drill-t" id="dT"></div><div class="drill-p" id="dP"></div><div class="drill-m" id="dM"></div></div><div class="drill-b" id="dB"></div><div class="drill-f"><button class="theme-btn" id="dOpen">打开源文件</button><button class="btn" id="dRel" style="flex:1">以此为中心</button></div></aside>
+<div class="tip" id="tip"><div class="p" id="tp"></div><div class="m" id="tm"></div></div>
+<script>
+"use strict";
+var NOTES=[
+ {id:"t1",lib:"技术笔记",type:"md",title:"WEMM 页级视觉导航",path:"20-Projects/Obsidian RAG/WEMM 设计.md",tags:["WEMM","GPU","页库"],chunks:12,state:"ok",pipe:["提取 done","WEMM done"],upd:"09-08",sum:"用页面渲染＋页向量做“看到第几页”的视觉导航。文字索引完成后自动同步页库，失败只记日志、绝不波及文字索引。",out:["t2","t3"],inn:["p3"],sim:[["p3",.78]]},
+ {id:"t2",lib:"技术笔记",type:"md",title:"混合检索与重排策略",path:"20-Projects/检索/混合检索重排.md",tags:["检索","重排","BGE-M3"],chunks:8,state:"partial",pipe:["提取 done","WEMM —"],upd:"09-06",sum:"稠密＋稀疏＋双链混合召回，重排模型精排取 TopK。语义边默认关闭：开边才加载嵌入模型，避免常驻显存。",out:["t1"],inn:["t1","m2"],sim:[["p3",.71]]},
+ {id:"t3",lib:"技术笔记",type:"md",title:"MinerU 云端 OCR 配置",path:"20-Projects/索引/MinerU 配置.md",tags:["OCR","MinerU","限速"],chunks:5,state:"partial",pipe:["提取 done","WEMM —"],upd:"09-05",sum:"扫描段分流攒批，线程池只并行网络 I/O；滑动窗口限速 45/min，并发 3，中断任务记断点簿下轮续接。",out:[],inn:["t1"],sim:[["p4",.66]]},
+ {id:"t4",lib:"技术笔记",type:"md",title:"显存仲裁 GPU Arbiter",path:"20-Projects/索引/GPU 仲裁.md",tags:["GPU","显存","fail-open"],chunks:7,state:"ok",pipe:["提取 done","WEMM done"],upd:"09-04",sum:"同一时刻只驻留一个模型：WEMM 加载前等空闲显存≥5.5GB，bge-m3 不足则抢占 WEMM；探测失败 fail-open，绝不阻塞。",out:["t1"],inn:[],sim:[]},
+ {id:"t5",lib:"技术笔记",type:"pdf",title:"课件.pdf（42 页混装）",path:"20-Projects/课件/课件.pdf",tags:["PDF","扫描","混装"],chunks:0,state:"none",pipe:["整本待 OCR"],upd:"09-02",sum:"任一页无文字层则整本按扫描件路由：云端开则送 MinerU VLM 产出完整 MD，未开则诚实标 scanned，不做半份拼接。",out:[],inn:["t6"],sim:[]},
+ {id:"t6",lib:"技术笔记",type:"cache",title:"课件.pdf.md · 提取缓存",path:"20-Projects/课件/课件.pdf.md",tags:["缓存","xsrc"],chunks:6,state:"ok",pipe:["缓存 done"],upd:"09-02",sum:"云端产物缓存：带 xsrc 后端签名，失败每轮真重试；归属边指向原件 PDF，是“原件—缓存—页”链条的中段。",out:["t5"],inn:[],sim:[]},
+ {id:"p1",lib:"论文阅读",type:"pdf",title:"注意力机制原论文.pdf",path:"论文/注意力机制.pdf",tags:["Transformer","原件"],chunks:0,state:"ok",pipe:["OCR done","WEMM done"],upd:"08-30",sum:"扫描版英文原论文，MinerU VLM 全本认字。页库已建：p.5 热力图可被视觉导航直接定位到页。",out:[],inn:["p2"],sim:[]},
+ {id:"p2",lib:"论文阅读",type:"cache",title:"注意力.pdf.md · 提取缓存",path:"论文/注意力机制.pdf.md",tags:["缓存","9 块"],chunks:9,state:"ok",pipe:["缓存 done"],upd:"08-30",sum:"VLM 产物 9 块：公式与表格结构保留最好的一版，归属边连回原 PDF，下轮阈值实验的对照基线。",out:["p1"],inn:[],sim:[]},
+ {id:"p3",lib:"论文阅读",type:"md",title:"Transformer 综述 2025",path:"论文/Transformer 综述.md",tags:["综述","11 块"],chunks:11,state:"partial",pipe:["提取 done","WEMM —"],upd:"08-28",sum:"从原始 Transformer 到高效变体的全景表：自注意力、位置编码、多头机制的取舍，跨库桥连 WEMM 设计。",out:["p4"],inn:["t1","t2","p2"],sim:[["t1",.78],["t2",.71]]},
+ {id:"p4",lib:"论文阅读",type:"md",title:"实验记录：重排阈值调参",path:"论文/实验记录.md",tags:["实验","阈值"],chunks:4,state:"failed",pipe:["提取 failed"],upd:"08-27",sum:"阈值 0.62 vs 0.71 在隐藏库上的召回对照；本次提取失败，终态已落盘，下轮真重试，不会死循环。",out:[],inn:["p3"],sim:[["t3",.66]]},
+ {id:"p5",lib:"论文阅读",type:"page",title:"p.5 · 注意力热力图",path:"论文/注意力机制.pdf#page=5",tags:["WEMM","页向量"],chunks:0,state:"ok",pipe:["页向量 done"],upd:"08-30",sum:"第 5 页多头注意力示意图的页向量：查“热力图在哪页”时视觉导航直达本页，虚线药丸即页节点。",out:["p1"],inn:[],sim:[]},
+ {id:"m1",lib:"会议记录",type:"md",title:"周会 2026-09-01",path:"会议/周会 2026-09-01.md",tags:["周会","路线"],chunks:3,state:"ok",pipe:["提取 done"],upd:"09-01",sum:"确认 GUI 双实现并存：Flet 保留，guiweb（pywebview＋HTML）为主力；共享层改动两套 GUI 都要过一遍。",out:["m2"],inn:[],sim:[]},
+ {id:"m2",lib:"会议记录",type:"md",title:"路线评审：图谱重构",path:"会议/路线评审.md",tags:["评审","图谱","杂草"],chunks:5,state:"ok",pipe:["提取 done"],upd:"09-03",sum:"“太像杂草、库分界不清”：定了 A 领海 / B 深渊 / C 星环三套纯节点案，本轮追加 D/E/F 内容型方案。",out:["m3"],inn:["m1","t2"],sim:[["t1",.58]]},
+ {id:"m3",lib:"会议记录",type:"md",title:"待办清单 Sprint 12",path:"会议/待办清单.md",tags:["待办","里程碑"],chunks:2,state:"ok",pipe:["提取 done"],upd:"09-07",sum:"回收剪枝、WEMM 重试、导出导入的主人与验收线；全终态库 0==0 不触发重建，别动判空基准。",out:[],inn:["m2"],sim:[]},
+ {id:"m4",lib:"会议记录",type:"pdf",title:"白板合影.pdf",path:"会议/白板合影.pdf",tags:["PDF","白板","待 OCR"],chunks:0,state:"none",pipe:["OCR queued"],upd:"09-03",sum:"路线评审白板照片：三套轨道草图与投票点，云端 OCR 排队中，本轮先诚实标 scanned。",out:[],inn:[],sim:[]},
+ {id:"m5",lib:"会议记录",type:"md",title:"决策纪要：Agent 门禁",path:"会议/决策纪要 Agent 门禁.md",tags:["门禁","Agent"],chunks:4,state:"ok",pipe:["提取 done"],upd:"09-06",sum:"Agent 只碰文本＋已批准格式，二进制冻结保留条目；冻结分支在 stat 之前，保证零 I/O 且永不裁剪。",out:[],inn:[],sim:[]}
+];
+var SEM={t1:[["p3",.78]],t2:[["p3",.71]],t3:[["p4",.66]],p3:[["t1",.78],["t2",.71]],p4:[["t3",.66]],m2:[["t1",.58]]};
+var OWNMAP={t6:"t5",p2:"p1",p5:"p1"};
+var byId={};NOTES.forEach(function(n){byId[n.id]=n;});
+var HITS={"重排":["t2","t1","p3","t4","m2"],"wemm":["t1","p1","p5","p2","t4"],"扫描":["t5","m4","p1","t3","p2"]};
+var CONF=[.87,.81,.74,.66,.61];
+var state={scope:"",color:"lib",ly:{b:1,s:0,o:1,p:0,c:1,pdf:1,bd:1},q:null,hits:null,sort:"rel",sel:null,onlyHit:false,k:1};
+function $(id){return document.getElementById(id);}
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");}
+function vis(n){if(state.scope&&n.lib!==state.scope)return false;if(n.type==="page")return!!state.ly.p;if(n.type==="cache")return!!state.ly.c;if(n.type==="pdf")return!!state.ly.pdf;return true;}
+function stc(n){return n.state==="ok"?"var(--ok)":n.state==="partial"?"var(--part)":n.state==="failed"?"var(--fail)":"var(--ph)";}
+function dotc(n){if(state.color==="mono")return"var(--ph)";if(state.color==="state")return stc(n);return n.lib==="技术笔记"?"var(--c-tech)":n.lib==="论文阅读"?"var(--c-paper)":"var(--c-meet)";}
+function hl(t,q){if(!q)return esc(t);var ks=q.replace(/[？?！!。，,、]/g," ").split(/\s+/).filter(function(w){return w.length>1;});var o=esc(t);ks.forEach(function(k){if(t.indexOf(k)>=0)o=o.split(esc(k)).join("<mark>"+esc(k)+"</mark>");});return o;}
+function neigh(n){
+  var out=[];
+  if(state.ly.b){n.out.forEach(function(o){out.push(o);});n.inn.forEach(function(o){if(out.indexOf(o)<0)out.push(o);});}
+  if(state.ly.o){Object.keys(OWNMAP).forEach(function(c){if(c===n.id&&out.indexOf(OWNMAP[c])<0)out.push(OWNMAP[c]);if(OWNMAP[c]===n.id&&out.indexOf(c)<0)out.push(c);});}
+  if(state.ly.s){(SEM[n.id]||[]).forEach(function(s){if(s[1]>=+$("th").value&&out.indexOf(s[0])<0)out.push(s[0]);});}
+  return out.filter(function(id){return byId[id];}).slice(0,5);
+}
+function buildWall(){
+  var aves=$("aves");aves.innerHTML="";
+  var b=$("banner");
+  if(state.q){b.classList.add("on");$("bannerTx").innerHTML="搜到 <b>"+state.hits.length+" 篇</b> · “"+esc(state.q)+"” · 命中卡已在各列浮顶＋◈ 角标，非命中压暗";}
+  else b.classList.remove("on");
+  var libs=["技术笔记","论文阅读","会议记录"].filter(function(l){return !state.scope||state.scope===l;});
+  if(!state.ly.bd){ /* 关闭分界：合并为一列 */
+    var one=document.createElement("div");one.className="ave";one.style.flex="1";one.style.borderTopColor="var(--accent)";
+    one.innerHTML='<div class="ave-h"><b>混合大街</b><span>分界已关 · '+NOTES.filter(vis).length+' 篇</span></div><div class="ave-s">库分界开关＝现状 lyBounds 同语义</div><div class="cardwall"></div>';
+    var wall=one.querySelector(".cardwall");
+    sortList(NOTES.filter(vis)).forEach(function(n){if(state.onlyHit&&state.hits&&state.hits.indexOf(n.id)<0)return;wall.appendChild(post(n));});
+    aves.appendChild(one);
+  } else {
+    libs.forEach(function(l){
+      var items=sortList(NOTES.filter(function(n){return n.lib===l&&vis(n);}));
+      var col=l==="技术笔记"?"var(--c-tech)":l==="论文阅读"?"var(--c-paper)":"var(--c-meet)";
+      var ave=document.createElement("div");ave.className="ave";ave.style.borderTopColor=col;
+      var okc=items.filter(function(n){return n.state==="ok";}).length;
+      var hits=state.hits?items.filter(function(n){return state.hits.indexOf(n.id)>=0;}).length:0;
+      ave.innerHTML='<div class="ave-h"><b>'+l+'</b><span>'+items.length+' 篇'+(state.q?' · 命中 '+hits:"")+'</span></div><div class="ave-s">生效 '+okc+'/'+items.length+' · 顶色带＝库分界</div><div class="cardwall"></div>';
+      var wall=ave.querySelector(".cardwall");
+      items.forEach(function(n){if(state.onlyHit&&state.hits&&state.hits.indexOf(n.id)<0)return;wall.appendChild(post(n));});
+      if(!wall.children.length){var e=document.createElement("div");e.style.cssText="font-size:11px;color:var(--ph);padding:8px 2px";e.textContent="本街暂无卡（被图层或“仅看命中”滤掉）。";wall.appendChild(e);}
+      aves.appendChild(ave);
+    });
+  }
+  $("wallInfo").textContent=state.q?"检索态：列内按置信度浮顶":"常态：列内"+(state.sort==="upd"?"按更新":state.sort==="chunks"?"按块数":"按库内重要度")+"排布";
+  paintLegend();paintStatus();
+  $("sum").textContent=NOTES.filter(vis).length+" 卡";
+}
+function sortList(list){
+  list=list.slice();
+  if(state.hits&&(state.sort==="rel")){var r={};state.hits.forEach(function(id,i){r[id]=i;});list.sort(function(a,b){var x=r[a.id],y=r[b.id];if(x==null&&y==null)return 0;if(x==null)return 1;if(y==null)return -1;return x-y;});}
+  else if(state.sort==="upd")list.sort(function(a,b){return b.upd<a.upd?-1:1;});
+  else if(state.sort==="chunks")list.sort(function(a,b){return b.chunks-a.chunks;});
+  return list;
+}
+function post(n){
+  var hi=state.hits?state.hits.indexOf(n.id):-1;
+  var a=document.createElement("div");a.className="post"+(hi>=0?" hit":"")+((state.hits&&hi<0)?" dim":"")+(state.sel===n.id?" sel":"");a.dataset.id=n.id;
+  var nb=neigh(n);
+  var h='<div class="prow"><span class="st" style="background:'+dotc(n)+'"></span><span style="font-family:var(--font-mono);font-size:10px;color:var(--ph)">'+n.type.toUpperCase()+' · '+n.upd+'</span><span class="scorebadge">'+(hi>=0?("◈ "+CONF[hi%5].toFixed(2)+" · #"+(hi+1)):"")+'</span></div>';
+  h+='<div class="pt">'+hl(n.title,state.q)+'</div><div class="ps">'+hl(n.sum,state.q)+'</div>';
+  h+='<div class="tags">'+n.tags.map(function(t){return "<span>#"+esc(t)+"</span>";}).join("")+'</div>';
+  h+='<div class="pmeta"><span>'+n.chunks+' 块</span><span>双链 '+(n.out.length+n.inn.length)+'</span><span>'+n.pipe[0]+'</span></div>';
+  h+='<div class="strip"><span class="lbl">关系</span>'+(nb.length?nb.map(function(id){var m=byId[id];var c=m.lib==="技术笔记"?"#34D399":m.lib==="论文阅读"?"#7DB8FF":"#FBBF24";var dia=(m.type==="cache")?" dia":"";return '<span class="mdot'+dia+'" style="background:'+c+'" title="'+esc(m.title)+'"></span>';}).join(""):'<span class="lbl">— 暂无（开边即有）</span>')+'<span class="more">下钻 ▸</span></div>';
+  a.innerHTML=h;
+  a.onclick=function(){openDrill(n.id);};
+  a.onmousemove=function(e){if(e.target.closest(".mdot"))return;showTip(n,e);};
+  a.onmouseleave=hideTip;
+  return a;
+}
+function paintLegend(){
+  var L='<span class="li"><span class="swd" style="background:var(--c-tech);border-radius:3px"></span>技术笔记街</span><span class="li"><span class="swd" style="background:var(--c-paper);border-radius:3px"></span>论文阅读街</span><span class="li"><span class="swd" style="background:var(--c-meet);border-radius:3px"></span>会议记录街</span>';
+  L+='<span class="li"><span class="swd"></span>下沿圆点＝邻居（颜色＝邻居的库）</span>';
+  if(state.color==="state")L+='<span class="li">左点＝生效态</span>';
+  L+='<button class="info" id="infoBtn">i</button>';
+  $("legend").innerHTML=L;$("infoBtn").onclick=function(e){e.stopPropagation();$("mech").classList.toggle("on");};
+}
+function paintStatus(){$("status").innerHTML=state.q?('检索态 · “<b>'+esc(state.q)+'</b>” · 命中 <b>'+state.hits.length+'</b> · 各列浮顶 · 点卡下钻读全文'):('常态逛街 · <b>'+NOTES.filter(vis).length+'</b> 卡分踞三街 · 点卡下钻');}
+function showTip(n,ev){$("tp").textContent=n.lib+" · "+n.path;$("tm").textContent=n.chunks+" 块 · "+n.type+" · "+n.pipe.join(" / ");var t=$("tip");t.style.left=ev.clientX+"px";t.style.top=ev.clientY+"px";t.classList.add("show");}
+function hideTip(){$("tip").classList.remove("show");}
+function doSearch(q){q=q||$("q").value.trim();if(!q)return;var key=/重排|混合/.test(q)?"重排":/wemm|页|视觉|失败/i.test(q)?"wemm":/扫描|pdf|ocr|白板/i.test(q)?"扫描":"重排";state.q=q;state.hits=HITS[key].slice(0,+$( "topk").value>5?5:+$("topk").value);if($("topk").value==="8")state.hits=HITS[key];state.sort="rel";$("sort").value="rel";buildWall();}
+function clearSearch(){state.q=null;state.hits=null;$("q").value="";state.onlyHit=false;$("lHit").checked=false;buildWall();}
+function openDrill(id){
+  var n=byId[id];if(!n)return;state.sel=id;
+  document.querySelectorAll(".post").forEach(function(p){p.classList.toggle("sel",p.dataset.id===id);});
+  $("dDot").style.background=n.lib==="技术笔记"?"var(--c-tech)":n.lib==="论文阅读"?"var(--c-paper)":"var(--c-meet)";
+  $("dLib").textContent=n.lib;
+  $("dBadge").innerHTML=n.state==="ok"?'<span class="chip ok">全链路生效</span>':n.state==="failed"?'<span class="chip bad">提取失败</span>':'<span class="chip wait">部分生效</span>';
+  $("dT").textContent=n.title;$("dP").textContent=n.lib+" · "+n.path;
+  $("dM").innerHTML="<span>"+n.chunks+" 块</span><span>"+n.type.toUpperCase()+"</span><span>"+n.upd+" 更新</span>";
+  var hi=state.hits?state.hits.indexOf(id):-1;
+  var h='<div class="sec"><h5>摘要'+(hi>=0?' · ◈ '+CONF[hi%5].toFixed(2):"")+'</h5><div class="snip">'+hl(n.sum,state.q)+'</div><div class="tags" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'+n.tags.map(function(t){return '<span style="font-family:var(--font-mono);font-size:10.5px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:2px 9px">#'+esc(t)+'</span>';}).join("")+'</div></div>';
+  h+='<div class="sec"><h5>管线</h5><div style="display:flex;gap:6px;flex-wrap:wrap">'+n.pipe.map(function(p){return '<span class="chip '+(/done|生效/.test(p)?"ok":/fail/.test(p)?"bad":"wait")+'">'+esc(p)+'</span>';}).join("")+'</div></div>';
+  h+='<div class="sec"><h5>双链 · 出链 / 入链</h5>'+((n.out.length||n.inn.length)?n.out.map(function(o){return '<button class="rel" data-go="'+o+'">→ '+esc(byId[o].title)+'<span class="s">出链 · '+byId[o].lib+'</span></button>';}).join("")+n.inn.map(function(o){return '<button class="rel" data-go="'+o+'">← '+esc(byId[o].title)+'<span class="s">入链 · '+byId[o].lib+'</span></button>';}).join(""):'<div style="font-size:12px;color:var(--ph)">暂无显式双链</div>')+'</div>';
+  h+='<div class="sec"><h5>语义近邻（阈值 '+$("th").value+'）</h5>'+(((SEM[id]||[]).filter(function(s){return s[1]>=+$("th").value;}).map(function(s){return '<button class="rel" data-go="'+s[0]+'">'+esc(byId[s[0]].title)+'<span class="s">'+s[1].toFixed(2)+'</span></button>';}).join(""))||'<div style="font-size:12px;color:var(--ph)">开启语义边图层后计算</div>')+'</div>';
+  h+='<div class="sec"><h5>命中片段</h5><div class="snip">…<mark>'+esc(n.title)+'</mark>：'+esc(n.sum)+'…</div></div>';
+  $("dB").innerHTML=h;
+  Array.prototype.forEach.call($("dB").querySelectorAll("[data-go]"),function(b){b.onclick=function(){openDrill(b.dataset.go);};});
+  $("drill").classList.add("on");
+}
+$("go").onclick=function(){doSearch();};$("q").addEventListener("keydown",function(e){if(e.key==="Enter")doSearch();});
+$("bx").onclick=clearSearch;
+Array.prototype.forEach.call(document.querySelectorAll(".hints button"),function(b){b.onclick=function(){$("q").value=b.textContent;doSearch(b.textContent);};});
+$("sort").onchange=function(){state.sort=$("sort").value;buildWall();};
+$("th").oninput=function(){$("thv").textContent=(+$("th").value).toFixed(2);buildWall();if(state.sel)openDrill(state.sel);};
+[["lB","b"],["lS","s"],["lO","o"],["lP","p"],["lC","c"],["lPdf","pdf"],["lBd","bd"]].forEach(function(p){$(p[0]).onchange=function(){state.ly[p[1]]=$(p[0]).checked?1:0;buildWall();};});
+$("lHit").onchange=function(){state.onlyHit=$("lHit").checked;buildWall();};
+Array.prototype.forEach.call(document.querySelectorAll("#seg button"),function(b){b.onclick=function(){state.color=b.dataset.m;Array.prototype.forEach.call(document.querySelectorAll("#seg button"),function(x){x.classList.toggle("on",x===b);});buildWall();};});
+Array.prototype.forEach.call(document.querySelectorAll("#scope button"),function(b){b.onclick=function(){state.scope=b.dataset.s;Array.prototype.forEach.call(document.querySelectorAll("#scope button"),function(x){x.classList.toggle("on",x===b);});buildWall();};});
+$("themeBtn").onclick=function(){var h=document.documentElement;h.dataset.theme=h.dataset.theme==="dark"?"light":"dark";$("themeBtn").textContent=h.dataset.theme==="dark"?"切换浅色":"切换深色";};
+$("dX").onclick=function(){$("drill").classList.remove("on");};$("dOpen").onclick=function(){alert("demo：打开源文件 "+$("dP").textContent);};$("dRel").onclick=function(){alert("demo：以该卡为中心（生产：同街置顶＋星图展开）");};
+$("zin").onclick=function(){state.k=Math.min(1.3,state.k*1.15);$("zlab").textContent=Math.round(state.k*100)+"%";$("main").classList.toggle("big",state.k>1.1);$("main").classList.remove("small");};
+$("zout").onclick=function(){state.k=Math.max(.8,state.k/1.15);$("zlab").textContent=Math.round(state.k*100)+"%";$("main").classList.toggle("small",state.k<.95);$("main").classList.remove("big");};
+$("zfit").onclick=function(){state.k=1;$("zlab").textContent="100%";$("main").classList.remove("big");$("main").classList.remove("small");};
+buildWall();
+</script>
+</body>
+</html>

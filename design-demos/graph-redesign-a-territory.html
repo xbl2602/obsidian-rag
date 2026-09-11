@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图谱重构 A · 领海群岛 Territorial Seas — obsidian-rag</title>
+<style>
+/* ===== A · 领海群岛：离线 / 系统字体 / 无 backdrop-filter / 无 will-change ===== */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --font-ui:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  --font-mono:"Cascadia Code",Consolas,monospace;
+  --ease:cubic-bezier(.32,.72,0,1);
+}
+[data-theme="dark"]{
+  --canvas:#07090B; --core:#0D1214; --core2:#11181B; --float:#0E1417;
+  --ink:#EDF2F0; --body:#C6D0D2; --sec:#8B979E; --ph:#646E75;
+  --hair:rgba(255,255,255,.09); --hair2:rgba(255,255,255,.16);
+  --accent:#34D399; --accent-dim:rgba(52,211,153,.13); --accent-line:rgba(52,211,153,.38);
+  --sea-tech:rgba(52,211,153,.075); --line-tech:rgba(52,211,153,.42);
+  --sea-paper:rgba(125,184,255,.075); --line-paper:rgba(125,184,255,.42);
+  --sea-meet:rgba(251,191,36,.075); --line-meet:rgba(251,191,36,.42);
+  --edge:rgba(235,245,242,.30); --edge-own:rgba(235,245,242,.30);
+  --node-bg:#101619; --node-bd:rgba(255,255,255,.12);
+  --shadow:0 10px 28px rgba(0,0,0,.45);
+  --grid:rgba(255,255,255,.055);
+  --c-tech:#34D399; --c-paper:#7DB8FF; --c-meet:#FBBF24;
+  --ok:#34D399; --part:#7DB8FF; --fail:#F87171;
+}
+[data-theme="light"]{
+  --canvas:#EDF1EF; --core:#FFFFFF; --core2:#F4F7F5; --float:#FFFFFF;
+  --ink:#141A1C; --body:#2A3336; --sec:#5C686D; --ph:#828D93;
+  --hair:rgba(20,30,32,.10); --hair2:rgba(20,30,32,.22);
+  --accent:#0E9F6E; --accent-dim:rgba(14,159,110,.10); --accent-line:rgba(14,159,110,.45);
+  --sea-tech:rgba(14,159,110,.10); --line-tech:rgba(14,159,110,.55);
+  --sea-paper:rgba(29,111,209,.10); --line-paper:rgba(29,111,209,.55);
+  --sea-meet:rgba(180,83,9,.12); --line-meet:rgba(180,83,9,.55);
+  --edge:rgba(20,30,32,.32); --edge-own:rgba(20,30,32,.34);
+  --node-bg:#FFFFFF; --node-bd:rgba(20,30,32,.14);
+  --shadow:0 10px 26px rgba(20,35,32,.14);
+  --grid:rgba(20,30,32,.07);
+  --c-tech:#0E9F6E; --c-paper:#1D6FD1; --c-meet:#B45309;
+  --ok:#0E9F6E; --part:#1D6FD1; --fail:#DC2626;
+}
+html,body{height:100%}
+body{background:var(--canvas);color:var(--body);font-family:var(--font-ui);font-size:14px;overflow:hidden}
+/* 顶栏 */
+.top{position:fixed;top:0;left:0;right:0;height:56px;z-index:30;display:flex;align-items:center;gap:12px;padding:0 16px;background:var(--float);border-bottom:1px solid var(--hair)}
+.brand{display:flex;align-items:center;gap:9px;color:var(--ink);font-weight:700;font-size:14px;white-space:nowrap}
+.brand i{width:18px;height:18px;border-radius:6px;background:linear-gradient(135deg,var(--accent),transparent);display:inline-block;border:1px solid var(--accent-line)}
+.tag{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:2px 10px;white-space:nowrap}
+.scope{display:flex;gap:6px;margin-left:6px}
+.scope button{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:4px 12px;background:transparent;transition:border-color .2s,color .2s,background .2s}
+.scope button.on{color:var(--ink);border-color:var(--accent-line);background:var(--accent-dim)}
+.spacer{flex:1}
+.theme-btn{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:9px;padding:5px 12px}
+.theme-btn:hover{color:var(--ink);border-color:var(--hair2)}
+/* 搜索岛（实底，无模糊） */
+.dock{position:fixed;top:70px;left:16px;z-index:25;width:442px;max-width:calc(100vw - 32px)}
+.island{display:flex;align-items:center;gap:8px;background:var(--float);border:1px solid var(--hair2);border-radius:14px;padding:8px 8px 8px 13px;box-shadow:var(--shadow)}
+.island input{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--ink);font-size:13.5px;height:30px}
+.island input::placeholder{color:var(--ph)}
+.island select{background:var(--core2);color:var(--sec);border:1px solid var(--hair);border-radius:8px;font-size:12px;padding:4px 6px}
+.btn{background:var(--accent);color:#06231A;border:none;border-radius:9px;font-size:13px;font-weight:700;padding:7px 16px}
+[data-theme="light"] .btn{color:#fff}
+.btn.ghost{background:transparent;color:var(--sec);border:1px solid var(--hair);font-weight:500}
+.hints{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
+.hints button{font-size:11.5px;color:var(--sec);background:var(--float);border:1px solid var(--hair);border-radius:99px;padding:4px 12px}
+.hints button:hover{color:var(--ink);border-color:var(--accent-line)}
+/* 舞台 */
+.stage{position:fixed;inset:56px 0 0 0;overflow:hidden;cursor:grab;
+  background-image:radial-gradient(circle,var(--grid) 1px,transparent 1.3px);background-size:28px 28px}
+.world{position:absolute;left:0;top:0;transform-origin:0 0}
+svg.sea{position:absolute;left:-600px;top:-500px;overflow:visible}
+.nodes{position:absolute;left:0;top:0}
+/* 领海：填充色块 + 双层海岸线（实线+外圈淡线，无模糊） */
+.sea-fill{stroke-width:1.4;stroke-dasharray:9 7}
+.sea-halo{fill:none;stroke-width:7;opacity:.14;stroke-dasharray:9 7}
+.sea-name{font-family:var(--font-ui);font-weight:700;font-size:13px;fill:var(--ink)}
+.sea-sub{font-family:var(--font-mono);font-size:10px;fill:var(--sec)}
+/* 节点：药丸卡 */
+.nd{position:absolute;left:0;top:0;user-select:none}
+.card{position:relative;display:flex;align-items:center;gap:7px;transform:translate(-50%,-50%);background:var(--node-bg);border:1px solid var(--node-bd);border-radius:10px;padding:6px 11px;white-space:nowrap;box-shadow:var(--shadow);cursor:grab;transition:opacity .35s var(--ease),border-color .25s}
+.mk{width:11px;height:11px;flex:none}
+.t-md .mk,.t-txt .mk,.t-docx .mk{border-radius:3.5px}
+.t-pdf .mk{clip-path:polygon(0 0,58% 0,100% 42%,100% 100%,0 100%)}
+.t-cache .mk{clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)}
+.t-page .card{background:transparent;box-shadow:none;border-style:dashed;border-radius:99px;padding:3px 9px}
+.t-page .mk{width:7px;height:7px;border-radius:50%}
+.lb{font-size:12px;color:var(--ink);font-weight:500}
+.nd.big .lb{font-size:13px;font-weight:700}
+.nd.big .card{padding:8px 14px;border-width:1.3px}
+.cnt{font-family:var(--font-mono);font-size:10px;color:var(--sec);border:1px solid var(--hair);border-radius:6px;padding:0 5px}
+.nd.dim{opacity:.28}
+.nd.lit .card{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-line),var(--shadow)}
+.cf{position:absolute;left:50%;top:100%;transform:translate(-50%,3px);font-family:var(--font-mono);font-size:10px;color:var(--accent);background:var(--float);border:1px solid var(--accent-line);border-radius:6px;padding:0 6px;display:none}
+.nd.lit .cf{display:block}
+.edge-b{fill:none;stroke:var(--edge);stroke-width:1.2;opacity:.75}
+.edge-o{fill:none;stroke:var(--edge-own);stroke-width:1;stroke-dasharray:2 5;opacity:.6}
+.edge-s{fill:none;stroke:var(--accent);stroke-width:1;stroke-dasharray:1 4;opacity:.55}
+.edge-r{fill:none;stroke:var(--accent);stroke-width:1.4;opacity:0;transition:opacity .4s}
+.edge-r.on{opacity:.8}
+.edge-bridge{stroke:var(--accent) !important;stroke-width:1.8 !important;opacity:.85 !important}
+.ring{fill:none;stroke:var(--accent);stroke-dasharray:4 7;opacity:0;transition:opacity .5s}
+.ring.on{opacity:.65}
+.ripple{fill:none;stroke:var(--accent);stroke-width:2;opacity:0}
+.ripple.go{animation:rip 1.4s var(--ease) 2}
+@keyframes rip{0%{opacity:.6}100%{opacity:0}}
+.qnode{position:absolute;left:0;top:0;z-index:6;display:none}
+.qnode.on{display:block}
+.qcard{transform:translate(-50%,-50%);background:var(--ink);color:var(--canvas);border-radius:99px;padding:9px 16px;font-size:13px;max-width:380px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:var(--shadow);display:flex;gap:8px;align-items:center}
+.qcard button{border:1px solid currentColor;border-radius:50%;width:18px;height:18px;font-size:11px;line-height:1;opacity:.6}
+/* 右：图层 */
+.panel{position:fixed;top:70px;right:16px;z-index:25;width:236px;background:var(--float);border:1px solid var(--hair);border-radius:14px;box-shadow:var(--shadow);padding:12px 14px}
+.panel h3{font-size:13px;color:var(--ink);display:flex;justify-content:space-between;align-items:baseline}
+.panel h3 span{font-family:var(--font-mono);font-size:10px;color:var(--ph);font-weight:400}
+.cap{font-size:10px;color:var(--ph);letter-spacing:.08em;margin:10px 0 2px}
+.row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;padding:4px 0;gap:8px}
+.row input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
+.row input[type=range]{flex:1;accent-color:var(--accent)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:8px;overflow:hidden}
+.seg button{font-size:11.5px;color:var(--sec);padding:3px 9px}
+.seg button.on{background:var(--accent-dim);color:var(--ink)}
+.thv{font-family:var(--font-mono);font-size:10.5px;color:var(--accent);min-width:30px;text-align:right}
+/* 左下图例 / 右下缩放 / 底状态 */
+.legend{position:fixed;left:16px;bottom:52px;z-index:25;background:var(--float);border:1px solid var(--hair);border-radius:13px;padding:9px 13px;display:flex;gap:13px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 32px);box-shadow:var(--shadow)}
+.li{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--sec)}
+.li i{width:10px;height:10px;display:inline-block}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.info{width:22px;height:22px;border-radius:50%;border:1px solid var(--hair2);color:var(--sec);font-size:11px;font-weight:700}
+.zoom{position:fixed;right:16px;bottom:52px;z-index:25;display:flex;flex-direction:column;gap:7px;align-items:flex-end}
+.zoom button{width:34px;height:34px;border-radius:10px;background:var(--float);border:1px solid var(--hair);color:var(--sec);font-size:15px}
+.zoom button:hover{color:var(--ink);border-color:var(--hair2)}
+.zlab{font-family:var(--font-mono);font-size:10.5px;color:var(--ph)}
+.status{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:25;font-family:var(--font-mono);font-size:11px;color:var(--sec);background:var(--float);border:1px solid var(--hair);border-radius:99px;padding:4px 16px;white-space:nowrap;max-width:calc(100vw - 32px);overflow:hidden;text-overflow:ellipsis}
+.status b{color:var(--ink)}
+/* Inspector */
+.ins{position:fixed;top:56px;right:0;bottom:0;width:372px;max-width:94vw;z-index:28;background:var(--float);border-left:1px solid var(--hair);box-shadow:var(--shadow);transform:translateX(105%);transition:transform .38s var(--ease);display:flex;flex-direction:column}
+.ins.on{transform:none}
+.ins-h{padding:16px 18px 12px;border-bottom:1px solid var(--hair)}
+.ins-lib{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--sec);margin-bottom:7px}
+.ins-lib i{width:9px;height:9px;border-radius:3px;display:inline-block}
+.ins-t{font-size:16px;font-weight:700;color:var(--ink);line-height:1.4}
+.ins-p{font-family:var(--font-mono);font-size:10.5px;color:var(--ph);margin-top:3px;word-break:break-all}
+.ins-m{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);margin-top:8px;display:flex;gap:12px}
+.ins-b{flex:1;overflow:auto;padding:14px 18px}
+.sec{margin-bottom:16px}
+.sec h5{font-size:11px;color:var(--ph);letter-spacing:.06em;margin-bottom:7px;font-weight:500}
+.snip{font-size:13px;line-height:1.8;background:var(--core2);border:1px solid var(--hair);border-radius:10px;padding:10px 12px}
+.snip mark{background:var(--accent-dim);color:var(--ink);border-radius:3px;padding:0 3px}
+.kv{display:flex;gap:10px;font-size:12.5px;padding:4px 0}
+.kv .k{color:var(--ph);width:64px;flex:none;font-size:11.5px}
+.chip{font-family:var(--font-mono);font-size:10.5px;padding:2px 9px;border-radius:6px}
+.chip.ok{background:var(--accent-dim);color:var(--accent)}
+.chip.wait{background:rgba(251,191,36,.13);color:var(--c-meet)}
+.chip.bad{background:rgba(248,113,113,.13);color:var(--fail)}
+.rel{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 10px;border-radius:8px;font-size:12.5px;color:var(--body);border:1px solid transparent;background:transparent}
+.rel:hover{background:var(--core2);color:var(--ink)}
+.rel .s{font-family:var(--font-mono);font-size:10.5px;color:var(--accent);margin-left:auto}
+.ins-f{padding:12px 18px;border-top:1px solid var(--hair);display:flex;gap:8px}
+/* tooltip / mechanics */
+.tip{position:fixed;z-index:40;pointer-events:none;opacity:0;transition:opacity .15s;background:var(--float);border:1px solid var(--hair2);border-radius:10px;padding:8px 12px;max-width:320px;box-shadow:var(--shadow);transform:translate(-50%,calc(-100% - 12px))}
+.tip.show{opacity:1}
+.tip .p{font-family:var(--font-mono);font-size:10.5px;color:var(--ink);word-break:break-all}
+.tip .m{font-size:10.5px;color:var(--ph);margin-top:3px}
+.mech{position:fixed;left:16px;bottom:112px;z-index:26;width:330px;background:var(--float);border:1px solid var(--hair);border-radius:13px;box-shadow:var(--shadow);padding:13px 15px;display:none}
+.mech.on{display:block}
+.mech h4{font-size:12.5px;color:var(--ink);margin-bottom:7px}
+.mech p{font-size:11.5px;color:var(--sec);line-height:1.7;margin-bottom:5px}
+.mech b{color:var(--body)}
+.stage.min .lb{display:none}
+.stage.min .nd.big .lb,.stage.min .nd.lit .lb{display:inline}
+@media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="brand"><i></i>Obsidian RAG · 图谱</span>
+  <span class="tag">A · 领海群岛 demo · 16 假节点</span>
+  <nav class="scope" id="scope">
+    <button data-s="" class="on">全部库</button>
+    <button data-s="技术笔记">技术笔记</button>
+    <button data-s="论文阅读">论文阅读</button>
+    <button data-s="会议记录">会议记录</button>
+  </nav>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="themeBtn">切换浅色</button>
+</header>
+
+<div class="dock">
+  <div class="island">
+    <span style="color:var(--sec)">⌕</span>
+    <input id="q" placeholder="向全库提问，结果从问题节点荡开">
+    <select id="topk" aria-label="返回条数"><option>3</option><option selected>5</option><option>8</option></select>
+    <button class="btn" id="go">检索</button>
+  </div>
+  <div class="hints"><button>混合检索的重排策略？</button><button>WEMM 页库哪些失败了？</button><button>扫描件 PDF 如何处理？</button></div>
+</div>
+
+<div class="stage" id="stage">
+  <div class="world" id="world">
+    <svg class="sea" id="sea" width="2200" height="1400"></svg>
+    <div class="nodes" id="nodes"></div>
+    <div class="qnode" id="qnode"><div class="qcard"><span id="qq" style="overflow:hidden;text-overflow:ellipsis"></span><button id="qx" aria-label="清除检索">✕</button></div></div>
+  </div>
+</div>
+
+<aside class="panel" aria-label="图层">
+  <h3>图层 <span id="sum">16 节点 · 实时生效</span></h3>
+  <div class="cap">边</div>
+  <label class="row"><span>显式双链</span><input type="checkbox" id="lB" checked></label>
+  <label class="row"><span>语义相似边</span><input type="checkbox" id="lS"></label>
+  <div class="row"><input type="range" id="th" min="0.5" max="0.85" step="0.01" value="0.62"><span class="thv" id="thv">0.62</span></div>
+  <label class="row"><span>归属边</span><input type="checkbox" id="lO" checked></label>
+  <div class="cap">节点</div>
+  <label class="row"><span>WEMM 页节点</span><input type="checkbox" id="lP"></label>
+  <label class="row"><span>PDF→MD 缓存</span><input type="checkbox" id="lC" checked></label>
+  <label class="row"><span>PDF 原件</span><input type="checkbox" id="lPdf" checked></label>
+  <div class="cap">显示</div>
+  <div class="row"><span>着色</span><span class="seg" id="seg"><button data-m="lib" class="on">按库</button><button data-m="state">按生效</button><button data-m="mono">单色</button></span></div>
+  <label class="row"><span>库边界（领海）</span><input type="checkbox" id="lBd" checked></label>
+</aside>
+
+<div class="legend" id="legend"></div>
+<div class="mech" id="mech">
+  <h4>图谱力学（本方案）</h4>
+  <p><b>领海聚落：</b>同库节点被领海色块收拢，跨库只有高相似「桥」才允许跨海。</p>
+  <p><b>边分级：</b>双链实线 · 归属虚线 · 语义点线（默认关闭，需加载嵌入模型）。</p>
+  <p><b>防杂草：</b>默认隐藏语义边 + 标签密度开关 + 跨海桥高亮，其余全部压暗。</p>
+</div>
+<div class="zoom"><button id="zin" aria-label="放大">＋</button><button id="zout" aria-label="缩小">－</button><button id="zfit" aria-label="重置取景">⤢</button><span class="zlab" id="zlab">100%</span></div>
+<div class="status" id="status">常态浏览 · <b>16</b> 节点 · <b>9</b> 边 · 库 <b>3</b></div>
+
+<aside class="ins" id="ins" aria-label="节点详情">
+  <div class="ins-h">
+    <div class="ins-lib"><i id="iDot"></i><span id="iLib"></span><span id="iBadge"></span><span style="flex:1"></span><button class="theme-btn" id="iX">关闭</button></div>
+    <div class="ins-t" id="iT"></div>
+    <div class="ins-p" id="iP"></div>
+    <div class="ins-m" id="iM"></div>
+  </div>
+  <div class="ins-b" id="iB"></div>
+  <div class="ins-f"><button class="btn ghost" id="iOpen">打开源文件</button><button class="btn" id="iRel">以此为中心</button></div>
+</aside>
+<div class="tip" id="tip"><div class="p" id="tp"></div><div class="m" id="tm"></div></div>
+
+<script>
+"use strict";
+/* 假数据（写死，16 节点） */
+var LIBC={ "技术笔记":"var(--c-tech)", "论文阅读":"var(--c-paper)", "会议记录":"var(--c-meet)" };
+var NODES=[
+ {id:"t1",lib:"技术笔记",name:"WEMM 设计",rel:"20-Projects/Obsidian RAG/WEMM 设计.md",type:"md",x:330,y:330,big:1,chunks:12,pipe:["提取 done","WEMM done"],state:"ok"},
+ {id:"t2",lib:"技术笔记",name:"混合检索重排",rel:"20-Projects/检索/混合检索重排.md",type:"md",x:520,y:260,chunks:8,pipe:["提取 done","WEMM —"],state:"partial"},
+ {id:"t3",lib:"技术笔记",name:"MinerU 云端配置",rel:"20-Projects/索引/MinerU 配置.md",type:"md",x:500,y:450,chunks:5,pipe:["提取 done","WEMM —"],state:"partial"},
+ {id:"t4",lib:"技术笔记",name:"课件.pdf",rel:"20-Projects/课件/课件.pdf",type:"pdf",x:250,y:480,chunks:0,pipe:["OCR queued","WEMM —"],state:"none"},
+ {id:"t5",lib:"技术笔记",name:"课件 · 缓存",rel:"20-Projects/课件/课件.pdf.md",type:"cache",x:150,y:380,chunks:6,pipe:["缓存 done"],state:"ok"},
+ {id:"t6",lib:"技术笔记",name:"p.3",rel:"20-Projects/课件/课件.pdf#page=3",type:"page",x:120,y:470,chunks:0,pipe:["页向量 done"],state:"ok",page:1},
+ {id:"p1",lib:"论文阅读",name:"注意力机制.pdf",rel:"论文/注意力机制.pdf",type:"pdf",x:990,y:300,chunks:0,pipe:["OCR done","WEMM done"],state:"ok"},
+ {id:"p2",lib:"论文阅读",name:"注意力 · 缓存",rel:"论文/注意力机制.pdf.md",type:"cache",x:1150,y:230,chunks:9,pipe:["缓存 done"],state:"ok"},
+ {id:"p3",lib:"论文阅读",name:"Transformer 综述",rel:"论文/Transformer 综述.md",type:"md",x:1120,y:400,chunks:11,big:1,pipe:["提取 done","WEMM —"],state:"partial"},
+ {id:"p4",lib:"论文阅读",name:"实验记录",rel:"论文/实验记录.md",type:"md",x:940,y:470,chunks:4,pipe:["提取 failed"],state:"failed"},
+ {id:"m1",lib:"会议记录",name:"周会 09-01",rel:"会议/周会 2026-09-01.md",type:"md",x:1620,y:300,chunks:3,pipe:["提取 done"],state:"ok"},
+ {id:"m2",lib:"会议记录",name:"路线评审",rel:"会议/路线评审.md",type:"md",x:1760,y:400,chunks:5,pipe:["提取 done"],state:"ok"},
+ {id:"m3",lib:"会议记录",name:"待办清单",rel:"会议/待办清单.md",type:"md",x:1600,y:480,chunks:2,pipe:["提取 done"],state:"ok"},
+ {id:"m4",lib:"会议记录",name:"白板合影.pdf",rel:"会议/白板合影.pdf",type:"pdf",x:1780,y:250,chunks:0,pipe:["OCR queued"],state:"none"}
+];
+var BILAT=[["t1","t2"],["t2","t3"],["t1","t3"],["p3","p4"],["p2","p3"],["m1","m2"],["m2","m3"],["t1","p3",1],["t2","m2",1]];
+var OWN=[["t5","t4"],["t6","t5"],["p2","p1"]];
+var SEM=[["t1","p3",.78],["t2","p3",.71],["t3","p4",.66],["t1","m2",.58]];
+var byId={}; NODES.forEach(function(n){byId[n.id]=n;});
+var HITS={"重排":["t2","t1","p3"],"wemm":["t1","p1","t6"],"扫描":["t4","m4","p1"]};
+var state={scope:"",color:"lib",ly:{b:1,s:0,o:1,p:0,c:1,pdf:1,bd:1},k:1,tx:60,ty:120,hits:null,q:null};
+var $=function(id){return document.getElementById(id);};
+var NS="http://www.w3.org/2000/svg";
+var stage=$("stage"),world=$("world"),sea=$("sea"),nodesEl=$("nodes");
+/* 领海形状（三块圆角多边形） */
+var SEAS=[
+ {lib:"技术笔记",fill:"var(--sea-tech)",line:"var(--line-tech)",pts:"60,180 620,140 700,560 380,640 40,560"},
+ {lib:"论文阅读",fill:"var(--sea-paper)",line:"var(--line-paper)",pts:"830,150 1300,130 1330,580 860,600"},
+ {lib:"会议记录",fill:"var(--sea-meet)",line:"var(--line-meet)",pts:"1470,150 1920,140 1950,590 1450,600"}
+];
+function el(n,attrs,parent){var e=document.createElementNS(NS,n);for(var k in attrs)e.setAttribute(k,attrs[k]);(parent||sea).appendChild(e);return e;}
+var seaG={},edgeEls={b:[],o:[],s:[],r:[]},ringEls=[];
+function roundedPoly(pts,r){var p=pts.split(" ").map(function(s){return s.split(",").map(Number)});var d="M"+p[0][0]+","+p[0][1];for(var i=1;i<=p.length;i++){var a=p[i%p.length],b=p[(i+1)%p.length];d+=" L"+a[0]+","+a[1];}return d+" Z";}
+function buildSea(){
+  SEAS.forEach(function(s){
+    var g=document.createElementNS(NS,"g");sea.appendChild(g);seaG[s.lib]=g;
+    el("path",{d:roundedPoly(s.pts),"class":"sea-halo",stroke:s.line},g).dataset.sea=s.lib;
+    el("path",{d:roundedPoly(s.pts),"class":"sea-fill",fill:s.fill,stroke:s.line},g).dataset.sea=s.lib;
+    var c=s.pts.split(" ").reduce(function(a,p){var q=p.split(",").map(Number);return[a[0]+q[0],a[1]+q[1]];},[0,0]);
+    var n=s.pts.split(" ").length, cx=c[0]/n, cy=c[1]/n;
+    var t1=document.createElementNS(NS,"text");t1.setAttribute("x",cx-52);t1.setAttribute("y",118);t1.setAttribute("class","sea-name");t1.textContent=s.lib;g.appendChild(t1);
+    var cnt=NODES.filter(function(x){return x.lib===s.lib;}).length;
+    var t2=document.createElementNS(NS,"text");t2.setAttribute("x",cx-52);t2.setAttribute("y",134);t2.setAttribute("class","sea-sub");t2.textContent=cnt+" 节点 · 领海";g.appendChild(t2);
+    g.dataset.lib=s.lib;
+  });
+  /* 三环轨道（检索态） */
+  [90,170,250].forEach(function(r){ringEls.push(el("circle",{cx:1050,cy:360,r:r,"class":"ring"}));});
+}
+function edgeD(a,b){var mx=(a.x+b.x)/2,my=(a.y+b.y)/2,dx=b.x-a.x,dy=b.y-a.y;return "M"+a.x+","+a.y+" Q"+(mx-dy*.09)+","+(my+dx*.09)+" "+b.x+","+b.y;}
+function buildEdges(){
+  BILAT.forEach(function(e){var p=el("path",{"class":"edge-b"});p.dataset.a=e[0];p.dataset.b=e[1];if(e[2])p.classList.add("edge-bridge");edgeEls.b.push(p);});
+  OWN.forEach(function(e){var p=el("path",{"class":"edge-o"});p.dataset.a=e[0];p.dataset.b=e[1];edgeEls.o.push(p);});
+  SEM.forEach(function(e){var p=el("path",{"class":"edge-s"});p.dataset.a=e[0];p.dataset.b=e[1];p.dataset.sim=e[2];edgeEls.s.push(p);});
+}
+var nodeEls={};
+function dotColor(n){
+  if(state.color==="mono")return"";
+  if(state.color==="state"){return n.state==="ok"?"var(--ok)":n.state==="partial"?"var(--part)":n.state==="failed"?"var(--fail)":"";}
+  return LIBC[n.lib];
+}
+function buildNodes(){
+  NODES.forEach(function(n){
+    var d=document.createElement("div");d.className="nd t-"+n.type+(n.big?" big":"");d.dataset.id=n.id;d.dataset.lib=n.lib;
+    d.style.transform="translate("+n.x+"px,"+n.y+"px)";
+    d.innerHTML='<div class="card"><span class="mk"></span><span class="lb"></span>'+(n.big?'<span class="cnt">'+n.chunks+' 块</span>':"")+'<span class="cf"></span></div>';
+    d.querySelector(".lb").textContent=n.name;
+    nodesEl.appendChild(d);nodeEls[n.id]=d;
+    d.addEventListener("click",function(ev){ev.stopPropagation();openIns(n.id);flash(n.id);});
+    d.addEventListener("mousemove",function(ev){showTip(n,ev);});
+    d.addEventListener("mouseleave",hideTip);
+  });
+  paint();
+}
+function vis(n){
+  if(state.scope&&n.lib!==state.scope)return false;
+  if(n.type==="page")return!!state.ly.p;
+  if(n.type==="cache")return!!state.ly.c;
+  if(n.type==="pdf")return!!state.ly.pdf;
+  return true;
+}
+function paint(){
+  NODES.forEach(function(n){
+    var d=nodeEls[n.id],show=vis(n);
+    d.style.display=show?"":"none";
+    d.classList.toggle("dim",!!(state.hits&&state.hits.indexOf(n.id)<0));
+    d.classList.toggle("lit",!!(state.hits&&state.hits.indexOf(n.id)>=0));
+    var mk=d.querySelector(".mk"),c=dotColor(n);
+    if(n.type!=="page"){mk.style.background=c||"var(--node-bd)";mk.style.border="1px solid "+(c?"transparent":"var(--hair2)");}
+    else{mk.style.background=c||"var(--sec)";}
+    if(state.color==="state"&&(n.state==="none")){d.querySelector(".card").style.borderStyle="dashed";}else{d.querySelector(".card").style.borderStyle="";}
+    if(n.state==="failed"){d.querySelector(".card").style.borderColor="rgba(248,113,113,.55)";}else{d.querySelector(".card").style.borderColor="";}
+  });
+  edgeEls.b.forEach(function(p){var ok=state.ly.b&&vis(byId[p.dataset.a])&&vis(byId[p.dataset.b]);p.style.display=ok?"":"none";if(ok)p.setAttribute("d",edgeD(byId[p.dataset.a],byId[p.dataset.b]));});
+  edgeEls.o.forEach(function(p){var ok=state.ly.o&&vis(byId[p.dataset.a])&&vis(byId[p.dataset.b]);p.style.display=ok?"":"none";if(ok)p.setAttribute("d",edgeD(byId[p.dataset.a],byId[p.dataset.b]));});
+  edgeEls.s.forEach(function(p){var ok=state.ly.s&&(+p.dataset.sim>=+$("th").value)&&vis(byId[p.dataset.a])&&vis(byId[p.dataset.b]);p.style.display=ok?"":"none";if(ok)p.setAttribute("d",edgeD(byId[p.dataset.a],byId[p.dataset.b]));});
+  edgeEls.r.forEach(function(p){p.remove();});edgeEls.r=[];
+  if(state.q){state.hits.forEach(function(id,i){var p=el("path",{"class":"edge-r on"});p.setAttribute("d","M1050,360 Q"+((1050+byId[id].x)/2)+","+((360+byId[id].y)/2-40)+" "+byId[id].x+","+byId[id].y);edgeEls.r.push(p);});}
+  ringEls.forEach(function(r){r.classList.toggle("on",!!state.q);});
+  Object.keys(seaG).forEach(function(k){seaG[k].style.display=(!state.ly.bd||(state.scope&&state.scope!==k))?"none":"";});
+  /* 标签密度 */
+  stage.classList.toggle("min",state.k<0.85);
+  /* 图例 */
+  var L="";
+  L+='<span class="li"><i style="background:var(--sec);border-radius:3px"></i>md 笔记</span>';
+  L+='<span class="li"><i style="background:var(--sec);clip-path:polygon(0 0,58% 0,100% 42%,100% 100%,0 100%)"></i>PDF 原件</span>';
+  L+='<span class="li"><i style="background:var(--sec);clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)"></i>缓存</span>';
+  L+='<span class="li"><i style="background:var(--sec);border-radius:50%;width:7px;height:7px"></i>WEMM 页</span>';
+  if(state.color==="lib")L+=Object.keys(LIBC).map(function(k){return '<span class="li"><span class="dot" style="background:'+LIBC[k]+'"></span>'+k+'</span>';}).join("");
+  if(state.color==="state")L+='<span class="li"><span class="dot" style="background:var(--ok)"></span>全链路生效</span><span class="li"><span class="dot" style="background:var(--part)"></span>缺 WEMM</span><span class="li"><span class="dot" style="background:var(--fail)"></span>失败</span>';
+  L+='<button class="info" id="infoBtn" title="图谱力学">i</button>';
+  $("legend").innerHTML=L;
+  $("infoBtn").onclick=function(e){e.stopPropagation();$("mech").classList.toggle("on");};
+  applyCam();
+  var v=NODES.filter(vis).length;
+  $("sum").textContent=v+" 节点 · 实时生效";
+  $("status").innerHTML=state.q?('检索态 · <b>'+esc(state.q)+'</b> · 命中 <b>'+state.hits.length+'</b> · 非命中已压暗'):('常态浏览 · <b>'+v+'</b> 节点 · <b>'+edgeEls.b.filter(function(p){return p.style.display!=="none";}).length+'</b> 边 · 库 <b>3</b>');
+}
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");}
+function applyCam(){$("world").style.transform="translate("+state.tx+"px,"+state.ty+"px) scale("+state.k+")";$("zlab").textContent=Math.round(state.k*100)+"%";}
+/* 检索 */
+function doSearch(q){
+  q=q||$("q").value.trim();if(!q)return;
+  var key=/重排|混合/.test(q)?"重排":/wemm|页|视觉/i.test(q)?"wemm":/扫描|pdf|ocr/i.test(q)?"扫描":"重排";
+  state.q=q;state.hits=HITS[key].slice(0,+$("topk").value>3?3:+$("topk").value);
+  if($("topk").value==="5")state.hits=HITS[key];
+  $("qq").textContent=q;$("qnode").classList.add("on");
+  $("qnode").style.transform="translate(1050px,360px)";
+  var confs=[.87,.74,.61];
+  state.hits.forEach(function(id,i){var c=nodeEls[id].querySelector(".cf");c.textContent="◈ "+confs[i%3].toFixed(2);});
+  /* 涟漪 */
+  for(var i=0;i<2;i++){var c2=el("circle",{cx:1050,cy:360,r:30,"class":"ripple go"});(function(e2){setTimeout(function(){e2.remove();},3000);})(c2);}
+  /* 相机推向问题节点 */
+  var r=stage.getBoundingClientRect();state.k=Math.max(state.k,1.0);state.tx=r.width/2-1050*state.k;state.ty=r.height/2-360*state.k;
+  paint();
+}
+function clearSearch(){state.q=null;state.hits=null;$("qnode").classList.remove("on");paint();}
+/* Inspector */
+var OUTL={t1:["t2","t3"],t2:["t1"],p3:["p4","t1"],m1:["m2"],m2:["m1","m3"]};
+var INL={t2:["t1"],t3:["t1","t2"],p3:["t1","p2"],m2:["m1","t2"]};
+function openIns(id){
+  var n=byId[id];if(!n)return;
+  $("iDot").style.background=LIBC[n.lib];$("iLib").textContent=n.lib;
+  $("iBadge").innerHTML=n.state==="ok"?'<span class="chip ok">全链路生效</span>':n.state==="partial"?'<span class="chip wait">缺 WEMM</span>':n.state==="failed"?'<span class="chip bad">提取失败</span>':'<span class="chip wait">待处理</span>';
+  $("iT").textContent=n.name;$("iP").textContent=n.lib+" · "+n.rel;
+  $("iM").innerHTML="<span>"+n.chunks+" 块</span><span>双链 "+((OUTL[id]||[]).length+(INL[id]||[]).length)+"</span><span>"+n.type.toUpperCase()+"</span>";
+  var h='<div class="sec"><h5>管线</h5><div style="display:flex;gap:6px;flex-wrap:wrap">'+n.pipe.map(function(p){var c=/done|生效/.test(p)?"ok":/fail/.test(p)?"bad":"wait";return '<span class="chip '+c+'">'+esc(p)+'</span>';}).join("")+'</div></div>';
+  h+='<div class="sec"><h5>双链 · 出链 / 入链</h5>'+(((OUTL[id]||[]).length||(INL[id]||[]).length)?(OUTL[id]||[]).map(function(o){return '<button class="rel" data-go="'+o+'">→ '+esc(byId[o].name)+'<span class="s">出链</span></button>';}).join("")+(INL[id]||[]).map(function(o){return '<button class="rel" data-go="'+o+'">← '+esc(byId[o].name)+'<span class="s">入链</span></button>';}).join(""):'<div style="font-size:12px;color:var(--ph)">暂无显式双链</div>')+'</div>';
+  h+='<div class="sec"><h5>语义近邻</h5>'+(SEM.filter(function(e){return e[0]===id||e[1]===id;}).map(function(e){var o=e[0]===id?e[1]:e[0];return '<button class="rel" data-go="'+o+'">'+esc(byId[o].name)+'<span class="s">'+e[2].toFixed(2)+'</span></button>';}).join("")||'<div style="font-size:12px;color:var(--ph)">开启语义边图层后计算</div>')+'</div>';
+  h+='<div class="sec"><h5>命中片段</h5><div class="snip">…<mark>'+esc(n.name)+'</mark> 的语义摘要：本方案把同库收进同一片领海，跨库桥只保留最强的一条，杂草感来自弱边，关掉即是草原。…</div></div>';
+  $("iB").innerHTML=h;
+  Array.prototype.forEach.call($("iB").querySelectorAll("[data-go]"),function(b){b.onclick=function(){openIns(b.dataset.go);flash(b.dataset.go);};});
+  $("ins").classList.add("on");
+}
+function flash(id){var d=nodeEls[id];if(!d)return;d.querySelector(".card").style.borderColor="var(--accent)";setTimeout(paint,900);}
+function showTip(n,ev){$("tp").textContent=n.lib+" · "+n.rel;$("tm").textContent=n.chunks+" 块 · "+n.type+" · "+n.pipe.join(" / ");var t=$("tip");t.style.left=ev.clientX+"px";t.style.top=ev.clientY+"px";t.classList.add("show");}
+function hideTip(){$("tip").classList.remove("show");}
+/* 事件 */
+$("go").onclick=function(){doSearch();};
+$("q").addEventListener("keydown",function(e){if(e.key==="Enter")doSearch();});
+$("qx").onclick=function(e){e.stopPropagation();$("q").value="";clearSearch();};
+Array.prototype.forEach.call(document.querySelectorAll(".hints button"),function(b){b.onclick=function(){$("q").value=b.textContent;doSearch(b.textContent);};});
+$("th").oninput=function(){$("thv").textContent=(+$("th").value).toFixed(2);paint();};
+[["lB","b"],["lS","s"],["lO","o"],["lP","p"],["lC","c"],["lPdf","pdf"],["lBd","bd"]].forEach(function(p){$(p[0]).onchange=function(){state.ly[p[1]]=$(p[0]).checked?1:0;paint();};});
+Array.prototype.forEach.call(document.querySelectorAll("#seg button"),function(b){b.onclick=function(){state.color=b.dataset.m;Array.prototype.forEach.call(document.querySelectorAll("#seg button"),function(x){x.classList.toggle("on",x===b);});paint();};});
+Array.prototype.forEach.call(document.querySelectorAll("#scope button"),function(b){b.onclick=function(){state.scope=b.dataset.s;Array.prototype.forEach.call(document.querySelectorAll("#scope button"),function(x){x.classList.toggle("on",x===b);});paint();};});
+$("themeBtn").onclick=function(){var h=document.documentElement;h.dataset.theme=h.dataset.theme==="dark"?"light":"dark";$("themeBtn").textContent=h.dataset.theme==="dark"?"切换浅色":"切换深色";};
+$("iX").onclick=function(){$("ins").classList.remove("on");clearSearch();};
+$("iOpen").onclick=function(){alert("demo：打开源文件 "+$("iP").textContent);};
+$("iRel").onclick=function(){alert("demo：以该节点为中心重新布局（生产：锚点加权）");};
+$("zin").onclick=function(){state.k=Math.min(1.8,state.k*1.15);paint();};
+$("zout").onclick=function(){state.k=Math.max(.5,state.k/1.15);paint();};
+$("zfit").onclick=function(){state.k=1;state.tx=60;state.ty=120;paint();};
+stage.addEventListener("click",function(e){if(e.target===stage||e.target===world||e.target===sea){$("ins").classList.remove("on");$("mech").classList.remove("on");}});
+(function(){var pan=null;stage.addEventListener("pointerdown",function(e){if(e.target.closest&&(e.target.closest(".nd")||e.target.closest(".qnode")||e.target.closest("button")||e.target.closest("input")||e.target.closest("select")))return;pan={x:e.clientX,y:e.clientY,tx:state.tx,ty:state.ty};stage.setPointerCapture(e.pointerId);});
+stage.addEventListener("pointermove",function(e){if(!pan)return;state.tx=pan.tx+(e.clientX-pan.x);state.ty=pan.ty+(e.clientY-pan.y);applyCam();});
+stage.addEventListener("pointerup",function(){pan=null;});})();
+/* 启动 */
+buildSea();buildEdges();buildNodes();
+</script>
+</body>
+</html>

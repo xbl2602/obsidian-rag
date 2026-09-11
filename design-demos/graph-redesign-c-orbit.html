@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图谱重构 C · 星环轨道 Orbital Rings — obsidian-rag</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--font-ui:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;--font-mono:"Cascadia Code",Consolas,monospace;--ease:cubic-bezier(.32,.72,0,1)}
+[data-theme="dark"]{
+  --canvas:#060709; --float:#0C0F13; --core2:#10151B; --ink:#F0F3F6; --body:#BCC7D2; --sec:#828E9B; --ph:#5B6572;
+  --hair:rgba(255,255,255,.10); --hair2:rgba(255,255,255,.22);
+  --accent:#34D399; --accent-dim:rgba(52,211,153,.12); --accent-line:rgba(52,211,153,.42);
+  --c-tech:#34D399; --c-paper:#7DB8FF; --c-meet:#FBBF24;
+  --edge:rgba(255,255,255,.20); --node:#0E1317;
+  --ok:#34D399; --part:#7DB8FF; --fail:#F87171; --grid:rgba(255,255,255,.05);
+}
+[data-theme="light"]{
+  --canvas:#ECEFF2; --float:#FFFFFF; --core2:#F0F3F6; --ink:#151B22; --body:#2D3944; --sec:#5C6A77; --ph:#8B97A2;
+  --hair:rgba(20,30,40,.10); --hair2:rgba(20,30,40,.24);
+  --accent:#0E9F6E; --accent-dim:rgba(14,159,110,.10); --accent-line:rgba(14,159,110,.45);
+  --c-tech:#0E9F6E; --c-paper:#1D6FD1; --c-meet:#B45309;
+  --edge:rgba(20,30,40,.26); --node:#FFFFFF;
+  --ok:#0E9F6E; --part:#1D6FD1; --fail:#DC2626; --grid:rgba(20,30,40,.06);
+}
+html,body{height:100%}
+body{background:var(--canvas);color:var(--body);font-family:var(--font-ui);font-size:14px;overflow:hidden}
+.top{position:fixed;top:0;left:0;right:0;height:56px;z-index:30;display:flex;align-items:center;gap:12px;padding:0 16px;background:var(--float);border-bottom:1px solid var(--hair)}
+.brand{color:var(--ink);font-weight:700;font-size:14px;white-space:nowrap}
+.brand i{display:inline-block;width:16px;height:16px;border-radius:50%;border:2px solid var(--accent);margin-right:8px;vertical-align:-3px}
+.tag{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:2px 10px}
+.scope{display:flex;gap:6px}.scope button{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:4px 12px;background:transparent}
+.scope button.on{color:var(--ink);border-color:var(--accent-line);background:var(--accent-dim)}
+.spacer{flex:1}.theme-btn{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:9px;padding:5px 12px}
+/* 搜索岛左上 */
+.dock{position:fixed;top:70px;left:16px;z-index:25;width:430px;max-width:calc(100vw - 32px)}
+.island{display:flex;align-items:center;gap:8px;background:var(--float);border:1px solid var(--hair2);border-radius:14px;padding:8px 8px 8px 13px}
+.island input{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--ink);font-size:13.5px;height:30px}
+.island input::placeholder{color:var(--ph)}
+.island select{background:var(--core2);color:var(--sec);border:1px solid var(--hair);border-radius:8px;font-size:12px;padding:4px 6px}
+.btn{background:var(--accent);color:#06231A;border:none;border-radius:9px;font-size:13px;font-weight:700;padding:7px 16px}
+[data-theme="light"] .btn{color:#fff}
+.hints{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
+.hints button{font-size:11.5px;color:var(--sec);background:var(--float);border:1px solid var(--hair);border-radius:99px;padding:4px 12px}
+/* 环轨舞台 */
+.stage{position:fixed;inset:56px 0 0 0;overflow:hidden;background-image:radial-gradient(circle,var(--grid) 1px,transparent 1.3px);background-size:30px 30px}
+.world{position:absolute;left:0;top:0;transform-origin:0 0}
+svg.lyr{position:absolute;left:-700px;top:-700px;overflow:visible}
+.nodes{position:absolute;left:0;top:0}
+.orbit{fill:none;stroke-width:1.4;stroke-dasharray:3 8}
+.orbit-lbl{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.1em}
+.sun{fill:var(--float);stroke:var(--hair2)}
+.sun-t{font-size:12px;font-weight:700;fill:var(--sec);text-anchor:middle;font-family:var(--font-ui)}
+/* 节点：环上卫星 */
+.nd{position:absolute;left:0;top:0}
+.sat{transform:translate(-50%,-50%);display:flex;align-items:center;gap:7px;background:var(--node);border:1px solid var(--hair2);border-radius:99px;padding:5px 11px 5px 6px;white-space:nowrap;cursor:grab;transition:opacity .3s,border-color .25s}
+.glyph{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;flex:none;font-family:var(--font-mono)}
+.lb{font-size:12px;color:var(--ink)}
+.nd.big .sat{padding:7px 14px 7px 7px;border-width:1.5px}
+.nd.big .glyph{width:28px;height:28px;font-size:12px}
+.nd.big .lb{font-weight:700;font-size:13px}
+.nd.t-pdf .sat{border-radius:8px}
+.nd.t-cache .glyph{border-radius:6px;transform:rotate(45deg)}
+.nd.t-cache .glyph span{transform:rotate(-45deg)}
+.nd.t-page .sat{background:transparent;border-style:dashed;padding:2px 8px 2px 3px}
+.nd.t-page .glyph{width:16px;height:16px;font-size:8px}
+.nd.dim{opacity:.25}
+.nd.lit .sat{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-line)}
+.cf{position:absolute;left:50%;top:100%;transform:translate(-50%,3px);font-family:var(--font-mono);font-size:10px;color:var(--accent);background:var(--float);border:1px solid var(--accent-line);border-radius:6px;padding:0 6px;display:none}
+.nd.lit .cf{display:block}
+.e-b{fill:none;stroke:var(--edge);stroke-width:1.1}
+.e-chord{stroke:var(--accent) !important;stroke-width:1.6 !important}
+.e-o{fill:none;stroke:var(--edge);stroke-width:1;stroke-dasharray:2 5;opacity:.65}
+.e-s{fill:none;stroke:var(--accent);stroke-width:1;stroke-dasharray:1 4;opacity:.6}
+.e-r{fill:none;stroke:var(--accent);stroke-width:1.5;opacity:0;transition:opacity .45s}
+.e-r.on{opacity:.9}
+.rring{fill:none;stroke:var(--accent);stroke-dasharray:4 7;opacity:0;transition:opacity .5s}
+.rring.on{opacity:.6}
+.qnode{position:absolute;display:none;z-index:6}
+.qnode.on{display:block}
+.qc{transform:translate(-50%,-50%);background:var(--ink);color:var(--canvas);font-size:13px;border-radius:99px;padding:9px 16px;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.panel{position:fixed;top:70px;right:16px;z-index:25;width:236px;background:var(--float);border:1px solid var(--hair);border-radius:14px;padding:12px 14px}
+.panel h3{font-size:13px;color:var(--ink);display:flex;justify-content:space-between}
+.panel h3 span{font-family:var(--font-mono);font-size:10px;color:var(--ph);font-weight:400}
+.cap{font-size:10px;color:var(--ph);letter-spacing:.08em;margin:9px 0 2px}
+.row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;padding:4px 0;gap:8px}
+.row input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
+.row input[type=range]{flex:1;accent-color:var(--accent)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:8px;overflow:hidden}
+.seg button{font-size:11.5px;color:var(--sec);padding:3px 9px}
+.seg button.on{background:var(--accent-dim);color:var(--ink)}
+.thv{font-family:var(--font-mono);font-size:10.5px;color:var(--accent)}
+.legend{position:fixed;left:16px;bottom:52px;z-index:25;background:var(--float);border:1px solid var(--hair);border-radius:12px;padding:9px 13px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.li{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--sec)}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;color:#fff;font-size:7px;text-align:center;line-height:9px}
+.info{width:22px;height:22px;border-radius:50%;border:1px solid var(--hair2);color:var(--sec);font-size:11px;font-weight:700}
+.zoom{position:fixed;right:16px;bottom:52px;z-index:25;display:flex;flex-direction:column;gap:7px;align-items:flex-end}
+.zoom button{width:34px;height:34px;border-radius:10px;background:var(--float);border:1px solid var(--hair);color:var(--sec);font-size:15px}
+.zlab{font-family:var(--font-mono);font-size:10.5px;color:var(--ph)}
+.status{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:25;font-family:var(--font-mono);font-size:11px;color:var(--sec);background:var(--float);border:1px solid var(--hair);border-radius:99px;padding:4px 16px;white-space:nowrap}
+.status b{color:var(--ink)}
+.ins{position:fixed;top:56px;right:0;bottom:0;width:372px;max-width:94vw;z-index:28;background:var(--float);border-left:1px solid var(--hair);transform:translateX(105%);transition:transform .38s var(--ease);display:flex;flex-direction:column}
+.ins.on{transform:none}
+.ins-h{padding:16px 18px 12px;border-bottom:1px solid var(--hair)}
+.ins-lib{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--sec);margin-bottom:7px}
+.ins-t{font-size:16px;font-weight:700;color:var(--ink)}
+.ins-p{font-family:var(--font-mono);font-size:10.5px;color:var(--ph);margin-top:3px;word-break:break-all}
+.ins-m{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);margin-top:8px;display:flex;gap:12px}
+.ins-b{flex:1;overflow:auto;padding:14px 18px}
+.sec{margin-bottom:16px}.sec h5{font-size:11px;color:var(--ph);margin-bottom:7px;font-weight:500;letter-spacing:.06em}
+.snip{font-size:13px;line-height:1.8;background:var(--core2);border:1px solid var(--hair);border-radius:10px;padding:10px 12px}
+.snip mark{background:var(--accent-dim);color:var(--ink);border-radius:3px;padding:0 3px}
+.rel{display:flex;gap:8px;width:100%;text-align:left;padding:7px 10px;border-radius:8px;font-size:12.5px;color:var(--body);background:transparent;border:1px solid transparent}
+.rel:hover{background:var(--core2);color:var(--ink)}
+.rel .s{font-family:var(--font-mono);font-size:10.5px;color:var(--accent);margin-left:auto}
+.chip{font-family:var(--font-mono);font-size:10.5px;padding:2px 9px;border-radius:6px}
+.chip.ok{background:var(--accent-dim);color:var(--accent)}.chip.wait{background:rgba(251,191,36,.13);color:var(--c-meet)}.chip.bad{background:rgba(248,113,113,.13);color:var(--fail)}
+.ins-f{padding:12px 18px;border-top:1px solid var(--hair);display:flex;gap:8px}
+.btn2{font-size:12.5px;border:1px solid var(--hair);border-radius:9px;padding:6px 14px;color:var(--sec)}
+.btnP{background:var(--accent);color:#06231A;border:none;border-radius:9px;font-size:12.5px;font-weight:700;padding:6px 16px}
+[data-theme="light"] .btnP{color:#fff}
+.tip{position:fixed;z-index:40;pointer-events:none;opacity:0;transition:opacity .15s;background:var(--float);border:1px solid var(--hair2);border-radius:10px;padding:8px 12px;max-width:320px;transform:translate(-50%,calc(-100% - 14px))}
+.tip.show{opacity:1}.tip .p{font-family:var(--font-mono);font-size:10.5px;color:var(--ink);word-break:break-all}.tip .m{font-size:10.5px;color:var(--ph);margin-top:3px}
+.mech{position:fixed;left:16px;bottom:112px;z-index:26;width:332px;background:var(--float);border:1px solid var(--hair);border-radius:13px;padding:13px 15px;display:none}
+.mech.on{display:block}.mech h4{font-size:12.5px;color:var(--ink);margin-bottom:7px}.mech p{font-size:11.5px;color:var(--sec);line-height:1.7;margin-bottom:5px}.mech b{color:var(--body)}
+.stage.min .lb{display:none}.stage.min .nd.big .lb,.stage.min .nd.lit .lb{display:inline}
+@media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
+</style>
+</head>
+<body>
+<header class="top"><span class="brand"><i></i>Obsidian RAG · 图谱</span><span class="tag">C · 星环轨道 demo · 16 假节点</span>
+<nav class="scope" id="scope"><button data-s="" class="on">全部库</button><button data-s="技术笔记">技术笔记</button><button data-s="论文阅读">论文阅读</button><button data-s="会议记录">会议记录</button></nav>
+<span class="spacer"></span><button class="theme-btn" id="themeBtn">切换浅色</button></header>
+<div class="dock"><div class="island"><span style="color:var(--sec)">⌕</span><input id="q" placeholder="向全库提问，问题即恒星"><select id="topk"><option>3</option><option selected>5</option></select><button class="btn" id="go">检索</button></div>
+<div class="hints"><button>混合检索的重排策略？</button><button>WEMM 页库状态？</button></div></div>
+<div class="stage" id="stage"><div class="world" id="world"><svg class="lyr" id="sea" width="2400" height="1600"></svg><div class="nodes" id="nodes"></div><div class="qnode" id="qnode"><div class="qc"><span id="qq"></span> <button id="qx" style="border:1px solid currentColor;border-radius:50%;width:18px;height:18px;font-size:11px;opacity:.6">✕</button></div></div></div></div>
+<aside class="panel"><h3>图层 <span id="sum"></span></h3>
+<div class="cap">边</div>
+<label class="row"><span>显式双链（弦）</span><input type="checkbox" id="lB" checked></label>
+<label class="row"><span>语义相似边</span><input type="checkbox" id="lS"></label>
+<div class="row"><input type="range" id="th" min="0.5" max="0.85" step="0.01" value="0.62"><span class="thv" id="thv">0.62</span></div>
+<label class="row"><span>归属边（辐）</span><input type="checkbox" id="lO" checked></label>
+<div class="cap">节点</div>
+<label class="row"><span>WEMM 页节点</span><input type="checkbox" id="lP"></label>
+<label class="row"><span>PDF→MD 缓存</span><input type="checkbox" id="lC" checked></label>
+<label class="row"><span>PDF 原件</span><input type="checkbox" id="lPdf" checked></label>
+<div class="cap">显示</div>
+<div class="row"><span>着色</span><span class="seg" id="seg"><button data-m="lib" class="on">按库</button><button data-m="state">按生效</button><button data-m="mono">单色</button></span></div>
+<label class="row"><span>轨道环</span><input type="checkbox" id="lBd" checked></label>
+</aside>
+<div class="legend" id="legend"></div>
+<div class="mech" id="mech"><h4>星环力学</h4><p><b>一库一环：</b>技术笔记内环 · 论文阅读中环 · 会议记录外环。半径即库边界，永不交叠。</p><p><b>弦与辐：</b>同环双链沿环走弧，跨环强链走弦（高亮）；归属边是短辐条。</p><p><b>检索：</b>问题即恒星居中，命中沿辐条点亮，其余沉入暗面。</p></div>
+<div class="zoom"><button id="zin">＋</button><button id="zout">－</button><button id="zfit">⤢</button><span class="zlab" id="zlab">100%</span></div>
+<div class="status" id="status"></div>
+<aside class="ins" id="ins"><div class="ins-h"><div class="ins-lib"><span id="iDot" class="dot"></span><span id="iLib"></span><span id="iBadge"></span><span style="flex:1"></span><button class="theme-btn" id="iX">关闭</button></div><div class="ins-t" id="iT"></div><div class="ins-p" id="iP"></div><div class="ins-m" id="iM"></div></div><div class="ins-b" id="iB"></div><div class="ins-f"><button class="btn2" id="iOpen">打开源文件</button><button class="btnP" id="iRel">沿弦跳跃</button></div></aside>
+<div class="tip" id="tip"><div class="p" id="tp"></div><div class="m" id="tm"></div></div>
+<script>
+"use strict";
+var CX=1000,CY=380;
+var RINGS=[{lib:"技术笔记",r:130,c:"var(--c-tech)"},{lib:"论文阅读",r:235,c:"var(--c-paper)"},{lib:"会议记录",r:340,c:"var(--c-meet)"}];
+function P(r,deg){var a=deg*Math.PI/180;return{x:CX+Math.cos(a)*r,y:CY+Math.sin(a)*r*.82};}
+var NODES=[
+ {id:"t1",lib:"技术笔记",name:"WEMM 设计",rel:"WEMM 设计.md",type:"md",deg:-90,big:1,chunks:12,state:"ok",pipe:["提取 done","WEMM done"],g:"W"},
+ {id:"t2",lib:"技术笔记",name:"混合检索重排",rel:"混合检索重排.md",type:"md",deg:-30,chunks:8,state:"partial",pipe:["提取 done"],g:"混"},
+ {id:"t3",lib:"技术笔记",name:"MinerU 配置",rel:"MinerU 配置.md",type:"md",deg:40,chunks:5,state:"partial",pipe:["提取 done"],g:"M"},
+ {id:"t4",lib:"技术笔记",name:"课件.pdf",rel:"课件.pdf",type:"pdf",deg:130,chunks:0,state:"none",pipe:["OCR queued"],g:"PDF"},
+ {id:"t5",lib:"技术笔记",name:"课件缓存",rel:"课件.pdf.md",type:"cache",deg:190,chunks:6,state:"ok",pipe:["缓存 done"],g:"◆"},
+ {id:"t6",lib:"技术笔记",name:"p.3",rel:"课件.pdf#page=3",type:"page",deg:215,chunks:0,state:"ok",pipe:["页向量 done"],g:"3"},
+ {id:"p1",lib:"论文阅读",name:"注意力.pdf",rel:"注意力机制.pdf",type:"pdf",deg:-70,chunks:0,state:"ok",pipe:["OCR done","WEMM done"],g:"PDF"},
+ {id:"p2",lib:"论文阅读",name:"注意力缓存",rel:"注意力.pdf.md",type:"cache",deg:-15,chunks:9,state:"ok",pipe:["缓存 done"],g:"◆"},
+ {id:"p3",lib:"论文阅读",name:"Transformer 综述",rel:"Transformer 综述.md",type:"md",deg:35,big:1,chunks:11,state:"partial",pipe:["提取 done"],g:"综"},
+ {id:"p4",lib:"论文阅读",name:"实验记录",rel:"实验记录.md",type:"md",deg:110,chunks:4,state:"failed",pipe:["提取 failed"],g:"实"},
+ {id:"p5",lib:"论文阅读",name:"p.5",rel:"注意力.pdf#page=5",type:"page",deg:-45,chunks:0,state:"ok",pipe:["页向量 done"],g:"5"},
+ {id:"m1",lib:"会议记录",name:"周会 09-01",rel:"周会 2026-09-01.md",type:"md",deg:-60,chunks:3,state:"ok",pipe:["提取 done"],g:"周"},
+ {id:"m2",lib:"会议记录",name:"路线评审",rel:"路线评审.md",type:"md",deg:10,chunks:5,state:"ok",pipe:["提取 done"],g:"路"},
+ {id:"m3",lib:"会议记录",name:"待办清单",rel:"待办清单.md",type:"md",deg:80,chunks:2,state:"ok",pipe:["提取 done"],g:"待"},
+ {id:"m4",lib:"会议记录",name:"白板.pdf",rel:"白板合影.pdf",type:"pdf",deg:160,chunks:0,state:"none",pipe:["OCR queued"],g:"PDF"}
+];
+NODES.forEach(function(n){var ring=RINGS.filter(function(r){return r.lib===n.lib;})[0];var p=P(ring.r+(n.type==="page"?-22:0),n.deg);n.x=p.x;n.y=p.y;n.ring=ring;});
+var BILAT=[["t1","t2"],["t2","t3"],["p3","p4"],["p2","p3"],["m1","m2"],["m2","m3"],["t1","p3",1],["t2","m2",1]];
+var OWN=[["t5","t4"],["t6","t5"],["p2","p1"],["p5","p1"]];
+var SEM=[["t1","p3",.78],["t2","p3",.71],["t1","m2",.58]];
+var byId={};NODES.forEach(function(n){byId[n.id]=n;});
+var HITS={"重排":["t2","t1","p3"],"wemm":["t1","p1","p5"],"默认":["t1","p3","m2"]};
+var LIBC={"技术笔记":"var(--c-tech)","论文阅读":"var(--c-paper)","会议记录":"var(--c-meet)"};
+var state={scope:"",color:"lib",ly:{b:1,s:0,o:1,p:0,c:1,pdf:1,bd:1},k:.95,tx:40,ty:110,q:null,hits:null};
+function $(id){return document.getElementById(id);}
+var NS="http://www.w3.org/2000/svg",sea=$("sea"),nodesEl=$("nodes"),stage=$("stage"),world=$("world");
+function el(n,a){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);sea.appendChild(e);return e;}
+var eB=[],eO=[],eS=[],eR=[],rings=[],orbitLbls=[];
+function chord(a,b){return "M"+a.x+","+a.y+" L"+b.x+","+b.y;}
+function arc(a,b){var mx=(a.x+b.x)/2,my=(a.y+b.y)/2-46;return "M"+a.x+","+a.y+" Q"+mx+","+my+" "+b.x+","+b.y;}
+function build(){
+  el("circle",{cx:CX,cy:CY,r:26,"class":"sun"});
+  var st=el("text",{x:CX,y:CY+4,"class":"sun-t"});st.textContent="检索恒星";
+  RINGS.forEach(function(r){
+    var c=el("ellipse",{cx:CX,cy:CY,rx:r.r,ry:r.r*.82,"class":"orbit",stroke:r.c});rings.push(c);
+    var lp=P(r.r,-90);var t=el("text",{x:lp.x-6,y:lp.y-10,"class":"orbit-lbl",fill:r.c});t.textContent="◉ "+r.lib;orbitLbls.push(t);
+  });
+  [70,130,190].forEach(function(r){var c=el("circle",{cx:CX,cy:CY,r:r,"class":"rring"});eR.push(c);});
+  BILAT.forEach(function(e){var p=el("path",{"class":"e-b"});p.dataset.a=e[0];p.dataset.b=e[1];if(e[2])p.classList.add("e-chord");eB.push(p);});
+  OWN.forEach(function(e){var p=el("path",{"class":"e-o"});p.dataset.a=e[0];p.dataset.b=e[1];eO.push(p);});
+  SEM.forEach(function(e){var p=el("path",{"class":"e-s"});p.dataset.a=e[0];p.dataset.b=e[1];p.dataset.sim=e[2];eS.push(p);});
+  NODES.forEach(function(n){
+    var d=document.createElement("div");d.className="nd t-"+n.type+(n.big?" big":"");d.style.left=n.x+"px";d.style.top=n.y+"px";
+    d.innerHTML='<div class="sat"><span class="glyph"><span>'+n.g+'</span></span><span class="lb">'+n.name+'</span></div><span class="cf"></span>';
+    nodesEl.appendChild(d);n._el=d;
+    d.addEventListener("click",function(e){e.stopPropagation();openIns(n.id);});
+    d.addEventListener("mousemove",function(e){$("tp").textContent=n.lib+" · "+n.rel+" · "+n.ring.r+" 环";$("tm").textContent=n.chunks+" 块 · "+n.type+" · "+n.pipe.join(" / ");var t=$("tip");t.style.left=e.clientX+"px";t.style.top=e.clientY+"px";t.classList.add("show");});
+    d.addEventListener("mouseleave",function(){$("tip").classList.remove("show");});
+  });
+  paint();
+}
+function vis(n){if(state.scope&&n.lib!==state.scope)return false;if(n.type==="page")return!!state.ly.p;if(n.type==="cache")return!!state.ly.c;if(n.type==="pdf")return!!state.ly.pdf;return true;}
+function gcol(n){if(state.color==="mono")return"#8A97A2";if(state.color==="state")return n.state==="ok"?"var(--ok)":n.state==="partial"?"var(--part)":n.state==="failed"?"var(--fail)":"#8A97A2";return LIBC[n.lib];}
+function paint(){
+  NODES.forEach(function(n){var s=vis(n);n._el.style.display=s?"":"none";
+    n._el.classList.toggle("dim",!!(state.hits&&state.hits.indexOf(n.id)<0));
+    n._el.classList.toggle("lit",!!(state.hits&&state.hits.indexOf(n.id)>=0));
+    var c=gcol(n);n._el.querySelector(".glyph").style.background=c;
+    if(n.state==="failed")n._el.querySelector(".sat").style.borderColor="var(--fail)";else n._el.querySelector(".sat").style.borderColor="";
+  });
+  eB.forEach(function(p){var a=byId[p.dataset.a],b=byId[p.dataset.b],ok=state.ly.b&&vis(a)&&vis(b);p.style.display=ok?"":"none";if(ok)p.setAttribute("d",(a.lib===b.lib)?arc(a,b):chord(a,b));});
+  eO.forEach(function(p){var a=byId[p.dataset.a],b=byId[p.dataset.b],ok=state.ly.o&&vis(a)&&vis(b);p.style.display=ok?"":"none";if(ok)p.setAttribute("d",chord(a,b));});
+  eS.forEach(function(p){var a=byId[p.dataset.a],b=byId[p.dataset.b],ok=state.ly.s&&(+p.dataset.sim>=+$("th").value)&&vis(a)&&vis(b);p.style.display=ok?"":"none";if(ok)p.setAttribute("d",chord(a,b));});
+  /* 检索辐条 */
+  document.querySelectorAll(".spoke").forEach(function(x){x.remove();});
+  if(state.q){state.hits.forEach(function(id){var p=el("path",{"class":"e-r on spoke"});p.setAttribute("d","M"+CX+","+CY+" L"+byId[id].x+","+byId[id].y);});}
+  document.querySelectorAll(".rring").forEach(function(r){r.classList.toggle("on",!!state.q);});
+  rings.forEach(function(r){r.style.display=state.ly.bd?"":"none";});orbitLbls.forEach(function(t){t.style.display=state.ly.bd?"":"none";});
+  stage.classList.toggle("min",state.k<0.85);
+  var v=NODES.filter(vis).length;$("sum").textContent=v+" 节点";
+  var L='<span class="li"><span class="dot">●</span>md</span><span class="li"><span class="dot" style="border-radius:2px">▣</span>PDF</span><span class="li"><span class="dot" style="transform:rotate(45deg);border-radius:2px">◆</span>缓存</span>';
+  if(state.color==="lib")L+=RINGS.map(function(r){return '<span class="li"><span class="dot" style="background:'+r.c+'"></span>'+r.lib+' · '+r.r+' 环</span>';}).join("");
+  if(state.color==="state")L+='<span class="li"><span class="dot" style="background:var(--ok)"></span>生效</span><span class="li"><span class="dot" style="background:var(--part)"></span>缺 WEMM</span><span class="li"><span class="dot" style="background:var(--fail)"></span>失败</span>';
+  L+='<button class="info" id="infoBtn">i</button>';$("legend").innerHTML=L;$("infoBtn").onclick=function(e){e.stopPropagation();$("mech").classList.toggle("on");};
+  applyCam();
+  $("status").innerHTML=state.q?('检索态 · 恒星 <b>'+esc(state.q)+'</b> · 辐条 <b>'+state.hits.length+'</b>'):('常态 · <b>'+v+'</b> 节点分踞三环 · 同环弧 · 跨环弦');
+}
+function applyCam(){world.style.transform="translate("+state.tx+"px,"+state.ty+"px) scale("+state.k+")";$("zlab").textContent=Math.round(state.k*100)+"%";}
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");}
+var spokeEls=[];
+function doSearch(q){q=q||$("q").value.trim();if(!q)return;var key=/重排|混合/.test(q)?"重排":/wemm|页/i.test(q)?"wemm":"默认";state.q=q;state.hits=HITS[key];$("qq").textContent="✦ "+q;$("qnode").classList.add("on");$("qnode").style.left=CX+"px";$("qnode").style.top=(CY-52)+"px";var cf=[.87,.74,.61,.55,.5];state.hits.forEach(function(id,i){byId[id]._el.querySelector(".cf").textContent="◈ "+cf[i%5].toFixed(2);});var r=stage.getBoundingClientRect();state.k=Math.max(state.k,1);state.tx=r.width/2-CX*state.k;state.ty=r.height/2-CY*state.k;paint();}
+function clearS(){state.q=null;state.hits=null;$("qnode").classList.remove("on");paint();}
+var OUTL={t1:["t2","t3"],p3:["p4","t1"],m1:["m2"]},INL={p3:["t1","p2"],t3:["t1","t2"],m2:["m1","t2"]};
+function openIns(id){var n=byId[id];$("iDot").style.background=LIBC[n.lib];$("iLib").textContent=n.lib+" · "+n.ring.r+" 环";$("iBadge").innerHTML=n.state==="ok"?'<span class="chip ok">全链路生效</span>':n.state==="failed"?'<span class="chip bad">提取失败</span>':'<span class="chip wait">部分生效</span>';$("iT").textContent=n.name;$("iP").textContent=n.lib+" · "+n.rel;$("iM").innerHTML="<span>"+n.chunks+" 块</span><span>"+n.type.toUpperCase()+"</span><span>双链 "+((OUTL[id]||[]).length+(INL[id]||[]).length)+"</span>";
+var h='<div class="sec"><h5>管线</h5><div style="display:flex;gap:6px">'+n.pipe.map(function(p){return '<span class="chip '+(/done|生效/.test(p)?"ok":/fail/.test(p)?"bad":"wait")+'">'+esc(p)+'</span>';}).join("")+'</div></div>';
+h+='<div class="sec"><h5>双链 · 沿弦跳跃</h5>'+(((OUTL[id]||[]).length||(INL[id]||[]).length)?(OUTL[id]||[]).map(function(o){return '<button class="rel" data-g="'+o+'">→ '+byId[o].name+'<span class="s">出链 · '+(byId[o].lib===n.lib?"同环":"跨环")+'</span></button>';}).join("")+(INL[id]||[]).map(function(o){return '<button class="rel" data-g="'+o+'">← '+byId[o].name+'<span class="s">入链</span></button>';}).join(""):'<div style="font-size:12px;color:var(--ph)">暂无双链</div>')+'</div>';
+h+='<div class="sec"><h5>语义近邻</h5>'+(SEM.filter(function(e){return e[0]===id||e[1]===id;}).map(function(e){var o=e[0]===id?e[1]:e[0];return '<button class="rel" data-g="'+o+'">'+byId[o].name+'<span class="s">'+e[2].toFixed(2)+'</span></button>';}).join("")||'<div style="font-size:12px;color:var(--ph)">开启语义边后可见</div>')+'</div>';
+h+='<div class="sec"><h5>命中片段</h5><div class="snip">…<mark>'+esc(n.name)+'</mark>：星环方案用半径做库边界，一眼三环；跨环只有弦，杂草无处生长。…</div></div>';
+$("iB").innerHTML=h;Array.prototype.forEach.call($("iB").querySelectorAll("[data-g]"),function(b){b.onclick=function(){openIns(b.dataset.g);};});$("ins").classList.add("on");}
+$("go").onclick=function(){doSearch();};$("q").addEventListener("keydown",function(e){if(e.key==="Enter")doSearch();});
+$("qx").onclick=function(e){e.stopPropagation();$("q").value="";clearS();};
+Array.prototype.forEach.call(document.querySelectorAll(".hints button"),function(b){b.onclick=function(){$("q").value=b.textContent;doSearch(b.textContent);};});
+$("th").oninput=function(){$("thv").textContent=(+$("th").value).toFixed(2);paint();};
+[["lB","b"],["lS","s"],["lO","o"],["lP","p"],["lC","c"],["lPdf","pdf"],["lBd","bd"]].forEach(function(p){$(p[0]).onchange=function(){state.ly[p[1]]=$(p[0]).checked?1:0;paint();};});
+Array.prototype.forEach.call(document.querySelectorAll("#seg button"),function(b){b.onclick=function(){state.color=b.dataset.m;Array.prototype.forEach.call(document.querySelectorAll("#seg button"),function(x){x.classList.toggle("on",x===b);});paint();};});
+Array.prototype.forEach.call(document.querySelectorAll("#scope button"),function(b){b.onclick=function(){state.scope=b.dataset.s;Array.prototype.forEach.call(document.querySelectorAll("#scope button"),function(x){x.classList.toggle("on",x===b);});paint();};});
+$("themeBtn").onclick=function(){var h=document.documentElement;h.dataset.theme=h.dataset.theme==="dark"?"light":"dark";$("themeBtn").textContent=h.dataset.theme==="dark"?"切换浅色":"切换深色";};
+$("iX").onclick=function(){$("ins").classList.remove("on");clearS();};
+$("iOpen").onclick=function(){alert("demo：打开源文件");};$("iRel").onclick=function(){alert("demo：沿弦跳到该节点所在环");};
+$("zin").onclick=function(){state.k=Math.min(1.8,state.k*1.15);paint();};$("zout").onclick=function(){state.k=Math.max(.5,state.k/1.15);paint();};$("zfit").onclick=function(){state.k=.95;state.tx=40;state.ty=110;paint();};
+stage.addEventListener("click",function(e){if(e.target===stage){$("ins").classList.remove("on");$("mech").classList.remove("on");}});
+(function(){var pan=null;stage.addEventListener("pointerdown",function(e){if(e.target.closest&&(e.target.closest(".nd")||e.target.closest("button")||e.target.closest("input")||e.target.closest("select")))return;pan={x:e.clientX,y:e.clientY,tx:state.tx,ty:state.ty};try{stage.setPointerCapture(e.pointerId);}catch(_){}});
+stage.addEventListener("pointermove",function(e){if(!pan)return;state.tx=pan.tx+(e.clientX-pan.x);state.ty=pan.ty+(e.clientY-pan.y);applyCam();});stage.addEventListener("pointerup",function(){pan=null;});})();
+build();
+</script>
+</body>
+</html>

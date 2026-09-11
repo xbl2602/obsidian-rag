@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>啵啵拼豆 · 线上预约 DEMO</title>
+<style>
+:root{
+  --pink:#ff6b9d; --pink-deep:#d14a7c; --pink-soft:#ffd9e6;
+  --yellow:#ffcf3f; --cream:#fffaf3; --ink:#5a3a44; --ink-soft:#9a8189; --line:#f2d9e2;
+  --shadow:0 12px 40px rgba(209,74,124,.14);
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0;background:var(--cream);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
+body{min-height:100vh}
+button{font-family:inherit}
+.brand{display:flex;align-items:center;gap:12px;padding:14px 18px 8px;max-width:1180px;margin:0 auto}
+.logo{width:44px;height:44px;border-radius:16px;flex:none;display:grid;place-items:center;color:#fff;
+  font-weight:900;background:linear-gradient(135deg,#ff8fb3,#f5b942);box-shadow:var(--shadow);letter-spacing:1px}
+.brand h1{font-size:19px;margin:0}
+.brand h1 small{display:block;font-size:12px;color:var(--ink-soft);font-weight:500;letter-spacing:2px}
+.party-badge{margin-left:auto;background:#fff;border:2px solid var(--line);border-radius:999px;
+  padding:7px 14px;font-size:13px;cursor:pointer;white-space:nowrap}
+.party-badge b{color:var(--pink-deep)}
+.sticky{position:sticky;top:0;z-index:30;padding:8px 12px 12px;background:linear-gradient(180deg,var(--cream) 72%,transparent)}
+.topcard{max-width:1180px;margin:0 auto;background:#fff;border-radius:22px;box-shadow:var(--shadow);
+  border:2px solid #ffe3ee;padding:12px 14px 14px}
+.date-row{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 10px;scrollbar-width:none}
+.date-row::-webkit-scrollbar{display:none}
+.date-pill{flex:none;min-width:64px;border:2px solid var(--line);background:#fff;border-radius:14px;
+  padding:7px 8px;text-align:center;cursor:pointer;line-height:1.2}
+.date-pill .w{font-size:11px;color:var(--ink-soft)}
+.date-pill .d{font-size:15px;font-weight:800}
+.date-pill.active{background:linear-gradient(135deg,var(--pink),#ff9a4d);color:#fff;border-color:transparent}
+.date-pill.active .w{color:#fff}
+.time-line{display:flex;align-items:center;gap:10px;background:#fff5f8;border-radius:14px;padding:10px 12px}
+.time-now{flex:none;text-align:center;min-width:86px}
+.time-now .big{font-size:20px;font-weight:900;color:var(--pink-deep)}
+.time-now .sub{font-size:11px;color:var(--ink-soft)}
+input[type=range]{flex:1;appearance:none;-webkit-appearance:none;height:8px;border-radius:99px;
+  background:linear-gradient(90deg,#ffe9a8,var(--pink));outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;
+  background:#fff;border:3px solid var(--pink);box-shadow:0 2px 8px rgba(0,0,0,.18);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#fff;border:3px solid var(--pink);cursor:pointer}
+.free-count{flex:none;font-size:12px;background:#fff;border-radius:99px;padding:6px 10px;border:1.5px dashed var(--pink)}
+.ticks{display:flex;justify-content:space-between;font-size:10px;color:var(--ink-soft);padding:4px 2px 0}
+.main{max-width:1180px;margin:0 auto;padding:0 12px 40px;display:flex;gap:14px;align-items:flex-start}
+.map-card{flex:1;background:#fff;border-radius:24px;box-shadow:var(--shadow);border:2px solid #ffe3ee;overflow:hidden;min-width:0}
+.map-head{padding:12px 16px 4px}
+.map-head h2{font-size:15px;margin:0}
+.map-head p{font-size:12px;color:var(--ink-soft);margin:4px 0 0}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--ink-soft);padding:6px 16px 8px}
+.legend b{color:var(--ink)}
+
+/* ===== 粉黄可爱平面：纯 HTML+CSS，无 SVG、无图标、无区域色块 ===== */
+.floor-wrap{margin:0 14px;border-radius:18px;overflow:hidden;border:2px solid #ffe3ee;
+  box-shadow:inset 0 0 0 6px #fff,inset 0 0 40px rgba(255,107,157,.08)}
+.floor{position:relative;width:100%;aspect-ratio:1000/600;
+  background:
+    repeating-linear-gradient(90deg,rgba(150,120,85,.06) 0 2px,transparent 2px 90px),
+    repeating-linear-gradient(0deg,rgba(150,120,85,.05) 0 2px,transparent 2px 28px),
+    linear-gradient(180deg,#fbf7ef,#f5eee0);
+  transition:transform 600ms cubic-bezier(.22,.8,.24,1)}
+.floor .grain{position:absolute;inset:0;pointer-events:none;opacity:.6;
+  background:radial-gradient(ellipse at 30% 20%,rgba(255,255,255,.8),transparent 55%),
+             radial-gradient(ellipse at 78% 82%,rgba(217,140,163,.12),transparent 55%)}
+/* 外墙：暖灰细线 + 底部入口缺口 */
+.wall{position:absolute;inset:0;pointer-events:none;border:5px solid #d8c6ac;border-radius:8px}
+.door{position:absolute;left:46%;bottom:-2px;width:15%;height:14px;background:#fbf7ef;
+  border:3px solid #b39a7d;border-bottom:none;border-radius:6px 6px 0 0;text-align:center}
+.door span{font-size:10px;color:#7d6752;letter-spacing:3px;position:relative;top:-4px}
+/* 烫豆操作台：暖灰吧台 + 台面内高光 */
+.counter{position:absolute;left:43%;top:2%;width:30%;height:13%;border-radius:10px;
+  background:linear-gradient(180deg,#fffdf8 0 34%,#efe4d2 34% 40%,#e0cdaa 40% 100%);
+  border:2px solid #b39a7d;box-shadow:0 4px 10px rgba(110,85,55,.20)}
+.counter::after{content:"";position:absolute;left:8%;right:8%;top:8%;height:16%;
+  border-radius:4px;background:linear-gradient(90deg,#f3ead9,#fffdf8,#f3ead9)}
+.counter span{position:absolute;bottom:6%;width:100%;text-align:center;font-size:11px;color:#7d6752;letter-spacing:2px}
+/* 屏风：暖灰细格栅 */
+.partition{position:absolute;left:30%;top:20%;width:1.6%;height:52%;border-radius:4px;
+  background:repeating-linear-gradient(0deg,#e2d3ba 0 9px,#f8f2e6 9px 13px);
+  border:1px solid #b39a7d;box-shadow:2px 2px 6px rgba(110,85,55,.20)}
+.partition em{position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);font-style:normal;font-size:10px;color:#7d6752;white-space:nowrap;letter-spacing:2px}
+/* 区域：只做分组，不铺底色 */
+.zone{position:absolute;transition:opacity 300ms ease-out}
+.zone.dim{opacity:.5}
+.zone-name{position:absolute;top:-20px;width:100%;text-align:center;font-size:11px;color:#b76e85;letter-spacing:3px}
+.zone-note{position:absolute;bottom:-17px;width:100%;text-align:center;font-size:10px;color:var(--ink-soft)}
+/* 桌子：暖白木质感（渐变 + 描边 + 内高光） */
+.table{position:absolute;border-radius:12px;
+  background:linear-gradient(135deg,#fffdf8,#f8f0df 60%,#f3e7cf);
+  border:2px solid #c9ae86;box-shadow:0 5px 12px rgba(110,85,55,.20),inset 0 2px 0 rgba(255,255,255,.9)}
+.table::before{content:"";position:absolute;inset:7px;border-radius:8px;border:1px solid rgba(200,130,155,.5)}
+.zone-double{left:9%;top:52%;width:18%;height:36%}
+.zone-quad{left:44%;top:38%;width:23%;height:44%}
+.zone-single{left:72%;top:14%;width:24%;height:74%}
+.t-double{left:12%;top:26%;width:76%;height:48%}
+.t-quad{left:8%;top:24%;width:84%;height:52%}
+.t-bar{right:2%;top:2%;width:34%;height:96%;border-radius:14px}
+/* 椅子：俯视实木椅 —— 加宽椅背 + 软包坐垫 + 缝线，椅背永远在远离桌子的一侧 */
+.chair{position:absolute;width:17%;min-width:56px;max-width:76px;background:none;border:none;padding:4px;cursor:pointer;
+  display:flex;transition:opacity .25s ease}
+.f-n{flex-direction:column}.f-s{flex-direction:column}
+.f-e{flex-direction:row;align-items:stretch}.f-w{flex-direction:row;align-items:stretch}
+.zone-single .chair{width:23%}
+.chair .rug{position:absolute;left:50%;bottom:-7px;width:120%;height:14px;transform:translateX(-50%);
+  border-radius:50%;background:radial-gradient(ellipse,rgba(150,120,85,.18),transparent 70%);opacity:0;transition:opacity .3s}
+.chair .back{flex:none;background:linear-gradient(180deg,#b28c60,#87643f);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 1px 2px rgba(90,60,30,.35)}
+.f-n .back{height:13px;margin:0 2px 4px;border-radius:9px 9px 4px 4px}
+.f-s .back{height:13px;margin:4px 2px 0;border-radius:4px 4px 9px 9px;background:linear-gradient(0deg,#b28c60,#87643f);order:2}
+.f-e .back{width:13px;margin-left:4px;border-radius:4px 9px 9px 4px;background:linear-gradient(90deg,#b28c60,#87643f);order:2}
+.f-w .back{width:13px;margin-right:4px;border-radius:9px 4px 4px 9px}
+.chair .seat{position:relative;flex:1;display:flex;align-items:center;justify-content:center;min-height:42px;border-radius:10px;
+  background:linear-gradient(180deg,#fdf8f1,#f7e7e2);border:1.5px solid #b39a7d;
+  box-shadow:0 2px 5px rgba(100,70,40,.22);font-size:12px;font-weight:700;color:#6b5138}
+.chair .seat::after{content:"";position:absolute;inset:4px;border-radius:7px;border:1px dashed rgba(190,120,140,.5);pointer-events:none}
+/* 轻微悬停：只动 1px */
+.chair.available:hover{transform:translateY(-1px)}
+.chair.available .seat{outline:2px solid rgba(209,74,124,.45);outline-offset:2px}
+.chair.occupied{cursor:pointer}
+.chair.occupied .seat{background:linear-gradient(180deg,#ece5d6,#ded2ba);color:#9a8b76;border-color:#c3b39c;outline:none}
+.chair.occupied .back{background:#c3b39c}
+.chair.occupied .tag{opacity:1}
+.chair.locked{opacity:.55;cursor:not-allowed}
+.chair.locked .seat{outline:1.5px dashed #c9b896;outline-offset:2px}
+.chair.locked .back{background:#c9b896}
+.chair.selected .rug{opacity:.9}
+.chair.selected .seat{outline:3px solid var(--pink-deep);outline-offset:2px}
+.chair.selected .back{background:linear-gradient(180deg,#e08aa8,#c25e7e)}
+.chair .tag{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%) rotate(-6deg);
+  font-size:10px;background:#fffdf8;border:1px solid #c9ae86;border-radius:3px;padding:1px 6px;
+  box-shadow:0 1px 3px rgba(0,0,0,.18);opacity:0;white-space:nowrap;color:#7d6752}
+.map-foot{display:flex;gap:8px;padding:10px 14px 14px;flex-wrap:wrap}
+.btn{border:none;border-radius:14px;padding:10px 16px;font-size:14px;font-weight:700;cursor:pointer}
+.btn-ghost{background:#fff;border:2px solid var(--line);color:var(--ink)}
+.btn-primary{background:linear-gradient(135deg,var(--pink),#ff9a4d);color:#fff;box-shadow:0 6px 18px rgba(209,74,124,.35)}
+.btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+/* 详情 */
+.detail{width:380px;flex:none;background:#fff;border-radius:24px;box-shadow:var(--shadow);
+  border:2px solid #ffe3ee;padding:16px;position:sticky;top:170px;max-height:calc(100vh - 190px);overflow:auto}
+.detail.hidden{display:none}
+.detail h3{margin:0;font-size:18px}
+.zone-tag{font-size:12px;background:#fff3cf;border-radius:99px;padding:3px 10px;display:inline-block;margin:6px 0}
+.rule{font-size:12px;background:#fff5f8;border-radius:12px;padding:8px 10px;color:var(--ink-soft);margin:8px 0}
+.rule.bad{background:#fdeeee;color:#b03a2e}
+.sec-t{font-size:13px;font-weight:800;margin:14px 0 8px}
+.bigread{background:#fffdf6;border:2px solid #ffe3ee;border-radius:14px;padding:10px 12px;text-align:center}
+.bigread b{font-size:19px;color:var(--pink-deep)}
+.bigread span{font-size:12px;color:var(--ink-soft)}
+.step2{display:flex;gap:8px;margin-top:8px}
+.step2>div{flex:1;background:#fff;border:2px solid var(--line);border-radius:12px;padding:8px;text-align:center}
+.step2 .lab{font-size:11px;color:var(--ink-soft)}
+.step2 .val{font-size:16px;font-weight:800;margin:2px 0}
+.step2 button{width:34px;height:30px;border-radius:9px;border:1.5px solid var(--line);background:#fff;font-size:16px;cursor:pointer}
+.tl{margin-top:10px;user-select:none}
+.tl-track{position:relative;display:flex;gap:2px;height:44px;padding:3px;background:#fff5f8;border:1.5px solid #f2a9c4;border-radius:12px;touch-action:none;cursor:crosshair}
+.tl-cell{flex:1;border-radius:6px;background:#fff;border:1px dotted #f2a9c4}
+.tl-cell.busy{background:repeating-linear-gradient(45deg,#f6ecef 0 4px,#e8d5dc 4px 6px);border-style:solid;border-color:#d8c2cc}
+.tl-sel{position:absolute;top:3px;bottom:3px;background:rgba(255,107,157,.30);border:2px solid var(--pink-deep);
+  border-radius:8px;pointer-events:none}
+.tl-sel::before,.tl-sel::after{content:"";position:absolute;top:20%;bottom:20%;width:5px;border-radius:3px;background:var(--pink-deep)}
+.tl-sel::before{left:-4px}.tl-sel::after{right:-4px}
+.tl-axis{display:flex;justify-content:space-between;font-size:10px;color:var(--ink-soft);margin-top:5px}
+.warn{display:none;background:#fdeeee;color:#b03a2e;font-size:12px;border-radius:10px;padding:8px 10px;margin-top:8px}
+.warn.show{display:block}
+.field{margin-top:8px}
+.field label{font-size:12px;color:var(--ink-soft);display:block;margin-bottom:4px}
+.field input{width:100%;border:2px solid var(--line);border-radius:12px;padding:10px 12px;font-size:14px;outline:none}
+.field input:focus{border-color:var(--pink)}
+.confirm{width:100%;margin-top:12px;font-size:16px;padding:13px}
+.hintline{font-size:11px;color:var(--ink-soft);margin-top:8px;text-align:center}
+.overlay{position:fixed;inset:0;background:rgba(90,40,60,.45);backdrop-filter:blur(6px);z-index:100;display:grid;place-items:center;padding:18px}
+.overlay.hidden{display:none}
+.sheet{background:linear-gradient(180deg,#fff,#fff6da);border-radius:28px;max-width:420px;width:100%;
+  padding:24px 20px 20px;box-shadow:0 24px 80px rgba(0,0,0,.3);text-align:center;border:3px solid #fff}
+.sheet h2{margin:6px 0 2px;font-size:22px}
+.sheet p{font-size:13px;color:var(--ink-soft);margin:4px 0 12px}
+.picker{position:relative;height:190px;overflow-y:auto;scroll-snap-type:y mandatory;border-radius:16px;background:#fff;border:2px solid var(--line);margin:8px 0}
+.pick-item{scroll-snap-align:center;padding:14px;font-size:17px;font-weight:800;color:#c9b6bd;cursor:pointer}
+.pick-item.sel{color:var(--pink-deep);font-size:22px}
+.pick-item small{display:block;font-size:11px;font-weight:500;color:var(--ink-soft)}
+.stepper{display:flex;align-items:center;justify-content:center;gap:14px;margin:6px 0 10px}
+.stepper button{width:44px;height:44px;border-radius:50%;border:2px solid var(--pink);background:#fff;font-size:22px;color:var(--pink-deep);cursor:pointer}
+.stepper b{font-size:20px;min-width:70px}
+#toasts{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;gap:8px;width:min(92vw,420px)}
+.toast{background:#3a2530;color:#fff;border-radius:14px;padding:11px 14px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.toast.pink{background:linear-gradient(135deg,var(--pink-deep),#ff9a4d)}
+.ticket{background:#fff;border-radius:24px;max-width:400px;width:100%;padding:22px;text-align:center;border:3px dashed var(--pink)}
+.ticket .code{font-size:28px;font-weight:900;letter-spacing:3px;color:var(--pink-deep);margin:8px 0}
+.ticket table{width:100%;font-size:13px;border-collapse:collapse;margin:10px 0}
+.ticket td{padding:6px 4px;border-bottom:1px dashed var(--line);text-align:left}
+.ticket td:last-child{text-align:right;font-weight:700}
+/* 店主介绍之旅：聚光 + 讲解卡 */
+#tourDim{position:fixed;inset:0;z-index:300;display:none}
+#tourDim.show{display:block}
+#tourRing{position:fixed;display:none;border:3px solid var(--pink-deep);border-radius:14px;pointer-events:none;
+  box-shadow:0 0 0 9999px rgba(43,38,32,.5),0 0 0 4px rgba(255,255,255,.65),0 8px 30px rgba(0,0,0,.35);transition:all .4s cubic-bezier(.22,.8,.24,1)}
+#tourCard{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;width:min(92vw,480px);background:#fff;
+  border-radius:18px;padding:16px 18px;box-shadow:0 18px 60px rgba(0,0,0,.35)}
+#tourCard.top{top:12px;bottom:auto}
+#tourProg{font-size:11px;color:var(--ink-soft)}
+#tourCard h3{margin:4px 0 6px;font-size:16px}
+#tourCard p{margin:0;font-size:13px;line-height:1.65}
+#tourX{margin-top:8px;font-size:12px;background:#fff8ef;border:1px dashed #e3c98f;border-radius:10px;padding:8px 10px;color:#7d6752;line-height:1.6}
+@media (prefers-reduced-motion:reduce){
+  .floor,.zone,.chair,.counter,.partition,.door{transition:none !important}
+}
+@media (max-width:920px){
+  .main{flex-direction:column}
+  .detail{width:100%;position:fixed;left:0;right:0;bottom:0;top:auto;z-index:60;border-radius:24px 24px 0 0;
+    max-height:84vh;transform:translateY(105%);transition:transform .45s cubic-bezier(.22,.8,.24,1)}
+  .detail.open{transform:translateY(0)}
+  .detail.hidden{display:block;transform:translateY(105%)}
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:55;display:none}
+  .scrim.show{display:block}
+}
+@media (min-width:921px){
+  .detail.slide{animation:slideIn .5s cubic-bezier(.22,.8,.24,1)}
+  @keyframes slideIn{from{transform:translateX(26px);opacity:0}to{transform:none;opacity:1}}
+  .scrim{display:none !important}
+}
+</style>
+</head>
+<body>
+<div class="brand">
+  <div class="logo">拼豆</div>
+  <h1>啵啵拼豆 · 自助预约<small>PINDOU STUDIO · DEMO</small></h1>
+  <button class="party-badge" id="partyBadge" onclick="reopenParty()"><b id="partyText">未选人数</b> · 换</button>
+</div>
+<div class="sticky"><div class="topcard">
+  <div class="date-row" id="dateRow"></div>
+  <div class="time-line">
+    <div class="time-now"><div class="big" id="timeBig">2:00 PM</div><div class="sub">拖动预览空闲</div></div>
+    <input type="range" id="timeSlider" min="10" max="20" step="0.5" value="14">
+    <div class="free-count" id="freeCount">空闲 –/9</div>
+  </div>
+  <div class="ticks"><span>10:00 AM 开店</span><span>12:00 PM</span><span>3:00 PM</span><span>5:00 PM</span><span>8:00 PM 打烊</span></div>
+</div></div>
+
+<div class="main">
+  <div class="map-card">
+    <div class="map-head"><h2>店内平面 · 点椅子选位</h2>
+      <p>木色长台是吧台，方形木桌分双人 / 四人，格栅是屏风，上方是操作台，下方缺口是店门。</p></div>
+    <div class="legend"><span><b>椅面亮起描边</b>＝可订</span><span><b>椅面变暗＋搭小牌</b>＝该时段有人</span><span><b>椅面变淡</b>＝人数规则不够</span></div>
+    <div class="floor-wrap"><div class="floor" id="floor">
+      <div class="grain"></div><div class="wall"></div>
+      <div class="counter"><span>烫 豆 区</span></div>
+      <div class="partition"><em>屏 风</em></div>
+      <div class="door"><span>入口</span></div>
+      <div class="zone zone-double" data-zone="double">
+        <div class="zone-name">双 人 区</div>
+        <div class="table t-double"></div>
+        <div class="zone-note">2 位小桌</div>
+      </div>
+      <div class="zone zone-quad" data-zone="quad">
+        <div class="zone-name">四 人 区 · 3 人起</div>
+        <div class="table t-quad"></div>
+        <div class="zone-note">中间大桌</div>
+      </div>
+      <div class="zone zone-single" data-zone="single">
+        <div class="zone-name">单 人 区</div>
+        <div class="table t-bar"></div>
+        <div class="zone-note">右侧吧台</div>
+      </div>
+    </div></div>
+    <div class="map-foot">
+      <button class="btn btn-ghost" onclick="resetView()">返回全览</button>
+      <button class="btn btn-ghost" onclick="startTour()">播放介绍：网站如何运行</button>
+    </div>
+  </div>
+  <div class="detail hidden" id="detail"></div>
+</div>
+<div class="scrim" id="scrim" onclick="closeDetail()"></div>
+
+<div class="overlay" id="partyModal"><div class="sheet">
+  <h2>今天几位来拼豆？</h2>
+  <p>先选人数才能看座位 · 四人桌需 3 人起<br>上下滚动选择</p>
+  <div class="picker" id="picker"></div>
+  <div class="stepper"><button onclick="stepParty(-1)">−</button><b id="stepText">2 人</b><button onclick="stepParty(1)">＋</button></div>
+  <button class="btn btn-primary" style="width:100%;font-size:16px;padding:13px" onclick="confirmParty()">进入选座</button>
+  <p style="font-size:11px;margin-top:8px">DEMO 数据为模拟占用，不是真实库存</p>
+</div></div>
+<div class="overlay hidden" id="ticketModal"><div class="ticket" id="ticketBox"></div></div>
+<div id="toasts"></div>
+
+<script>
+const SEATS=[
+  {id:'S1',zone:'single',label:'单01',face:'e',top:'6%',left:'38%'},{id:'S2',zone:'single',label:'单02',face:'e',top:'41%',left:'38%'},
+  {id:'S3',zone:'single',label:'单03',face:'e',top:'74%',left:'38%'},
+  {id:'D1',zone:'double',label:'双01',face:'n',top:'0%',left:'41.5%'},{id:'D2',zone:'double',label:'双02',face:'s',top:'72%',left:'41.5%'},
+  {id:'Q1',zone:'quad',label:'四01',face:'n',top:'1%',left:'14%'},{id:'Q2',zone:'quad',label:'四02',face:'n',top:'1%',left:'69%'},
+  {id:'Q3',zone:'quad',label:'四03',face:'s',top:'76%',left:'14%'},{id:'Q4',zone:'quad',label:'四04',face:'s',top:'76%',left:'69%'},
+];
+const ZONE_NAME={single:'单人区 · 吧台',double:'双人区 · 小桌',quad:'四人区 · 大桌'};
+const FOCUS_SCALE=1.18;
+const state={party:null,dateIdx:0,preview:14,seat:null,start:14,dur:1,name:'',phone:'',bookings:{}};
+const days=[];{const t=new Date();for(let i=0;i<14;i++){const d=new Date(t);d.setDate(t.getDate()+i);days.push(d);}}
+const key=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const WD=['周日','周一','周二','周三','周四','周五','周六'];
+function rng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+SEATS.forEach((s,si)=>{days.forEach((d,di)=>{const k=key(d),r=rng(di*100+si*17+7);
+  const arr=state.bookings[s.id+'|'+k]=[];const n=2+Math.floor(r()*3);
+  for(let i=0;i<n;i++){const st=10+Math.floor(r()*18)*0.5;const du=[1,1,1.5,2][Math.floor(r()*4)];
+    const en=Math.min(20,st+du);if(en-st<1)continue;if(arr.some(b=>st<b.en&&b.st<en))continue;arr.push({st,en});}
+  arr.sort((a,b)=>a.st-b.st);});});
+(function(){const k=key(days[0]);['S1','S2','S3'].forEach(id=>{state.bookings[id+'|'+k]=[{st:13.5,en:16},{st:17,en:19}];});})();
+const $=id=>document.getElementById(id);
+function toast(msg,pink){const t=document.createElement('div');t.className='toast'+(pink?' pink':'');t.textContent=msg;$('toasts').appendChild(t);setTimeout(()=>t.remove(),3200);}
+function fmt12(h){const hh=Math.floor(h),mm=h%1?'30':'00';const ap=hh<12?'AM':'PM';let h12=hh%12;if(h12===0)h12=12;return h12+':'+mm+' '+ap;}
+function fmtR(st,en){return fmt12(st)+' – '+fmt12(en);}
+function bk(id,di){return state.bookings[id+'|'+key(days[di])]||[];}
+function occupiedAt(id,di,t){return bk(id,di).some(b=>t>=b.st&&t<b.en);}
+function overlapList(id,di,st,en){return bk(id,di).filter(b=>st<b.en&&b.st<en);}
+function gate(id,di,t){const p=state.party,z=SEATS.find(s=>s.id===id).zone;
+  if(p==null)return{ok:false,reason:'请先选择人数'};
+  if(z==='quad'&&p<3)return{ok:false,reason:'四人区需 3 人起，你们 '+p+' 人不能选这里',short:'3人起'};
+  if(p===1&&z==='double'){const f=SEATS.filter(s=>s.zone==='single').some(s=>!occupiedAt(s.id,di,t));
+    if(f)return{ok:false,reason:'单人区还有空位，1 位请先坐单人区',short:'先坐单人区'};}
+  if(p>=5)return{ok:true,note:'5 人以上建议分桌，线上先占 1 位，到店找店员拼桌'};
+  return{ok:true};}
+const PARTY_INFO={1:'单人优先，单人区满员才可去双人区',2:'可坐单人 / 双人，不可坐四人',3:'全场可订，四人区已解锁',4:'全场可订，四人区已解锁',5:'人多建议分桌，先占 1 位',6:'人多建议分桌，先占 1 位'};
+let tmpParty=2;
+function buildPicker(){const pk=$('picker');pk.innerHTML='';
+  for(let i=1;i<=6;i++){const d=document.createElement('div');d.className='pick-item';d.dataset.v=i;
+    d.innerHTML=i+' 人<small>'+PARTY_INFO[i]+'</small>';
+    d.onclick=()=>pk.scrollTo({top:(i-1)*72-59,behavior:'smooth'});pk.appendChild(d);}
+  const sync=()=>{const idx=Math.round((pk.scrollTop+59)/72);tmpParty=Math.min(6,Math.max(1,idx+1));
+    $('stepText').textContent=tmpParty+' 人';
+    pk.querySelectorAll('.pick-item').forEach(el=>el.classList.toggle('sel',+el.dataset.v===tmpParty));};
+  pk.addEventListener('scroll',()=>requestAnimationFrame(sync));
+  setTimeout(()=>{pk.scrollTop=(2-1)*72-59;sync();},50);}
+function stepParty(d){tmpParty=Math.min(6,Math.max(1,tmpParty+d));$('stepText').textContent=tmpParty+' 人';
+  $('picker').scrollTo({top:(tmpParty-1)*72-59,behavior:'smooth'});}
+function confirmParty(){state.party=tmpParty;$('partyText').textContent=state.party+' 人';
+  $('partyModal').classList.add('hidden');toast('欢迎 '+state.party+' 位，椅面亮起的就是现在可订的',true);renderAll();}
+function reopenParty(){$('partyModal').classList.remove('hidden');tmpParty=state.party||2;
+  setTimeout(()=>{$('picker').scrollTop=(tmpParty-1)*72-59;$('stepText').textContent=tmpParty+' 人';},50);}
+function buildDates(){const row=$('dateRow');row.innerHTML='';
+  days.forEach((d,i)=>{const b=document.createElement('button');
+    b.className='date-pill'+(i===state.dateIdx?' active':'');
+    b.innerHTML='<div class="w">'+(i===0?'今天 ':WD[d.getDay()])+'</div><div class="d">'+(d.getMonth()+1)+'/'+d.getDate()+'</div>';
+    b.onclick=()=>{state.dateIdx=i;buildDates();renderAll();if(state.seat)renderDetail();};row.appendChild(b);});}
+$('timeSlider').addEventListener('input',e=>{state.preview=parseFloat(e.target.value);
+  $('timeBig').textContent=fmt12(state.preview);renderSeats();});
+
+/* 建椅子：真实椅子结构 */
+function buildChairs(){
+  document.querySelectorAll('.chair').forEach(n=>n.remove());
+  SEATS.forEach(s=>{
+    const z=document.querySelector('.zone-'+s.zone);
+    const b=document.createElement('button');
+    b.className='chair f-'+s.face+' available';b.dataset.id=s.id;
+    b.style.top=s.top;b.style.left=s.left;
+    b.setAttribute('aria-label',s.label+'，面向桌子');
+    b.innerHTML='<span class="rug"></span><span class="back"></span><span class="seat">'+s.label+'</span><span class="tag"></span>';
+    b.addEventListener('click',()=>clickSeat(s.id));
+    z.appendChild(b);
+  });
+}
+function clickSeat(id){
+  const g=gate(id,state.dateIdx,state.preview);
+  if(!g.ok){toast(sLabel(id)+'暂不可选：'+g.reason);return;}
+  state.seat=id;state.start=state.preview>=19.5?19.5:state.preview;state.dur=1;
+  openDetail(id);renderSeats();
+}
+function sLabel(id){return SEATS.find(s=>s.id===id).label+' ';}
+function renderSeats(){let free=0;
+  document.querySelectorAll('.chair').forEach(el=>{
+    const id=el.dataset.id;el.classList.remove('available','occupied','locked','selected');
+    const g=gate(id,state.dateIdx,state.preview),busy=occupiedAt(id,state.dateIdx,state.preview);
+    const tag=el.querySelector('.tag');
+    if(state.seat===id)el.classList.add('selected');
+    else if(!g.ok){el.classList.add('locked');tag.style.opacity=1;tag.textContent=g.short||'暂不可选';}
+    else if(busy){el.classList.add('occupied');tag.textContent='有人';}
+    else{el.classList.add('available');tag.style.opacity=0;free++;}
+    if(state.seat===id&&g.ok&&!busy)free++;
+  });
+  $('freeCount').textContent='空闲 '+free+'/9 · '+fmt12(state.preview);
+}
+function setFocus(zone){
+  const f=$('floor');
+  const z=zone!=='full'?document.querySelector('.zone-'+zone):null;
+  if(z){
+    /* 以该区域实时中心为放大原点，保证正中；只过渡 transform，原点瞬间设定，不卡顿 */
+    const fr=f.getBoundingClientRect(),zr=z.getBoundingClientRect();
+    const cx=((zr.left+zr.width/2)-fr.left)/fr.width*100;
+    const cy=((zr.top+zr.height/2)-fr.top)/fr.height*100;
+    f.style.transformOrigin=cx.toFixed(1)+'% '+cy.toFixed(1)+'%';
+    f.style.transform='scale('+FOCUS_SCALE+')';
+  }else{
+    f.style.transformOrigin='50% 50%';
+    f.style.transform='scale(1)';
+  }
+  document.querySelectorAll('.zone').forEach(x=>{
+    x.classList.toggle('dim',!!z&&x.dataset.zone!==zone);});
+  document.querySelectorAll('.counter,.partition,.door').forEach(n=>{
+    n.style.transition='opacity 300ms ease-out';
+    n.style.opacity=z?'0.55':'';});
+}
+function resetView(){setFocus('full');closeDetail();}
+/* 店主介绍之旅：聚光动画一步步讲每个按钮是什么、怎么操作、什么意思 */
+let tourIdx=-1,tourAnim=null,tourTimers=[],tourSavedName='',tourSavedPhone='';
+function stopTourAnim(){if(tourAnim){clearInterval(tourAnim);tourAnim=null;}tourTimers.forEach(clearTimeout);tourTimers=[];}
+function later(fn,ms){const id=setTimeout(()=>{tourTimers=tourTimers.filter(x=>x!==id);fn();},ms);tourTimers.push(id);return id;}
+function setCardPos(p){const c=$('tourCard');if(c)c.classList.toggle('top',p==='top');}
+/* 第 3 步演示：滑杆从 10:00 自动扫到 4:00 PM，椅子实时跟着变 */
+function playSweep(){let h=10;tourAnim=setInterval(()=>{h+=0.5;
+  if(h>16){stopTourAnim();tourSetPreview(14);renderSeats();return;}
+  tourSetPreview(h);renderSeats();},200);}
+/* 第 6 步演示：空缺条上的选中块从早扫到目标时间 */
+function playTlSweep(){const t=state.start;let h=10;tourAnim=setInterval(()=>{h+=0.5;
+  if(h>=t){stopTourAnim();state.start=t;renderDetail();return;}
+  state.start=h;renderDetail();},300);}
+function tourSetParty(n){state.party=n;tmpParty=n;$('partyText').textContent=n+' 人';}
+function tourSetDate(i){state.dateIdx=i;}
+function tourSetPreview(h){state.preview=h;state.start=h>=19.5?19.5:h;state.dur=1;
+  $('timeSlider').value=h;$('timeBig').textContent=fmt12(h);}
+function firstFree(id,di,dur){for(let h=10;h+dur<=20;h+=0.5){if(!overlapList(id,di,h,h+dur).length)return h;}return 10;}
+function firstBusy(id,di){const l=bk(id,di);return l.length?l[0].st:null;}
+/* 第 7 步演示：自动打字填表，先错后对，展示校验与报错 */
+function playTypeDemo(){
+  const n=$('fName'),p=$('fPhone');if(!n||!p)return;
+  state.name='';state.phone='';n.value='';p.value='';validate();
+  const seq=[['n','糖'],['n','糖糖'],['p','1'],['p','138'],['p','13800'],['p','13800138'],['p','13800138000']];
+  let k=0;tourAnim=setInterval(()=>{
+    if(k>=seq.length||tourIdx<0){stopTourAnim();return;}
+    const it=seq[k++];
+    if(it[0]==='n'){state.name=it[1];n.value=it[1];}else{state.phone=it[1];p.value=it[1];}
+    validate();
+  },450);
+}
+const TOUR=[
+ {t:'欢迎，这是顾客的自助订座页',b:'整个流程 4 步：选人数 → 选日期时间 → 点椅子填信息 → 拿票据到店，全程不用打电话。这段介绍会实际操作一遍给你看。',x:'点“下一步”开始，随时可以点“跳过”退出。',at:null},
+ {t:'第 1 步 · 人数是强制先选的',b:'顾客进站会被弹窗拦住，必须用滚轮选几个人，不选进不来。人数是后面所有规则的总开关，右上角这个徽章可以随时改。',x:'例子：选 1 人，四人区直接上锁；选 3 人，全场解锁。我现在设成 2 人。',at:()=>(!$('partyModal').classList.contains('hidden')?$('picker'):$('partyBadge')),go:()=>tourSetParty(2),play:()=>{later(()=>{reopenParty();placeTour();},700);}},
+ {t:'第 2 步 · 日期随便挑',b:'顶部这一排是未来 14 天。点哪天，全场 9 把椅子的状态就按那天重算，时间保持不动。',x:'例子：切到“今天”，看到的占用就是今天的（演示数据）。',at:()=>$('dateRow'),go:()=>tourSetDate(0)},
+ {t:'第 3 步 · 时间滑块只管预览',b:'营业 10:00 AM – 8:00 PM，每半小时一档。拖动时椅子实时变色：亮描边=可订，变暗+小牌=这个时刻有人，变淡=人数不够。滑块本身不下单，只是看。',x:'例子：1 人、今天 2:00 PM——单人区 3 把全满，1 个人反而能去双人区了，这就是溢出规则。',at:()=>document.querySelector('.time-line'),go:()=>{tourSetParty(1);tourSetDate(0);tourSetPreview(14);},play:playSweep},
+ {t:'第 4 步 · 椅子状态一眼看懂',b:'椅子是俯视实木椅：深色那条是椅背，背永远朝外、坐下后脸朝着桌子。状态看描边加小牌，不靠猜颜色。',x:'现在这屏就是例子：单人 3 把写着“有人”，双人亮着可点，四人写着“3人起”被锁。',at:()=>$('floor')},
+ {t:'第 5 步 · 点椅子进详情',b:'点一把可订的椅子，平面会平滑聚焦到它所在的区，旁边滑出详情卡。看，圈住的就是“双01”，我现在替你点它。',x:'被锁住或有人的椅子点不动，只会弹窗告诉你原因，比如“单人区还有空位”。',at:()=>state.seat?$('detail'):(document.querySelector('.chair[data-id="D1"]')||$('floor')),go:()=>{tourSetParty(1);tourSetDate(0);tourSetPreview(14);state.seat=null;closeDetail();setFocus('full');},play:()=>{later(()=>{clickSeat('D1');renderAll();later(placeTour,650);},1100);}},
+ {t:'第 6 步 · 时间直接拖，不用翻按钮',b:'详情卡里：开始时间、玩多久（都是半小时一档），下面那条是这把椅子当天的空缺——空白格=空，细纹格=有人。直接在条上按住拖出一段就行。',x:'例子：拖到空白段，选中块跟着走；点到细纹段，会自动跳到最近可订的开始时间。我先放到一个空段。',at:()=>$('detail'),go:()=>{if(!state.seat)clickSeat('D1');state.start=firstFree('D1',state.dateIdx,1);state.dur=1;renderDetail();},play:playTlSweep,card:'top'},
+ {t:'第 7 步 · 填信息拿票',b:'昵称 2–12 个字，手机必须是 1 开头的 11 位，填错确认按钮点不了。看，我正在替你填——手机号输一半时会报错，输满 11 位通过，按钮点亮。',x:'例子：昵称“糖糖”+ 138 开头的 11 位。成功后弹出票据，占用立刻写回地图，别人就订不走了。',at:()=>$('detail'),card:'top',go:()=>{if(!state.seat)clickSeat('D1');state.start=firstFree('D1',state.dateIdx,1);state.dur=1;renderDetail();},play:playTypeDemo},
+ {t:'第 8 步 · 撞期一定会被拦下',b:'如果选的时间和别人的预约重叠，红色警告展开，不让提交，而且一定给你出路，不会只说不行。',x:'看，现在这段就撞了：点“换到”一键挪到空段，或点“换把椅”，也可以把时长缩短试试。',at:()=>$('detail'),go:()=>{if(!state.seat)clickSeat('D1');let b=firstBusy('D1',state.dateIdx);if(b==null){bk('D1',state.dateIdx).push({st:15,en:16.5});b=15;}state.start=b;state.dur=1;renderDetail();},card:'top',play:()=>{later(()=>{const nx=nearestFree('D1',state.dateIdx,state.dur);if(nx!=null)jumpT(nx);},1500);}},
+ {t:'介绍完了',b:'记住四个要点：人数是总开关；顶部滑块只管预览；只点亮着的椅子；撞期一定被拦。数据都是演示用的，随便点不怕。',x:'点“结束”回到全览，自己动手试试。',at:null,go:()=>{closeDetail();setFocus('full');renderSeats();}}
+];
+function ensureTourDom(){
+  if($('tourDim'))return;
+  const d=document.createElement('div');d.id='tourDim';
+  d.innerHTML='<div id="tourRing"></div><div id="tourCard"><div id="tourProg"></div><h3 id="tourT"></h3><p id="tourB"></p><div id="tourX"></div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-ghost" id="tourPrev" style="flex:1">上一步</button><button class="btn btn-primary" id="tourNext" style="flex:2">下一步</button><button class="btn btn-ghost" id="tourSkip">跳过</button></div></div>';
+  document.body.appendChild(d);
+  $('tourPrev').onclick=()=>tourGo(tourIdx-1);
+  $('tourNext').onclick=()=>tourGo(tourIdx+1);
+  $('tourSkip').onclick=endTour;
+  window.addEventListener('resize',()=>{if(tourIdx>=0)placeTour();});
+  window.addEventListener('scroll',()=>{if(tourIdx>=0)placeTour();},{passive:true});
+}
+function startTour(){
+  if(!$('partyModal').classList.contains('hidden')){tmpParty=2;$('stepText').textContent='2 人';confirmParty();}
+  $('ticketModal').classList.add('hidden');
+  tourSavedName=state.name;tourSavedPhone=state.phone;
+  ensureTourDom();tourIdx=-1;tourGo(0);
+}
+function tourGo(i){
+  if(i<0)i=0;
+  if(i>=TOUR.length){endTour();return;}
+  tourIdx=i;const s=TOUR[i];
+  stopTourAnim();
+  if(i!==1)$('partyModal').classList.add('hidden');
+  if(s.go)s.go();
+  renderAll();
+  setCardPos(s.card||'bottom');
+  let el=null;try{el=s.at?s.at():null;}catch(e){}
+  if(el&&document.contains(el)){try{el.scrollIntoView({block:'center'});}catch(e){}}
+  later(placeTour,650);
+  later(()=>{if(tourIdx===i&&s.play)s.play();},950);
+  $('tourProg').textContent=(i+1)+' / '+TOUR.length;
+  $('tourT').textContent=s.t;$('tourB').textContent=s.b;$('tourX').textContent=s.x||'';
+  $('tourX').style.display=s.x?'':'none';
+  $('tourPrev').disabled=i===0;
+  $('tourNext').textContent=i===TOUR.length-1?'结束':'下一步';
+}
+function placeTour(){
+  const dim=$('tourDim');if(!dim)return;dim.classList.add('show');
+  const s=TOUR[tourIdx],ring=$('tourRing');
+  let el=null;try{el=s&&s.at?s.at():null;}catch(e){}
+  if(el&&document.contains(el)){const r=el.getBoundingClientRect();
+    ring.style.display='block';
+    ring.style.left=Math.max(6,r.left-8)+'px';ring.style.top=Math.max(6,r.top-8)+'px';
+    ring.style.width=Math.min(innerWidth-12,r.width+16)+'px';
+    ring.style.height=Math.min(innerHeight-12,r.height+16)+'px';
+  }else ring.style.display='none';
+}
+function endTour(){
+  stopTourAnim();
+  const dim=$('tourDim');if(dim)dim.classList.remove('show');
+  tourIdx=-1;state.name=tourSavedName;state.phone=tourSavedPhone;closeDetail();setFocus('full');renderAll();
+}
+function openDetail(id){
+  const s=SEATS.find(x=>x.id===id);setFocus(s.zone);
+  const d=$('detail');d.classList.remove('hidden');
+  if(window.innerWidth<=920){d.classList.add('open');$('scrim').classList.add('show');}
+  else{d.classList.remove('slide');void d.offsetWidth;d.classList.add('slide');}
+  renderDetail();
+}
+function closeDetail(){state.seat=null;const d=$('detail');
+  if(window.innerWidth<=920){d.classList.remove('open');$('scrim').classList.remove('show');setTimeout(()=>d.classList.add('hidden'),450);}
+  else d.classList.add('hidden');
+  setFocus('full');renderSeats();}
+
+/* 时间：滑杆 + 步进 + 直接在条上拖段，三者互通 */
+function clampStart(h){return Math.min(19.5,Math.max(10,Math.round(h*2)/2));}
+function renderDetail(){
+  const s=SEATS.find(x=>x.id===state.seat);if(!s)return;
+  const di=state.dateIdx,g=gate(s.id,di,state.start);
+  let freeMin=0;for(let h=10;h<20;h+=0.5){if(!occupiedAt(s.id,di,h))freeMin+=30;}
+  const cells=[];for(let h=10;h<20;h+=0.5){cells.push({h,busy:occupiedAt(s.id,di,h)});}
+  const clash=overlapList(s.id,di,state.start,state.start+state.dur);
+  const err=clash.length?('该时段与已有预约重叠 '+clash.map(c=>fmtR(c.st,c.en)).join('、')+'，拖动换个空段或换把椅子')
+    :(state.start+state.dur>20?'超过 8:00 PM 打烊时间，请缩短':'');
+  $('detail').innerHTML=
+   '<div style="display:flex;align-items:flex-start;gap:8px"><div style="flex:1"><h3>'+s.label+' · '+ZONE_NAME[s.zone]+'</h3>'+
+   '<span class="zone-tag">'+key(days[di])+' '+WD[days[di].getDay()]+' · '+state.party+' 位</span></div>'+
+   '<button class="btn btn-ghost" style="padding:6px 10px" onclick="closeDetail()">✕</button></div>'+
+   '<div class="rule'+(g.ok?'':' bad')+'">'+(g.ok?('人数符合：'+(g.note||PARTY_INFO[state.party])):g.reason)+'</div>'+
+   '<div class="sec-t">时间 · 直接拖下面这条，或微调</div>'+
+   '<div class="bigread"><b>'+fmtR(state.start,state.start+state.dur)+'</b><br><span>共 '+state.dur+' 小时 · 该椅今日空闲约 '+(freeMin/60)+' 小时</span></div>'+
+   '<div class="step2"><div><div class="lab">开始</div><div class="val">'+fmt12(state.start)+'</div>'+
+     '<div><button onclick="nudgeStart(-0.5)">−</button> <button onclick="nudgeStart(0.5)">＋</button></div></div>'+
+   '<div><div class="lab">玩多久</div><div class="val">'+state.dur+' 小时</div>'+
+     '<div><button onclick="nudgeDur(-0.5)">−</button> <button onclick="nudgeDur(0.5)">＋</button></div></div></div>'+
+   '<div style="margin-top:8px"><input type="range" id="startRange" min="10" max="19.5" step="0.5" value="'+state.start+'" style="width:100%"></div>'+
+   '<div class="tl"><div class="tl-track" id="tlTrack">'+cells.map(c=>'<div class="tl-cell'+(c.busy?' busy':'')+'" data-h="'+c.h+'"></div>').join('')+
+     '<div class="tl-sel" id="tlSel"></div></div>'+
+   '<div class="tl-axis"><span>10AM</span><span>12PM</span><span>3PM</span><span>5PM</span><span>8PM</span></div>'+
+   '<div style="font-size:11px;color:var(--ink-soft);margin-top:4px">细纹格＝有人，空白格＝空，按住拖出一段就是你想要的时间</div></div>'+
+   '<div class="warn'+(err?' show':'')+'">'+err+'</div>'+
+   '<div class="sec-t">联系方式</div>'+
+   '<div class="field"><label>昵称</label><input id="fName" placeholder="如：糖糖" value="'+(state.name||'')+'"></div>'+
+   '<div class="field"><label>手机号</label><input id="fPhone" inputmode="numeric" placeholder="11 位手机号" value="'+(state.phone||'')+'"></div>'+
+   '<button class="btn btn-primary confirm" '+((err||!g.ok)?'disabled':'')+' onclick="confirmBook()">确认预约 '+fmtR(state.start,state.start+state.dur)+'</button>'+
+   '<div class="hintline">重叠会被拦下，到店报昵称入座</div>';
+  $('fName').addEventListener('input',e=>state.name=e.target.value);
+  $('fPhone').addEventListener('input',e=>state.phone=e.target.value);
+  $('startRange').addEventListener('input',e=>{state.start=clampStart(parseFloat(e.target.value));
+    if(state.start+state.dur>20)state.dur=20-state.start;renderDetail();});
+  bindTlDrag();
+  paintSel();
+}
+function paintSel(){
+  const sel=$('tlSel'),track=$('tlTrack');if(!sel||!track)return;
+  const i0=Math.round((state.start-10)*2),i1=Math.round((state.start+state.dur-10)*2);
+  const n=20,left=(i0/n*100),width=((i1-i0)/n*100);
+  sel.style.left='calc('+left+'% + 2px)';sel.style.width='calc('+width+'% - 4px)';
+}
+function bindTlDrag(){
+  const track=$('tlTrack');if(!track)return;
+  let drag=null;
+  const hAt=e=>{const r=track.getBoundingClientRect();
+    const x=(e.clientX-r.left)/r.width;
+    return clampStart(10+Math.floor(x*20)*0.5);};
+  track.addEventListener('pointerdown',e=>{e.preventDefault();drag=hAt(e);state.start=drag;state.dur=0.5;paintSel();
+    try{track.setPointerCapture(e.pointerId);}catch(_){}});
+  track.addEventListener('pointermove',e=>{if(drag==null)return;e.preventDefault();const h=hAt(e);
+    const a=Math.min(drag,h),b=Math.max(drag,h);
+    state.start=a;state.dur=Math.min(20-a,Math.max(0.5,b-a+0.5));paintSel();});
+  const done=()=>{if(drag==null)return;drag=null;renderDetail();};
+  track.addEventListener('pointerup',done);
+  track.addEventListener('pointercancel',()=>{drag=null;});
+}
+function nudgeStart(d){state.start=clampStart(state.start+d);if(state.start+state.dur>20)state.dur=20-state.start;renderDetail();}
+function nudgeDur(d){state.dur=Math.min(20-state.start,Math.max(0.5,Math.round((state.dur+d)*2)/2));renderDetail();}
+function confirmBook(){
+  const name=($('fName').value||'').trim(),phone=($('fPhone').value||'').trim();
+  if(!name){toast('请填个昵称，店员要喊你入座');return;}
+  if(!/^1\d{10}$/.test(phone)){toast('手机号要 11 位、1 开头');return;}
+  state.name=name;state.phone=phone;
+  const s=SEATS.find(x=>x.id===state.seat),code='PD'+Math.floor(1000+Math.random()*9000);
+  bk(s.id,state.dateIdx).push({st:state.start,en:state.start+state.dur});bk(s.id,state.dateIdx).sort((a,b)=>a.st-b.st);
+  state.preview=state.start;$('timeSlider').value=state.start;$('timeBig').textContent=fmt12(state.start);renderSeats();
+  $('ticketModal').classList.remove('hidden');
+  $('ticketBox').innerHTML='<h2 style="margin:4px 0">预约成功</h2><div style="font-size:12px;color:var(--ink-soft)">截图保存，到店出示</div><div class="code">'+code+'</div>'+
+   '<table><tr><td>座位</td><td>'+s.label+' · '+ZONE_NAME[s.zone]+'</td></tr>'+
+   '<tr><td>日期</td><td>'+key(days[state.dateIdx])+' '+WD[days[state.dateIdx].getDay()]+'</td></tr>'+
+   '<tr><td>时间</td><td>'+fmtR(state.start,state.start+state.dur)+'</td></tr>'+
+   '<tr><td>人数</td><td>'+state.party+' 位 · '+name+'</td></tr><tr><td>手机</td><td>'+phone+'</td></tr></table>'+
+   '<button class="btn btn-primary" style="width:100%" onclick="closeTicket()">完成</button>';
+}
+function closeTicket(){$('ticketModal').classList.add('hidden');closeDetail();}
+function renderAll(){buildDates();renderSeats();}
+buildPicker();buildDates();buildChairs();renderSeats();
+window.addEventListener('resize',()=>{if(state.seat&&window.innerWidth>920)$('scrim').classList.remove('show');});
+</script>
+</body>
+</html>

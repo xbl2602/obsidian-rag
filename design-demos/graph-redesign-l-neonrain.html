@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图谱观赏 L · 霓虹雨夜 Neon Rain — obsidian-rag</title>
+<style>
+/* L · 霓虹雨夜：单文件离线 / 系统字体 / 实底浮层 / 单画布 */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--font-ui:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;--font-mono:Consolas,"Courier New",monospace}
+[data-theme="dark"]{
+  --canvas:#16122B;--float:#1C1633;--float2:#241C40;--ink:#F2EAFB;--body:#C4B5E3;--sec:#8E7FB0;--ph:#5F5480;
+  --hair:rgba(255,255,255,.12);--hair2:rgba(255,255,255,.24);
+  --accent:#22D3EE;--accent-dim:rgba(34,211,238,.12);
+  --c0:#34F5C5;--c1:#60A5FA;--c2:#FBBF24;--c3:#E879F9;
+  --fail:#F87171;--pend:#8B8FA3;--sky1:#0E0B22;--sky2:#3B1D5A;--sky3:#8A3B6E;
+}
+[data-theme="light"]{
+  --canvas:#B9C2D8;--float:#FFFFFF;--float2:#EDF0F7;--ink:#1B2340;--body:#3A4468;--sec:#68739A;--ph:#9AA2BE;
+  --hair:rgba(27,35,64,.14);--hair2:rgba(27,35,64,.28);
+  --accent:#0E7490;--accent-dim:rgba(14,116,144,.10);
+  --c0:#0E9F6E;--c1:#1D6FD1;--c2:#B45309;--c3:#A21CAF;
+  --fail:#DC2626;--pend:#8A8F9E;--sky1:#8FA0C4;--sky2:#C4B8D8;--sky3:#E8C9D4;
+}
+html,body{height:100%}
+body{background:var(--canvas);color:var(--body);font-family:var(--font-ui);font-size:14px;overflow:hidden}
+.top{position:fixed;top:0;left:0;right:0;z-index:30;display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--float);border-bottom:1px solid var(--hair)}
+.brand{color:var(--ink);font-weight:700;font-size:14px;white-space:nowrap}
+.brand small{color:var(--sec);font-weight:400;font-size:11px;margin-left:8px}
+.tag{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:2px 10px;white-space:nowrap}
+.seg{display:flex;gap:4px;background:var(--float2);border:1px solid var(--hair);border-radius:10px;padding:3px}
+.seg button{font-size:12px;color:var(--sec);border:0;border-radius:7px;padding:4px 12px;background:transparent;cursor:pointer}
+.seg button.on{color:var(--ink);background:var(--accent-dim);box-shadow:inset 0 0 0 1px var(--accent)}
+.libs{display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--body);border:1px solid var(--hair);border-radius:99px;padding:4px 11px 4px 8px;background:transparent;cursor:pointer}
+.chip i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.chip small{font-family:var(--font-mono);color:var(--sec);font-size:10.5px}
+.chip.off{opacity:.38}
+.chip.off i{background:transparent !important;box-shadow:inset 0 0 0 1px var(--sec)}
+.spacer{flex:1}
+.search{display:flex;align-items:center;gap:6px}
+.search input{width:172px;font-size:12px;color:var(--ink);background:var(--float2);border:1px solid var(--hair);border-radius:9px;padding:6px 10px;outline:none;font-family:var(--font-ui)}
+.search input::placeholder{color:var(--ph)}
+.search input:focus{border-color:var(--accent)}
+.hits{font-family:var(--font-mono);font-size:11px;color:var(--accent);min-width:64px}
+.theme-btn{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:9px;padding:6px 12px;background:transparent;cursor:pointer}
+.theme-btn:hover{color:var(--ink);border-color:var(--hair2)}
+#cv{position:fixed;inset:0;display:block;cursor:grab}
+#cv.drag{cursor:grabbing}
+.legend{position:fixed;right:14px;top:64px;z-index:20;background:var(--float);border:1px solid var(--hair);border-radius:12px;padding:10px 12px;font-size:11.5px;color:var(--sec);line-height:1.9;max-width:220px}
+.legend b{color:var(--ink);font-size:12px}
+.status{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;align-items:center;gap:14px;padding:8px 16px;background:var(--float);border-top:1px solid var(--hair);font-family:var(--font-mono);font-size:11.5px;color:var(--sec)}
+.status .ok{color:var(--accent)}
+#tip{position:fixed;z-index:50;display:none;max-width:280px;background:var(--float);border:1px solid var(--hair2);border-radius:10px;padding:9px 12px;font-size:12px;color:var(--body);line-height:1.7;pointer-events:none}
+#tip b{color:var(--ink);font-size:13px}
+#tip .m{font-family:var(--font-mono);font-size:11px;color:var(--sec)}
+#tip .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand">L · 霓虹雨夜<small>观赏型 demo · 致敬赛博朋克雨夜都市，一牌即一篇</small></div>
+  <span class="tag">500 笔记 · 单画布</span>
+  <div class="seg" id="dens"><button data-n="50">50</button><button data-n="150">150</button><button data-n="500" class="on">500</button></div>
+  <div class="libs" id="libs"></div>
+  <div class="spacer"></div>
+  <div class="search"><input id="q" type="text" placeholder="⌕ 弱搜索 · 标题/主题" autocomplete="off"><span class="hits" id="hits"></span></div>
+  <button class="theme-btn" id="theme">雨昼</button>
+</div>
+<canvas id="cv"></canvas>
+<div class="legend"><b>图例 · 街区即分界</b><br>
+▮ 电玩街 · 薄荷竖牌<br>
+▬ 数据港 · 苍蓝横牌<br>
+● 食肆巷 · 琥珀圆灯<br>
+▲ 剧场区 · 品红三角牌<br>
+霓虹大道＝街区分界 · 倒影＝街面<br>
+<span style="color:var(--fail)">红牌</span>＝管线失败 · 灰＝待处理</div>
+<div class="status"><span id="stCount" class="ok"></span><span id="stCam"></span><span id="stFps"></span><span>拖拽平移 · 滚轮缩放 · 双击重置 · 回车飞往首个命中 · Esc 清除</span></div>
+<div id="tip"></div>
+<script>
+'use strict';
+/* ---------- seeded 假数据：500 招牌 / 4 街区 ---------- */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+var R=mulberry32(20260921);
+function rr(a,b){return a+(b-a)*R();}
+function pick(a){return a[(R()*a.length)|0];}
+function gauss(){return (R()+R()+R()-1.5)/1.5;}
+var LIBS=[
+ {id:'tech', name:'电玩街', sign:'vbar', topics:['向量检索','切块策略','重排模型','显存仲裁','混合检索','量化部署','索引管线','缓存设计']},
+ {id:'paper',name:'数据港', sign:'hbar', topics:['注意力机制','对比学习','长文建模','多模态对齐','检索增强','扩散模型','稀疏激活','评估基准']},
+ {id:'meet', name:'食肆巷', sign:'round',topics:['周会纪要','评审决议','排期对齐','故障复盘','需求澄清','okr 制定','面试记录','发布检查']},
+ {id:'spark',name:'剧场区', sign:'tri',  topics:['产品脑洞','交互灵感','叙事结构','视觉拼贴','城市观察','梦境记录','阅读摘抄','实验想法']}
+];
+var SUF=['札记','速记','精读','复盘','备忘','摘录','梳理','拾遗','考','谈','碎笔','深读'];
+var seen={};
+function mkTitle(topic){var t=topic+pick(SUF);if(seen[t]){seen[t]++;return t+'·'+String(seen[t]).padStart(2,'0');}seen[t]=1;return t;}
+var SUM_A=['要点梳理与复用清单','含方法步骤与坑点','附对比表与引用','可直接复用的结论','含待办与后续问题'];
+var SUM_B=['已沉淀为模板','仍在补充案例','等一次集中重写','引用较多值得重读','与三篇旧记相关'];
+function mkSum(topic,chunks){return topic+'·'+pick(SUM_A)+'，'+chunks+' 块，'+pick(SUM_B)+'。';}
+var WORLD={w:1600,h:1000};
+var COLX=[270,690,960,1360]; // 四街区大道中心
+var NOTES=[];
+(function(){
+  var order=[];for(var i=0;i<500;i++)order.push(i%4);
+  for(var i=order.length-1;i>0;i--){var j=(R()*(i+1))|0;var t=order[i];order[i]=order[j];order[j]=t;}
+  var base=new Date(2026,8,10).getTime();
+  for(var k=0;k<500;k++){
+    var li=order[k],L=LIBS[li],topic=pick(L.topics);
+    var sr=R(),st=sr<0.70?'ok':sr<0.85?'partial':sr<0.93?'failed':'pending';
+    var d=new Date(base-((R()*180)|0)*864e5);
+    var chunks=1+((Math.pow(R(),2.4)*120)|0);
+    NOTES.push({id:k,lib:li,title:mkTitle(topic),topic:topic,sum:mkSum(topic,chunks),
+      updated:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'),
+      chunks:chunks,status:st,
+      x:COLX[li]+gauss()*105,y:rr(150,830),ph:R()*6.28,sp:rr(1.4,3.4),
+      seed:(k*2654435761)>>>0,fl:R()<0.3?1:0});
+  }
+  LIBS.forEach(function(L,li){
+    var arr=NOTES.filter(function(n){return n.lib===li;}).sort(function(a,b){return b.chunks-a.chunks;});
+    arr.forEach(function(n,idx){n.rank=idx;n.hub=idx<5;n.capital=idx===0;});
+  });
+})();
+/* 楼体剪影（静态，底图缓存）：每街区 3 栋 */
+var TOWERS=[];
+(function(){
+  LIBS.forEach(function(L,li){
+    [-120,0,120].forEach(function(off,i){
+      TOWERS.push({lib:li,x:COLX[li]+off,w:rr(70,100),top:rr(120,220),win:20+((R()*30)|0)});
+    });
+  });
+})();
+var state={density:500,vis:[true,true,true,true],q:'',hits:[],hover:-1,
+  cam:{x:800,y:520,k:1},tween:null,theme:'dark',reduced:matchMedia('(prefers-reduced-motion: reduce)').matches};
+var cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+var base=document.createElement('canvas'),btx=base.getContext('2d');
+var DPR=1,W=0,H=0,baseDirty=true;
+function cssVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+function libColor(li){return cssVar('--c'+li);}
+function hexA(hex,a){var n=parseInt(hex.slice(1),16);return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';}
+function fit(){var k=Math.min(W/WORLD.w,H/WORLD.h)*0.98;state.cam={x:800,y:520,k:k};state.tween=null;baseDirty=true;}
+function resize(){DPR=Math.min(devicePixelRatio||1,1.5);W=innerWidth;H=innerHeight;
+  cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';
+  base.width=W*DPR;base.height=H*DPR;fit();}
+addEventListener('resize',resize);
+function w2s(x,y){return [(x-state.cam.x)*state.cam.k+W/2,(y-state.cam.y)*state.cam.k+H/2];}
+/* ---------- 底图：夜空＋月＋远景楼群＋楼体＋大道＋街面倒影 ---------- */
+function drawBase(){
+  btx.setTransform(DPR,0,0,DPR,0,0);
+  var dark=state.theme==='dark';
+  var sky=btx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,cssVar('--sky1'));sky.addColorStop(0.55,cssVar('--sky2'));sky.addColorStop(0.72,cssVar('--sky3'));
+  sky.addColorStop(0.721,dark?'#241C40':'#9AA2BE');sky.addColorStop(1,dark?'#171230':'#7E89A8');
+  btx.fillStyle=sky;btx.fillRect(0,0,W,H);
+  // 月
+  var moon=w2s(1290,150);
+  btx.fillStyle=dark?'#F2E8F5':'#FFFFFF';btx.globalAlpha=dark?0.9:0.7;
+  btx.beginPath();btx.arc(moon[0],moon[1],20,0,6.29);btx.fill();
+  btx.globalAlpha=dark?0.15:0.2;
+  btx.beginPath();btx.arc(moon[0],moon[1],42,0,6.29);btx.fill();btx.globalAlpha=1;
+  // 远景楼群剪影
+  btx.fillStyle=dark?'#221B3E':'#8E97B5';
+  for(var fi=0;fi<26;fi++){
+    var fx=(fi*97)%1600,fw=40+((fi*53)%50),fh=90+((fi*89)%130);
+    var a=w2s(fx,560-fh),b=w2s(fx+fw,560);
+    btx.fillRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);
+  }
+  // 楼体（街区色描边霓虹＋暗窗）
+  TOWERS.forEach(function(tw){
+    if(!state.vis[tw.lib])return;
+    var col=libColor(tw.lib);
+    var a=w2s(tw.x-tw.w/2,tw.top),b=w2s(tw.x+tw.w/2,880);
+    btx.fillStyle=dark?'#1B1533':'#6E7694';
+    btx.fillRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);
+    btx.strokeStyle=col;btx.globalAlpha=dark?0.75:0.6;btx.lineWidth=1.6;
+    btx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);
+    btx.globalAlpha=dark?0.28:0.25;btx.lineWidth=1;
+    for(var wy=tw.top+26;wy<850;wy+=34){
+      var r0=w2s(tw.x-tw.w/2+8,wy),r1=w2s(tw.x+tw.w/2-8,wy+10);
+      btx.strokeRect(r0[0],r0[1],r1[0]-r0[0],r1[1]-r0[1]);
+    }
+    btx.globalAlpha=1;
+  });
+  // 街区分界：霓虹大道竖线
+  var bounds=[480,825,1160];
+  bounds.forEach(function(bx){
+    var a=w2s(bx,120),b=w2s(bx,880);
+    btx.strokeStyle=dark?'rgba(240,235,255,.4)':'rgba(255,255,255,.7)';
+    btx.lineWidth=2;btx.setLineDash([14,10]);btx.beginPath();
+    btx.moveTo(a[0],a[1]);btx.lineTo(b[0],b[1]);btx.stroke();btx.setLineDash([]);
+  });
+  // 街面：湿沥青＋各街霓虹倒影
+  var st0=w2s(0,880),st1=w2s(1600,1000);
+  btx.fillStyle=dark?'#141021':'#565D78';btx.fillRect(st0[0],st0[1],st1[0]-st0[0],st1[1]-st0[1]);
+  LIBS.forEach(function(L,li){
+    if(!state.vis[li])return;
+    var col=libColor(li);if(!col.startsWith('#'))col='#60A5FA';
+    var g=btx.createLinearGradient(0,st0[1],0,st1[1]);
+    g.addColorStop(0,hexA(col,dark?0.35:0.30));g.addColorStop(1,hexA(col,0));
+    btx.fillStyle=g;
+    var c=w2s(COLX[li],880);
+    btx.fillRect(c[0]-110*state.cam.k,st0[1],220*state.cam.k,st1[1]-st0[1]);
+  });
+  // 车道线
+  btx.strokeStyle=dark?'rgba(255,233,168,.5)':'rgba(255,255,255,.6)';btx.lineWidth=1.6;btx.setLineDash([18,16]);
+  var l0=w2s(0,945),l1=w2s(1600,945);
+  btx.beginPath();btx.moveTo(l0[0],l0[1]);btx.lineTo(l1[0],l1[1]);btx.stroke();btx.setLineDash([]);
+  baseDirty=false;
+}
+var STATUS_TXT={ok:'索引正常',partial:'部分生效',failed:'管线失败',pending:'待处理'};
+function visibleNotes(){
+  return NOTES.filter(function(n){
+    if(!state.vis[n.lib])return false;
+    if(state.density===500)return true;
+    if(state.density===150)return (n.id%10)<3;
+    return (n.id%10)===0;});
+}
+function hash01(seed,salt){var h=(seed^(salt*2246822519))>>>0;h=(h^(h>>>13))>>>0;h=Math.imul(h,1274126177)>>>0;return ((h^(h>>>16))>>>0)/4294967296;}
+function matchQ(n,s){return n.title.toLowerCase().indexOf(s)>=0||n.topic.toLowerCase().indexOf(s)>=0||
+  n.sum.toLowerCase().indexOf(s)>=0||LIBS[n.lib].name.indexOf(state.q.trim())>=0;}
+var stCount=document.getElementById('stCount'),stCam=document.getElementById('stCam'),stFps=document.getElementById('stFps');
+var tip=document.getElementById('tip'),q=document.getElementById('q'),hitsEl=document.getElementById('hits');
+var rain=[];for(var ri=0;ri<70;ri++)rain.push({x:R()*1600,y:R()*1000,len:rr(9,20),sp:rr(500,800)});
+var cars=[];for(var ci=0;ci<6;ci++)cars.push({t:R(),sp:rr(.03,.07)*(ci%2?1:-1),lane:ci%2});
+var lastT=0,fpsE=60;
+function drawSign(g,x,y,n,col,now,dimA,big){
+  var L=LIBS[n.lib],s=big?1.7:1;
+  g.globalAlpha=dimA;
+  var flick=n.fl&&!state.reduced?(Math.sin(now*7+n.ph)>0.2?1:0.35):1;
+  g.globalAlpha=dimA*flick;
+  // 光晕底（不用阴影，用半透明大一圈矩形模拟）
+  g.fillStyle=col;g.globalAlpha=dimA*flick*0.22;
+  if(L.sign==='vbar'){g.fillRect(x-5*s,y-11*s,10*s,22*s);}
+  else if(L.sign==='hbar'){g.fillRect(x-11*s,y-5*s,22*s,10*s);}
+  else if(L.sign==='round'){g.beginPath();g.arc(x,y,9*s,0,6.29);g.fill();}
+  else{g.beginPath();g.moveTo(x,y-9*s);g.lineTo(x+8*s,y+6*s);g.lineTo(x-8*s,y+6*s);g.closePath();g.fill();}
+  g.globalAlpha=dimA*flick;
+  if(L.sign==='vbar'){g.fillRect(x-2.6*s,y-8*s,5.2*s,16*s);}
+  else if(L.sign==='hbar'){g.fillRect(x-8*s,y-2.6*s,16*s,5.2*s);}
+  else if(L.sign==='round'){g.beginPath();g.arc(x,y,5.4*s,0,6.29);g.fill();
+    g.fillStyle='#1B1533';g.beginPath();g.arc(x,y,2*s,0,6.29);g.fill();}
+  else{g.beginPath();g.moveTo(x,y-6*s);g.lineTo(x+5.4*s,y+4*s);g.lineTo(x-5.4*s,y+4*s);g.closePath();g.fill();}
+  // 灯芯
+  g.fillStyle='#fff';g.globalAlpha=dimA*flick*0.9;
+  if(L.sign==='round'){g.beginPath();g.arc(x,y,1.4*s,0,6.29);g.fill();}
+  else g.fillRect(x-1,y-1,2,2);
+  g.globalAlpha=1;
+}
+function frame(t){
+  requestAnimationFrame(frame);
+  var now=t/1000,dt=Math.min(0.05,now-(lastT||now));lastT=now;if(dt>0)fpsE=fpsE*0.95+(1/Math.max(dt,1e-3))*0.05;
+  if(state.tween){var tw=state.tween,f=Math.min(1,(now-tw.t0)/0.6),e=1-Math.pow(1-f,3);
+    state.cam.x=tw.x0+(tw.x1-tw.x0)*e;state.cam.y=tw.y0+(tw.y1-tw.y0)*e;state.cam.k=tw.k0+(tw.k1-tw.k0)*e;
+    baseDirty=true;if(f>=1)state.tween=null;}
+  if(state.reduced&&!baseDirty&&!state.tween)return;
+  if(baseDirty)drawBase();
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);ctx.drawImage(base,0,0,W,H);
+  var k=state.cam.k,qs=state.q.trim(),dimQs=qs.length>0,sl=qs.toLowerCase(),dark=state.theme==='dark';
+  var list=visibleNotes();
+  list.forEach(function(n){n._hit=dimQs?matchQ(n,sl):false;});
+  // 招牌
+  var labelCap=state.density===500?8:state.density===150?22:64,labels=0;
+  var sorted=list.slice().sort(function(a,b){return (b.capital-a.capital)||(b.hub-a.hub)||(b.chunks-a.chunks);});
+  sorted.forEach(function(n){
+    var s=w2s(n.x,n.y);if(s[0]<-40||s[1]<-40||s[0]>W+40||s[1]>H+40)return;
+    var col=n.status==='failed'?cssVar('--fail'):n.status==='pending'?cssVar('--pend'):libColor(n.lib);
+    var dimA=dimQs?(n._hit?1:0.12):1;
+    var big=n.capital||n.hub;
+    drawSign(ctx,s[0],s[1],n,col,now,dimA,big);
+    if(n.id===state.hover||n._hit){ctx.strokeStyle='#fff';ctx.lineWidth=1.3;ctx.globalAlpha=dimA;
+      ctx.beginPath();ctx.arc(s[0],s[1],13+(n._hit&&!state.reduced?Math.sin(now*4)*1.5:0),0,6.29);ctx.stroke();ctx.globalAlpha=1;}
+    var want=n.capital||(n.hub&&state.density!==500)||(state.density===50&&n.chunks>40)||n._hit||n.id===state.hover;
+    if(want&&labels<labelCap){labels++;
+      ctx.globalAlpha=dimQs&&!n._hit?0.15:1;
+      ctx.font=(n.capital?'700 ':'')+'12px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle=dark?'#FFFFFF':cssVar('--ink');ctx.textAlign='center';
+      ctx.fillText(n.capital?'◆ '+n.title:n.title,s[0],s[1]-16);
+      ctx.font='10px Consolas,monospace';ctx.fillStyle=dark?'#C4B5E3':cssVar('--sec');
+      ctx.fillText(n.chunks+' 块 · '+STATUS_TXT[n.status],s[0],s[1]+16);
+      ctx.globalAlpha=1;}
+  });
+  // 雨（单批路径，一次描边）
+  if(!state.reduced){
+    ctx.strokeStyle=dark?'rgba(170,200,255,.34)':'rgba(255,255,255,.5)';ctx.lineWidth=1;ctx.beginPath();
+    rain.forEach(function(rp){
+      r.y+=rp.sp*dt/60*3;rp.x-=rp.sp*dt*0.04;
+      if(rp.y>1020){rp.y=-20;rp.x=R()*1600;}
+      var s=w2s(rp.x,rp.y);
+      ctx.moveTo(s[0],s[1]);ctx.lineTo(s[0]+2,s[1]+rp.len*k*0.6+6);
+    });
+    ctx.stroke();
+    // 街车流光
+    cars.forEach(function(c){
+      c.t=(c.t+c.sp*dt+1)%1;
+      var wy=c.lane?930:960,a=w2s(c.t*1600,wy);
+      ctx.fillStyle=c.lane?'#FFE9A8':'#FF8FA8';ctx.globalAlpha=0.9;
+      ctx.fillRect(a[0]-4,a[1]-1.5,8+(c.t*20|0)%14,3);ctx.globalAlpha=1;});
+  }
+  // 街区铭牌（顶部）
+  ctx.textAlign='center';
+  var SYM=['▮','▬','●','▲'];
+  LIBS.forEach(function(L,li){if(!state.vis[li])return;
+    var s=w2s(COLX[li],96),col=libColor(li);
+    ctx.font='700 13px "Segoe UI","Microsoft YaHei",sans-serif';
+    var txt=SYM[li]+' '+L.name+' · 125 篇',wpx=ctx.measureText(txt).width+22;
+    ctx.fillStyle=cssVar('--float');ctx.strokeStyle=col;ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.rect(s[0]-wpx/2,s[1]-13,wpx,24);ctx.fill();ctx.stroke();
+    ctx.fillStyle=col;ctx.fillText(txt,s[0],s[1]+4);});
+  stCount.textContent='可见 '+list.length+' / 500 · '+state.density+' 档';
+  stCam.textContent='缩放 '+Math.round(state.cam.k/(Math.min(W/WORLD.w,H/WORLD.h)*0.98)*100)+'%';
+  stFps.textContent='FPS '+Math.round(fpsE)+' · 单 rAF · 雨70＋车6';
+}
+/* ---------- 交互 ---------- */
+var libsEl=document.getElementById('libs');
+LIBS.forEach(function(L,li){
+  var b=document.createElement('button');b.className='chip';
+  b.innerHTML='<i style="background:var(--c'+li+')"></i>'+L.name+' <small>125</small>';
+  b.onclick=function(){var on=state.vis.filter(Boolean).length;
+    if(state.vis[li]&&on===1)return;state.vis[li]=!state.vis[li];
+    b.classList.toggle('off',!state.vis[li]);baseDirty=true;refreshHits();};
+  libsEl.appendChild(b);
+});
+document.getElementById('dens').addEventListener('click',function(e){
+  var b=e.target.closest('button');if(!b)return;
+  this.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});
+  b.classList.add('on');state.density=+b.dataset.n;baseDirty=true;});
+document.getElementById('theme').onclick=function(){
+  state.theme=state.theme==='dark'?'light':'dark';
+  document.documentElement.dataset.theme=state.theme;
+  this.textContent=state.theme==='dark'?'雨昼':'霓夜';baseDirty=true;};
+function refreshHits(){
+  var s=state.q.trim().toLowerCase();
+  if(!s){state.hits=[];hitsEl.textContent='';return;}
+  state.hits=NOTES.filter(function(n){return state.vis[n.lib]&&matchQ(n,s);});
+  hitsEl.textContent='命中 '+state.hits.length;}
+var deb=null;
+q.addEventListener('input',function(){state.q=q.value;clearTimeout(deb);deb=setTimeout(refreshHits,160);});
+q.addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&state.hits.length){var n=state.hits[0],k0=Math.min(W/WORLD.w,H/WORLD.h)*0.98;
+    state.tween={x0:state.cam.x,y0:state.cam.y,k0:state.cam.k,x1:n.x,y1:n.y,k1:Math.max(state.cam.k,k0*1.4),t0:performance.now()/1000};}
+  if(e.key==='Escape'){q.value='';state.q='';refreshHits();}});
+var drag=null;
+cv.addEventListener('pointerdown',function(e){drag={x:e.clientX,y:e.clientY};cv.classList.add('drag');cv.setPointerCapture(e.pointerId);});
+cv.addEventListener('pointermove',function(e){
+  if(drag){state.cam.x-=(e.clientX-drag.x)/state.cam.k;state.cam.y-=(e.clientY-drag.y)/state.cam.k;
+    drag={x:e.clientX,y:e.clientY};baseDirty=true;state.tween=null;return;}
+  var mx=e.clientX,my=e.clientY,best=null,bd=15;
+  var list=visibleNotes();
+  for(var i=0;i<list.length;i++){var n=list[i],s=w2s(n.x,n.y);
+    var d=Math.hypot(s[0]-mx,s[1]-my);if(d<bd){bd=d;best=n;}}
+  state.hover=best?best.id:-1;
+  if(best){tip.style.display='block';tip.style.left=(mx+16)+'px';tip.style.top=(my+14)+'px';
+    tip.innerHTML='<b>'+best.title+'</b><br><span class="dot" style="background:var(--c'+best.lib+')"></span>'+LIBS[best.lib].name+' · '+best.topic+'<br><span class="m">'+best.updated+' · '+best.chunks+' 块 · '+STATUS_TXT[best.status]+'</span>';}
+  else tip.style.display='none';});
+cv.addEventListener('pointerup',function(){drag=null;cv.classList.remove('drag');});
+cv.addEventListener('wheel',function(e){e.preventDefault();
+  var mx=e.clientX-W/2,my=e.clientY-H/2;
+  var wx=state.cam.x+mx/state.cam.k,wy=state.cam.y+my/state.cam.k;
+  state.cam.k=Math.min(4,Math.max(0.25,state.cam.k*Math.exp(-e.deltaY*0.0012)));
+  state.cam.x=wx-mx/state.cam.k;state.cam.y=wy-my/state.cam.k;
+  state.tween=null;baseDirty=true;},{passive:false});
+cv.addEventListener('dblclick',fit);
+resize();requestAnimationFrame(frame);
+</script>
+</body>
+</html>

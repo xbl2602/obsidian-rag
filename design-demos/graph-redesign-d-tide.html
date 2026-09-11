@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图谱重构 D · 汐读 Reading Tide — obsidian-rag</title>
+<style>
+/* D · 汐读：阅读优先。离线 / 系统字体 / 零 backdrop-filter / 零 will-change */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--font-ui:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;--font-mono:"Cascadia Code",Consolas,monospace;--ease:cubic-bezier(.32,.72,0,1)}
+[data-theme="dark"]{
+  --canvas:#08090B;--float:#0E1417;--core2:#12181B;--card:#101619;
+  --ink:#EDF2F0;--body:#C6D0D2;--sec:#8B979E;--ph:#646E75;
+  --hair:rgba(255,255,255,.09);--hair2:rgba(255,255,255,.18);
+  --accent:#34D399;--accent-dim:rgba(52,211,153,.13);--accent-line:rgba(52,211,153,.42);
+  --c-tech:#34D399;--c-paper:#7DB8FF;--c-meet:#FBBF24;
+  --ok:#34D399;--part:#7DB8FF;--fail:#F87171;
+  --shadow:0 10px 28px rgba(0,0,0,.45);--grid:rgba(255,255,255,.05);
+}
+[data-theme="light"]{
+  --canvas:#F1F4F1;--float:#FFFFFF;--core2:#F0F4F1;--card:#FFFFFF;
+  --ink:#141A1C;--body:#2A3336;--sec:#5C686D;--ph:#828D93;
+  --hair:rgba(20,30,32,.10);--hair2:rgba(20,30,32,.24);
+  --accent:#0E9F6E;--accent-dim:rgba(14,159,110,.10);--accent-line:rgba(14,159,110,.5);
+  --c-tech:#0E9F6E;--c-paper:#1D6FD1;--c-meet:#B45309;
+  --ok:#0E9F6E;--part:#1D6FD1;--fail:#DC2626;
+  --shadow:0 10px 26px rgba(20,35,32,.13);--grid:rgba(20,30,32,.07);
+}
+html,body{height:100%}
+body{background:var(--canvas);color:var(--body);font-family:var(--font-ui);font-size:14px;overflow:hidden}
+.top{position:fixed;top:0;left:0;right:0;height:56px;z-index:30;display:flex;align-items:center;gap:12px;padding:0 16px;background:var(--float);border-bottom:1px solid var(--hair)}
+.brand{display:flex;align-items:center;gap:9px;color:var(--ink);font-weight:700;font-size:14px;white-space:nowrap}
+.brand i{width:18px;height:18px;border-radius:6px;background:var(--accent);display:inline-block;opacity:.85}
+.tag{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:2px 10px;white-space:nowrap}
+.scope{display:flex;gap:6px}
+.scope button{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:4px 12px;background:transparent}
+.scope button.on{color:var(--ink);border-color:var(--accent-line);background:var(--accent-dim)}
+.spacer{flex:1}
+.theme-btn{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:9px;padding:5px 12px;background:transparent}
+.theme-btn:hover{color:var(--ink);border-color:var(--hair2)}
+.dock{position:fixed;top:70px;left:16px;z-index:25;width:442px;max-width:calc(100vw - 32px)}
+.island{display:flex;align-items:center;gap:8px;background:var(--float);border:1px solid var(--hair2);border-radius:14px;padding:8px 8px 8px 13px;box-shadow:var(--shadow)}
+.island input{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--ink);font-size:13.5px;height:30px}
+.island input::placeholder{color:var(--ph)}
+.island select{background:var(--core2);color:var(--sec);border:1px solid var(--hair);border-radius:8px;font-size:12px;padding:4px 6px}
+.btn{background:var(--accent);color:#06231A;border:none;border-radius:9px;font-size:13px;font-weight:700;padding:7px 16px}
+[data-theme="light"] .btn{color:#fff}
+.hints{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
+.hints button{font-size:11.5px;color:var(--sec);background:var(--float);border:1px solid var(--hair);border-radius:99px;padding:4px 12px}
+/* 三栏：图层 / 阅读流 / 底图导航 */
+.layout{position:fixed;inset:56px 0 0 0;display:flex;gap:0}
+.layers{width:228px;flex:none;overflow:auto;padding:150px 12px 70px 16px}
+.stream{flex:1;min-width:0;overflow:auto;padding:150px 18px 80px}
+.navcol{width:300px;flex:none;overflow:auto;padding:150px 16px 70px 4px}
+.cardbox{background:var(--float);border:1px solid var(--hair);border-radius:14px;box-shadow:var(--shadow)}
+.cardbox h3{font-size:13px;color:var(--ink);display:flex;justify-content:space-between;align-items:baseline;padding:12px 14px 0}
+.cardbox h3 span{font-family:var(--font-mono);font-size:10px;color:var(--ph);font-weight:400}
+.cap{font-size:10px;color:var(--ph);letter-spacing:.08em;margin:10px 14px 2px}
+.row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;padding:4px 14px;gap:8px}
+.row input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
+.row input[type=range]{flex:1;accent-color:var(--accent)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:8px;overflow:hidden}
+.seg button{font-size:11.5px;color:var(--sec);padding:3px 9px;background:transparent;border:none}
+.seg button.on{background:var(--accent-dim);color:var(--ink)}
+.thv{font-family:var(--font-mono);font-size:10.5px;color:var(--accent);min-width:30px;text-align:right}
+/* 结果横幅 */
+.banner{display:none;background:var(--float);border:1px solid var(--accent-line);border-radius:13px;padding:11px 15px;margin-bottom:14px;box-shadow:var(--shadow)}
+.banner.on{display:flex;align-items:center;gap:10px}
+.banner b{color:var(--ink)}
+.banner .x{margin-left:auto;border:1px solid var(--hair);border-radius:50%;width:22px;height:22px;color:var(--sec);background:transparent}
+/* 库分组 */
+.libsec{margin-bottom:18px}
+.libhead{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;background:var(--canvas);padding:8px 4px;border-bottom:1px solid var(--hair)}
+.libhead i{width:10px;height:26px;border-radius:5px;flex:none}
+.libhead b{font-size:14px;color:var(--ink)}
+.libhead span{font-family:var(--font-mono);font-size:10.5px;color:var(--sec)}
+.libhead .st{margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--ph)}
+/* 内容卡：标题+摘要+标签，不是圆点 */
+.post{position:relative;background:var(--card);border:1px solid var(--hair);border-left:4px solid var(--sec);border-radius:12px;padding:12px 15px 11px;margin:10px 0;box-shadow:var(--shadow);transition:opacity .3s,border-color .25s}
+.post.dim{opacity:.32}
+.post.hit{border-color:var(--accent-line);border-left:4px solid var(--accent)}
+.post.flash{border-color:var(--accent)}
+.prow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rank{font-family:var(--font-mono);font-size:10.5px;color:var(--accent);border:1px solid var(--accent-line);border-radius:6px;padding:1px 7px;display:none}
+.post.hit .rank{display:inline-block}
+.libchip{font-size:10.5px;border-radius:6px;padding:2px 8px;color:#fff;font-weight:700}
+.chip{font-family:var(--font-mono);font-size:10px;padding:2px 8px;border-radius:6px}
+.chip.ok{background:var(--accent-dim);color:var(--accent)}
+.chip.wait{background:rgba(251,191,36,.14);color:var(--c-meet)}
+.chip.bad{background:rgba(248,113,113,.14);color:var(--fail)}
+.post h4{font-size:15px;color:var(--ink);margin:7px 0 2px;line-height:1.45;cursor:pointer}
+.post h4:hover{color:var(--accent)}
+.path{font-family:var(--font-mono);font-size:10.5px;color:var(--ph);word-break:break-all}
+.sum{font-size:13px;line-height:1.8;margin-top:6px}
+.sum mark{background:var(--accent-dim);color:var(--ink);border-radius:3px;padding:0 3px}
+.tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.tags span{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:2px 9px}
+.meta{display:flex;align-items:center;gap:12px;margin-top:9px;font-family:var(--font-mono);font-size:10.5px;color:var(--ph);flex-wrap:wrap}
+.meta button{font-size:12px;border:1px solid var(--hair);border-radius:8px;padding:4px 12px;color:var(--sec);background:transparent}
+.meta button.pri{background:var(--accent);color:#06231A;border:none;font-weight:700}
+[data-theme="light"] .meta button.pri{color:#fff}
+.meta button:hover{color:var(--ink);border-color:var(--hair2)}
+.collapsed .sum,.collapsed .tags{display:none}
+.one{font-size:12px;color:var(--ph);font-family:var(--font-mono)}
+/* 底图导航 */
+.minimap{padding-bottom:12px}
+.minimap svg{display:block;width:100%;height:auto}
+.mini-cap{padding:10px 14px 12px;font-size:11px;color:var(--sec);line-height:1.7}
+.mini-cap b{color:var(--body)}
+.dot{cursor:pointer}
+.legend{position:fixed;left:16px;bottom:52px;z-index:25;background:var(--float);border:1px solid var(--hair);border-radius:13px;padding:9px 13px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 32px);box-shadow:var(--shadow)}
+.li{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--sec)}
+.swd{width:9px;height:9px;border-radius:3px;display:inline-block}
+.info{width:22px;height:22px;border-radius:50%;border:1px solid var(--hair2);color:var(--sec);font-size:11px;font-weight:700;background:transparent}
+.zoom{position:fixed;right:16px;bottom:52px;z-index:25;display:flex;flex-direction:column;gap:7px;align-items:flex-end}
+.zoom button{width:34px;height:34px;border-radius:10px;background:var(--float);border:1px solid var(--hair);color:var(--sec);font-size:15px}
+.zlab{font-family:var(--font-mono);font-size:10.5px;color:var(--ph)}
+.status{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:25;font-family:var(--font-mono);font-size:11px;color:var(--sec);background:var(--float);border:1px solid var(--hair);border-radius:99px;padding:4px 16px;white-space:nowrap;max-width:calc(100vw - 32px);overflow:hidden;text-overflow:ellipsis}
+.status b{color:var(--ink)}
+.ins{position:fixed;top:56px;right:0;bottom:0;width:380px;max-width:94vw;z-index:28;background:var(--float);border-left:1px solid var(--hair);box-shadow:var(--shadow);transform:translateX(105%);transition:transform .38s var(--ease);display:flex;flex-direction:column}
+.ins.on{transform:none}
+.ins-h{padding:16px 18px 12px;border-bottom:1px solid var(--hair)}
+.ins-lib{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--sec);margin-bottom:7px}
+.ins-t{font-size:16px;font-weight:700;color:var(--ink);line-height:1.4}
+.ins-p{font-family:var(--font-mono);font-size:10.5px;color:var(--ph);margin-top:3px;word-break:break-all}
+.ins-m{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);margin-top:8px;display:flex;gap:12px}
+.ins-b{flex:1;overflow:auto;padding:14px 18px}
+.sec{margin-bottom:16px}.sec h5{font-size:11px;color:var(--ph);letter-spacing:.06em;margin-bottom:7px;font-weight:500}
+.snip{font-size:13px;line-height:1.8;background:var(--core2);border:1px solid var(--hair);border-radius:10px;padding:10px 12px}
+.snip mark{background:var(--accent-dim);color:var(--ink);border-radius:3px;padding:0 3px}
+.kv{display:flex;gap:10px;font-size:12.5px;padding:4px 0}.kv .k{color:var(--ph);width:64px;flex:none;font-size:11.5px}
+.rel{display:flex;gap:8px;width:100%;text-align:left;padding:7px 10px;border-radius:8px;font-size:12.5px;color:var(--body);background:transparent;border:1px solid transparent}
+.rel:hover{background:var(--core2);color:var(--ink)}
+.rel .s{font-family:var(--font-mono);font-size:10.5px;color:var(--accent);margin-left:auto}
+.ins-f{padding:12px 18px;border-top:1px solid var(--hair);display:flex;gap:8px}
+.tip{position:fixed;z-index:40;pointer-events:none;opacity:0;transition:opacity .15s;background:var(--float);border:1px solid var(--hair2);border-radius:10px;padding:8px 12px;max-width:320px;box-shadow:var(--shadow);transform:translate(-50%,calc(-100% - 12px))}
+.tip.show{opacity:1}.tip .p{font-family:var(--font-mono);font-size:10.5px;color:var(--ink);word-break:break-all}.tip .m{font-size:10.5px;color:var(--ph);margin-top:3px}
+.mech{position:fixed;left:16px;bottom:112px;z-index:26;width:340px;background:var(--float);border:1px solid var(--hair);border-radius:13px;box-shadow:var(--shadow);padding:13px 15px;display:none}
+.mech.on{display:block}.mech h4{font-size:12.5px;color:var(--ink);margin-bottom:7px}.mech p{font-size:11.5px;color:var(--sec);line-height:1.7;margin-bottom:5px}.mech b{color:var(--body)}
+.stream.compact .sum{font-size:12px;line-height:1.6}
+.stream.compact .post{padding:8px 12px}
+.noperf .post,.noperf .cardbox,.noperf .banner{box-shadow:none}
+@media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
+@media (max-width:1100px){.navcol{display:none}.layers{width:200px}}
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="brand"><i></i>Obsidian RAG · 图谱</span>
+  <span class="tag">D · 汐读 demo · 16 篇内容卡</span>
+  <nav class="scope" id="scope"><button data-s="" class="on">全部库</button><button data-s="技术笔记">技术笔记</button><button data-s="论文阅读">论文阅读</button><button data-s="会议记录">会议记录</button></nav>
+  <span class="spacer"></span><button class="theme-btn" id="themeBtn">切换浅色</button>
+</header>
+<div class="dock">
+  <div class="island"><span style="color:var(--sec)">⌕</span><input id="q" placeholder="向全库提问，直接读到每篇讲什么"><select id="topk"><option>3</option><option selected>5</option><option>8</option></select><button class="btn" id="go">检索</button></div>
+  <div class="hints"><button>混合检索的重排策略？</button><button>WEMM 页库哪些失败了？</button><button>扫描件 PDF 如何处理？</button></div>
+</div>
+<div class="layout">
+  <aside class="layers"><div class="cardbox" style="padding-bottom:12px">
+    <h3>图层 <span id="sum"></span></h3>
+    <div class="cap">边（作用于底图＋下钻关系）</div>
+    <label class="row"><span>显式双链</span><input type="checkbox" id="lB" checked></label>
+    <label class="row"><span>语义相似边</span><input type="checkbox" id="lS"></label>
+    <div class="row"><input type="range" id="th" min="0.5" max="0.85" step="0.01" value="0.62"><span class="thv" id="thv">0.62</span></div>
+    <label class="row"><span>归属边</span><input type="checkbox" id="lO" checked></label>
+    <div class="cap">内容（作用于阅读流）</div>
+    <label class="row"><span>WEMM 页节点</span><input type="checkbox" id="lP"></label>
+    <label class="row"><span>PDF→MD 缓存</span><input type="checkbox" id="lC" checked></label>
+    <label class="row"><span>PDF 原件</span><input type="checkbox" id="lPdf" checked></label>
+    <div class="cap">显示</div>
+    <div class="row"><span>着色</span><span class="seg" id="seg"><button data-m="lib" class="on">按库</button><button data-m="state">按生效</button><button data-m="mono">单色</button></span></div>
+    <label class="row"><span>库分界（色脊＋底图海域）</span><input type="checkbox" id="lBd" checked></label>
+    <label class="row"><span>紧凑排版（600 篇性能档）</span><input type="checkbox" id="lPerf"></label>
+  </div></aside>
+  <main class="stream" id="stream">
+    <div class="banner" id="banner"><span>⌖</span><span id="bannerTx"></span><button class="x" id="bx" aria-label="清除检索">✕</button></div>
+    <div id="feed"></div>
+  </main>
+  <aside class="navcol"><div class="cardbox minimap">
+    <h3>底图导航 <span>图谱退为缩略图</span></h3>
+    <svg id="mini" viewBox="0 0 268 340" role="img" aria-label="全库底图"></svg>
+    <div class="mini-cap" id="miniCap"><b>读正文，瞥底图。</b><br>圆点即笔记，颜色＝库；点圆点平滑滚到正文卡。<br>检索时恒星＋辐条只在底图出现，正文只管可读。</div>
+  </div></aside>
+</div>
+<div class="legend" id="legend"></div>
+<div class="mech" id="mech"><h4>汐读力学（阅读优先）</h4><p><b>正文是流：</b>常态按库分组 sticky 节头；命中按置信度整流重排，非命中折叠成一行。</p><p><b>底图是瞥：</b>三块淡海域＋圆点＋强边，默认不画语义边；检索恒星＋辐条只活在底图。</p><p><b>库分界：</b>正文左色脊＋节头铭牌，底图海域同步开关（与现状 lyBounds 同语义）。</p></div>
+<div class="zoom"><button id="zin" aria-label="放大">＋</button><button id="zout" aria-label="缩小">－</button><button id="zfit" aria-label="重置">⤢</button><span class="zlab" id="zlab">100%</span></div>
+<div class="status" id="status"></div>
+<aside class="ins" id="ins" aria-label="节点详情"><div class="ins-h"><div class="ins-lib"><span id="iDot" class="swd"></span><span id="iLib"></span><span id="iBadge"></span><span style="flex:1"></span><button class="theme-btn" id="iX">关闭</button></div><div class="ins-t" id="iT"></div><div class="ins-p" id="iP"></div><div class="ins-m" id="iM"></div></div><div class="ins-b" id="iB"></div><div class="ins-f"><button class="theme-btn" id="iOpen">打开源文件</button><button class="btn" id="iRel" style="flex:1">以此为中心</button></div></aside>
+<div class="tip" id="tip"><div class="p" id="tp"></div><div class="m" id="tm"></div></div>
+<script>
+"use strict";
+var LIBC={"技术笔记":"var(--c-tech)","论文阅读":"var(--c-paper)","会议记录":"var(--c-meet)"};
+var LIBSOLID={"技术笔记":"#34D399","论文阅读":"#7DB8FF","会议记录":"#FBBF24"};
+var NOTES=[
+ {id:"t1",lib:"技术笔记",type:"md",title:"WEMM 页级视觉导航",path:"20-Projects/Obsidian RAG/WEMM 设计.md",tags:["WEMM","GPU","页库"],chunks:12,state:"ok",pipe:["提取 done","WEMM done"],upd:"09-08",sum:"用页面渲染＋页向量做“看到第几页”的视觉导航。文字索引完成后自动同步页库，失败只记日志、绝不波及文字索引。",out:["t2","t3"],inn:["p3"],sim:[["p3",.78]]},
+ {id:"t2",lib:"技术笔记",type:"md",title:"混合检索与重排策略",path:"20-Projects/检索/混合检索重排.md",tags:["检索","重排","BGE-M3"],chunks:8,state:"partial",pipe:["提取 done","WEMM —"],upd:"09-06",sum:"稠密＋稀疏＋双链混合召回，重排模型精排取 TopK。语义边默认关闭：开边才加载嵌入模型，避免常驻显存。",out:["t1"],inn:["t1","m2"],sim:[["p3",.71]]},
+ {id:"t3",lib:"技术笔记",type:"md",title:"MinerU 云端 OCR 配置",path:"20-Projects/索引/MinerU 配置.md",tags:["OCR","MinerU","限速"],chunks:5,state:"partial",pipe:["提取 done","WEMM —"],upd:"09-05",sum:"扫描段分流攒批，线程池只并行网络 I/O；滑动窗口限速 45/min，并发 3，中断任务记断点簿下轮续接。",out:[],inn:["t1"],sim:[["p4",.66]]},
+ {id:"t4",lib:"技术笔记",type:"md",title:"显存仲裁 GPU Arbiter",path:"20-Projects/索引/GPU 仲裁.md",tags:["GPU","显存","fail-open"],chunks:7,state:"ok",pipe:["提取 done","WEMM done"],upd:"09-04",sum:"同一时刻只驻留一个模型：WEMM 加载前等空闲显存≥5.5GB，bge-m3 不足则抢占 WEMM；探测失败 fail-open，绝不阻塞。",out:["t1"],inn:[],sim:[]},
+ {id:"t5",lib:"技术笔记",type:"pdf",title:"课件.pdf（42 页混装）",path:"20-Projects/课件/课件.pdf",tags:["PDF","扫描","混装"],chunks:0,state:"none",pipe:["整本待 OCR"],upd:"09-02",sum:"任一页无文字层则整本按扫描件路由：云端开则送 MinerU VLM 产出完整 MD，未开则诚实标 scanned，不做半份拼接。",out:[],inn:["t6"],sim:[]},
+ {id:"t6",lib:"技术笔记",type:"cache",title:"课件.pdf.md · 提取缓存",path:"20-Projects/课件/课件.pdf.md",tags:["缓存","xsrc"],chunks:6,state:"ok",pipe:["缓存 done"],upd:"09-02",sum:"云端产物缓存：带 xsrc 后端签名，失败每轮真重试；归属边指向原件 PDF，是“原件—缓存—页”链条的中段。",out:["t5"],inn:[],sim:[]},
+ {id:"p1",lib:"论文阅读",type:"pdf",title:"注意力机制原论文.pdf",path:"论文/注意力机制.pdf",tags:["Transformer","原件"],chunks:0,state:"ok",pipe:["OCR done","WEMM done"],upd:"08-30",sum:"扫描版英文原论文，MinerU VLM 全本认字。页库已建：p.5 热力图可被视觉导航直接定位到页。",out:[],inn:["p2"],sim:[]},
+ {id:"p2",lib:"论文阅读",type:"cache",title:"注意力.pdf.md · 提取缓存",path:"论文/注意力机制.pdf.md",tags:["缓存","9 块"],chunks:9,state:"ok",pipe:["缓存 done"],upd:"08-30",sum:"VLM 产物 9 块：公式与表格结构保留最好的一版，归属边连回原 PDF，下轮阈值实验的对照基线。",out:["p1"],inn:[],sim:[]},
+ {id:"p3",lib:"论文阅读",type:"md",title:"Transformer 综述 2025",path:"论文/Transformer 综述.md",tags:["综述","11 块"],chunks:11,state:"partial",pipe:["提取 done","WEMM —"],upd:"08-28",sum:"从原始 Transformer 到高效变体的全景表：自注意力、位置编码、多头机制的取舍，跨库桥连 WEMM 设计。",out:["p4"],inn:["t1","t2","p2"],sim:[["t1",.78],["t2",.71]]},
+ {id:"p4",lib:"论文阅读",type:"md",title:"实验记录：重排阈值调参",path:"论文/实验记录.md",tags:["实验","阈值"],chunks:4,state:"failed",pipe:["提取 failed"],upd:"08-27",sum:"阈值 0.62 vs 0.71 在隐藏库上的召回对照；本次提取失败，终态已落盘，下轮真重试，不会死循环。",out:[],inn:["p3"],sim:[["t3",.66]]},
+ {id:"p5",lib:"论文阅读",type:"page",title:"p.5 · 注意力热力图",path:"论文/注意力机制.pdf#page=5",tags:["WEMM","页向量"],chunks:0,state:"ok",pipe:["页向量 done"],upd:"08-30",sum:"第 5 页多头注意力示意图的页向量：查“热力图在哪页”时视觉导航直达本页，虚线药丸即页节点。",out:["p1"],inn:[],sim:[]},
+ {id:"m1",lib:"会议记录",type:"md",title:"周会 2026-09-01",path:"会议/周会 2026-09-01.md",tags:["周会","路线"],chunks:3,state:"ok",pipe:["提取 done"],upd:"09-01",sum:"确认 GUI 双实现并存：Flet 保留，guiweb（pywebview＋HTML）为主力；共享层改动两套 GUI 都要过一遍。",out:["m2"],inn:[],sim:[]},
+ {id:"m2",lib:"会议记录",type:"md",title:"路线评审：图谱重构",path:"会议/路线评审.md",tags:["评审","图谱","杂草"],chunks:5,state:"ok",pipe:["提取 done"],upd:"09-03",sum:"“太像杂草、库分界不清”：定了 A 领海 / B 深渊 / C 星环三套纯节点案，本轮追加 D/E/F 内容型方案。",out:["m3"],inn:["m1","t2"],sim:[["t1",.58]]},
+ {id:"m3",lib:"会议记录",type:"md",title:"待办清单 Sprint 12",path:"会议/待办清单.md",tags:["待办","里程碑"],chunks:2,state:"ok",pipe:["提取 done"],upd:"09-07",sum:"回收剪枝、WEMM 重试、导出导入的主人与验收线；全终态库 0==0 不触发重建，别动判空基准。",out:[],inn:["m2"],sim:[]},
+ {id:"m4",lib:"会议记录",type:"pdf",title:"白板合影.pdf",path:"会议/白板合影.pdf",tags:["PDF","白板","待 OCR"],chunks:0,state:"none",pipe:["OCR queued"],upd:"09-03",sum:"路线评审白板照片：三套轨道草图与投票点，云端 OCR 排队中，本轮先诚实标 scanned。",out:[],inn:[],sim:[]},
+ {id:"m5",lib:"会议记录",type:"md",title:"决策纪要：Agent 门禁",path:"会议/决策纪要 Agent 门禁.md",tags:["门禁","Agent"],chunks:4,state:"ok",pipe:["提取 done"],upd:"09-06",sum:"Agent 只碰文本＋已批准格式，二进制冻结保留条目；冻结分支在 stat 之前，保证零 I/O 且永不裁剪。",out:[],inn:[],sim:[]}
+];
+var BILAT=[["t1","t2"],["t1","t3"],["t1","t4"],["p2","p3"],["p3","p4"],["m1","m2"],["m2","m3"],["t1","p3",1],["t2","m2",1]];
+var OWN=[["t6","t5"],["p2","p1"],["p5","p1"]];
+var SEM=[["t1","p3",.78],["t2","p3",.71],["t3","p4",.66],["t2","m2",.58]];
+var byId={};NOTES.forEach(function(n){byId[n.id]=n;});
+var HITS={"重排":["t2","t1","p3","t4","m2"],"wemm":["t1","p1","p5","p2","t4"],"扫描":["t5","m4","p1","t3","p2"]};
+var CONF=[.87,.81,.74,.66,.61];
+var state={scope:"",color:"lib",ly:{b:1,s:0,o:1,p:0,c:1,pdf:1,bd:1},q:null,hits:null,k:1};
+function $(id){return document.getElementById(id);}
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");}
+/* 底图坐标：三块海域 */
+var POS={t1:[70,60],t2:[150,50],t3:[190,110],t4:[60,120],t5:[110,160],t6:[180,165],p1:[70,215],p2:[140,205],p3:[190,240],p4:[90,270],p5:[160,275],m1:[60,60],m2:[140,55],m3:[190,110],m4:[80,150],m5:[170,160]};
+function vis(n){if(state.scope&&n.lib!==state.scope)return false;if(n.type==="page")return!!state.ly.p;if(n.type==="cache")return!!state.ly.c;if(n.type==="pdf")return!!state.ly.pdf;return true;}
+function dot(n){if(state.color==="mono")return"#8B979E";if(state.color==="state")return n.state==="ok"?"var(--ok)":n.state==="partial"?"var(--part)":n.state==="failed"?"var(--fail)":"#8B979E";return LIBC[n.lib];}
+function stateChip(n){return n.state==="ok"?'<span class="chip ok">全链路生效</span>':n.state==="partial"?'<span class="chip wait">缺 WEMM</span>':n.state==="failed"?'<span class="chip bad">提取失败</span>':'<span class="chip wait">待处理</span>';}
+function libChip(n){var c=n.lib==="技术笔记"?"var(--c-tech)":n.lib==="论文阅读"?"var(--c-paper)":"var(--c-meet)";return '<span class="libchip" style="background:'+c+'">'+n.lib+'</span>';}
+function hl(text,q){if(!q)return esc(text);var ks=q.replace(/[？?！!。，,、]/g," ").split(/\s+/).filter(function(w){return w.length>1;});var out=esc(text);ks.forEach(function(k){if(text.indexOf(k)>=0)out=out.split(esc(k)).join("<mark>"+esc(k)+"</mark>");});return out;}
+function buildMini(){
+  var svg=$("mini");svg.innerHTML="";
+  var NS="http://www.w3.org/2000/svg";
+  function E(n,a){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);svg.appendChild(e);return e;}
+  var seas=[{lib:"技术笔记",y:8,f:"rgba(52,211,153,.08)",s:"rgba(52,211,153,.4)"},{lib:"论文阅读",y:118,f:"rgba(125,184,255,.08)",s:"rgba(125,184,255,.4)"},{lib:"会议记录",y:228,f:"rgba(251,191,36,.09)",s:"rgba(251,191,36,.45)"}];
+  seas.forEach(function(r){
+    if(state.ly.bd&&(!state.scope||state.scope===r.lib)){
+      E("rect",{x:8,y:r.y,width:252,height:100,rx:12,fill:r.f,stroke:r.s,"stroke-width":1.2,"stroke-dasharray":"7 5"});
+      var t=E("text",{x:18,y:r.y+16,fill:"var(--sec)","font-size":9.5,"font-family":"Cascadia Code,Consolas,monospace"});t.textContent=r.lib;
+    }
+  });
+  var edges=state.ly.b?BILAT:[];
+  edges.forEach(function(e){var a=byId[e[0]],b=byId[e[1]];if(!vis(a)||!vis(b))return;if(a.lib!==b.lib&&!e[2]&&state.q==null)return;
+    var pa=POS[a.id],pb=POS[b.id];var ya=a.lib==="技术笔记"?8:a.lib==="论文阅读"?118:228;var yb=b.lib==="技术笔记"?8:b.lib==="论文阅读"?118:228;
+    E("line",{x1:pa[0]+14,y1:pa[1]+ya,x2:pb[0]+14,y2:pb[1]+yb,stroke:e[2]?"var(--accent)":"rgba(150,170,180,.35)","stroke-width":e[2]?1.6:1});});
+  if(state.ly.s){SEM.forEach(function(e){var a=byId[e[0]],b=byId[e[1]];if(e[2]<+$("th").value||!vis(a)||!vis(b))return;var pa=POS[a.id],pb=POS[b.id];var ya=a.lib==="技术笔记"?8:a.lib==="论文阅读"?118:228;var yb=b.lib==="技术笔记"?8:b.lib==="论文阅读"?118:228;E("line",{x1:pa[0]+14,y1:pa[1]+ya,x2:pb[0]+14,y2:pb[1]+yb,stroke:"var(--accent)","stroke-width":1,"stroke-dasharray":"1 4",opacity:.6});});}
+  if(state.q){var sx=134,sy=170;var st=E("circle",{cx:sx,cy:sy,r:11,fill:"var(--ink)"});void st;
+    var tt=E("text",{x:sx,y:sy+3.5,fill:"var(--canvas)","font-size":9,"text-anchor":"middle","font-weight":"bold"});tt.textContent="问";
+    state.hits.forEach(function(id){var n=byId[id];var p=POS[id];var y=n.lib==="技术笔记"?8:n.lib==="论文阅读"?118:228;E("line",{x1:sx,y1:sy,x2:p[0]+14,y2:p[1]+y,stroke:"var(--accent)","stroke-width":1.3});});}
+  NOTES.forEach(function(n){if(!vis(n))return;var p=POS[n.id];var y=n.lib==="技术笔记"?8:n.lib==="论文阅读"?118:228;
+    var lit=state.hits&&state.hits.indexOf(n.id)>=0, dim=state.hits&&!lit;
+    var c=E("circle",{cx:p[0]+14,cy:p[1]+y,r:lit?7:5.5,fill:dot(n),opacity:dim?.25:1,"class":"dot",stroke:lit?"var(--accent)":"none","stroke-width":2});
+    c.style.cursor="pointer";
+    c.addEventListener("click",function(){var card=document.querySelector('[data-card="'+n.id+'"]');if(card){card.scrollIntoView({behavior:"smooth",block:"center"});card.classList.add("flash");setTimeout(function(){card.classList.remove("flash");},1200);}openIns(n.id);});
+    c.addEventListener("mousemove",function(e){showTip(n,e);});c.addEventListener("mouseleave",hideTip);
+  });
+}
+function ordered(){
+  var list=NOTES.filter(vis);
+  if(state.hits){var rank={};state.hits.forEach(function(id,i){rank[id]=i;});list.sort(function(a,b){var ra=rank[a.id],rb=rank[b.id];if(ra==null&&rb==null)return 0;if(ra==null)return 1;if(rb==null)return -1;return ra-rb;});}
+  return list;
+}
+function buildFeed(){
+  var feed=$("feed");feed.innerHTML="";
+  if(state.hits){
+    var b=$("banner");b.classList.add("on");
+    $("bannerTx").innerHTML="搜到 <b>"+state.hits.length+" 篇</b> · 每篇讲什么都在下面（按置信度重排） · “"+esc(state.q)+"”";
+  } else {$("banner").classList.remove("on");}
+  var libs=["技术笔记","论文阅读","会议记录"].filter(function(l){return !state.scope||state.scope===l;});
+  if(state.hits){
+    /* 检索态：扁平按置信度，不分组，让人一眼看到哪几篇 */
+    ordered().forEach(function(n,i){feed.appendChild(card(n,state.hits.indexOf(n.id),state.hits.indexOf(n.id)<0));});
+    var rest=NOTES.filter(function(n){return vis(n)&&state.hits.indexOf(n.id)<0;});
+    if(rest.length){var d=document.createElement("div");d.className="one";d.style.margin="14px 4px";d.textContent="—— 以下 "+rest.length+" 篇未命中，已折叠（点击展开） ——";feed.appendChild(d);}
+  } else {
+    libs.forEach(function(l){
+      var items=NOTES.filter(function(n){return n.lib===l&&vis(n);});
+      if(!items.length)return;
+      var sec=document.createElement("section");sec.className="libsec";
+      var okc=items.filter(function(n){return n.state==="ok";}).length;
+      var col=l==="技术笔记"?"var(--c-tech)":l==="论文阅读"?"var(--c-paper)":"var(--c-meet)";
+      sec.innerHTML='<div class="libhead"><i style="background:'+col+'"></i><b>'+l+'</b><span>'+items.length+' 篇</span><span class="st">生效 '+okc+'/'+items.length+' · 左色脊＝库分界</span></div>';
+      items.forEach(function(n){sec.appendChild(card(n,-1,false));});
+      feed.appendChild(sec);
+    });
+  }
+  paintLegend();paintStatus();buildMini();
+}
+function card(n,rank,dimmed){
+  var a=document.createElement("article");a.className="post"+(rank>=0?" hit":"")+(dimmed?" dim collapsed":"");a.dataset.card=n.id;
+  var col=n.lib==="技术笔记"?"var(--c-tech)":n.lib==="论文阅读"?"var(--c-paper)":"var(--c-meet)";
+  a.style.borderLeftColor=state.ly.bd?col:"";
+  var h='<div class="prow"><span class="rank">◈ '+(rank>=0?CONF[rank%5].toFixed(2):"")+' · #'+(rank+1)+'</span>'+libChip(n)+stateChip(n)+'<span class="one">'+n.type.toUpperCase()+' · '+n.upd+' 更新</span></div>';
+  h+='<h4 data-t="'+n.id+'">'+hl(n.title,state.q)+'</h4><div class="path">'+esc(n.lib+" · "+n.path)+'</div>';
+  if(!dimmed){h+='<p class="sum">'+hl(n.sum,state.q)+'</p><div class="tags">'+n.tags.map(function(t){return "<span>#"+esc(t)+"</span>";}).join("")+'</div>';
+    h+='<div class="meta"><span>'+n.chunks+' 块</span><span>双链 '+(n.out.length+n.inn.length)+'</span><span>'+n.pipe.join(" / ")+'</span><span style="flex:1"></span><button data-loc="'+n.id+'">底图定位</button><button class="pri" data-ins="'+n.id+'">详情</button></div>';
+  } else {h+='<div class="meta"><span class="one">'+esc(n.sum.slice(0,26))+'…</span><span style="flex:1"></span><button data-ins="'+n.id+'">详情</button></div>';}
+  a.innerHTML=h;
+  a.querySelector("[data-t]").onclick=function(){openIns(n.id);};
+  var ib=a.querySelector("[data-ins]");if(ib)ib.onclick=function(e){e.stopPropagation();openIns(n.id);};
+  var lb=a.querySelector("[data-loc]");if(lb)lb.onclick=function(e){e.stopPropagation();openIns(n.id);};
+  a.addEventListener("mousemove",function(e){if(e.target.closest("button"))return;showTip(n,e);});
+  a.addEventListener("mouseleave",hideTip);
+  return a;
+}
+function paintLegend(){
+  var L="";
+  L+='<span class="li"><span class="swd" style="background:var(--c-tech)"></span>技术笔记 · 左脊绿</span><span class="li"><span class="swd" style="background:var(--c-paper)"></span>论文阅读 · 左脊蓝</span><span class="li"><span class="swd" style="background:var(--c-meet)"></span>会议记录 · 左脊黄</span>';
+  if(state.color==="state")L+='<span class="li"><span class="swd" style="background:var(--ok);border-radius:50%"></span>生效</span><span class="li"><span class="swd" style="background:var(--part);border-radius:50%"></span>缺 WEMM</span><span class="li"><span class="swd" style="background:var(--fail);border-radius:50%"></span>失败</span>';
+  L+='<span class="li">◈ 置信度</span><button class="info" id="infoBtn">i</button>';
+  $("legend").innerHTML=L;$("infoBtn").onclick=function(e){e.stopPropagation();$("mech").classList.toggle("on");};
+  var v=NOTES.filter(vis).length;$("sum").textContent=v+" 篇 · 流中";
+  document.querySelector(".stream").classList.toggle("compact",$("lPerf").checked);
+  document.body.classList.toggle("noperf",$("lPerf").checked);
+}
+function paintStatus(){$("status").innerHTML=state.q?('检索态 · “<b>'+esc(state.q)+'</b>” · 命中 <b>'+state.hits.length+'</b> · 正文已重排 · 非命中折叠'):('常态阅读 · <b>'+NOTES.filter(vis).length+'</b> 篇按库分组 · 底图只瞥一眼');}
+function showTip(n,ev){$("tp").textContent=n.lib+" · "+n.path;$("tm").textContent=n.chunks+" 块 · "+n.type+" · "+n.pipe.join(" / ");var t=$("tip");t.style.left=ev.clientX+"px";t.style.top=ev.clientY+"px";t.classList.add("show");}
+function hideTip(){$("tip").classList.remove("show");}
+function doSearch(q){q=q||$("q").value.trim();if(!q)return;var key=/重排|混合/.test(q)?"重排":/wemm|页|视觉|失败/i.test(q)?"wemm":/扫描|pdf|ocr|白板/i.test(q)?"扫描":"重排";var n=+$("topk").value>8?5:+$("topk").value;state.q=q;state.hits=HITS[key].slice(0,Math.min(n,HITS[key].length));buildFeed();
+  var first=document.querySelector(".post.hit");if(first)first.scrollIntoView({behavior:"smooth",block:"center"});}
+function clearSearch(){state.q=null;state.hits=null;$("q").value="";buildFeed();}
+function openIns(id){var n=byId[id];if(!n)return;$("iDot").style.background=LIBC[n.lib];$("iLib").textContent=n.lib;$("iBadge").innerHTML=stateChip(n);$("iT").textContent=n.title;$("iP").textContent=n.lib+" · "+n.path;$("iM").innerHTML="<span>"+n.chunks+" 块</span><span>"+n.type.toUpperCase()+"</span><span>"+n.upd+" 更新</span>";
+  var h='<div class="sec"><h5>摘要</h5><div class="snip">'+hl(n.sum,state.q)+'</div></div>';
+  h+='<div class="sec"><h5>管线</h5><div style="display:flex;gap:6px;flex-wrap:wrap">'+n.pipe.map(function(p){return '<span class="chip '+(/done|生效/.test(p)?"ok":/fail/.test(p)?"bad":"wait")+'">'+esc(p)+'</span>';}).join("")+'</div></div>';
+  h+='<div class="sec"><h5>双链 · 出链 / 入链</h5>'+((n.out.length||n.inn.length)?n.out.map(function(o){return '<button class="rel" data-go="'+o+'">→ '+esc(byId[o].title)+'<span class="s">出链</span></button>';}).join("")+n.inn.map(function(o){return '<button class="rel" data-go="'+o+'">← '+esc(byId[o].title)+'<span class="s">入链</span></button>';}).join(""):'<div class="one">暂无显式双链</div>')+'</div>';
+  h+='<div class="sec"><h5>语义近邻</h5>'+(SEM.filter(function(e){return e[0]===id||e[1]===id;}).map(function(e){var o=e[0]===id?e[1]:e[0];return '<button class="rel" data-go="'+o+'">'+esc(byId[o].title)+'<span class="s">'+e[2].toFixed(2)+'</span></button>';}).join("")||'<div class="one">开启语义边图层后计算</div>')+'</div>';
+  h+='<div class="sec"><h5>命中片段</h5><div class="snip">…<mark>'+esc(n.title)+'</mark>：'+esc(n.sum)+'…</div></div>';
+  $("iB").innerHTML=h;Array.prototype.forEach.call($("iB").querySelectorAll("[data-go]"),function(b){b.onclick=function(){openIns(b.dataset.go);};});$("ins").classList.add("on");}
+$("go").onclick=function(){doSearch();};$("q").addEventListener("keydown",function(e){if(e.key==="Enter")doSearch();});
+$("bx").onclick=clearSearch;
+Array.prototype.forEach.call(document.querySelectorAll(".hints button"),function(b){b.onclick=function(){$("q").value=b.textContent;doSearch(b.textContent);};});
+$("th").oninput=function(){$("thv").textContent=(+$("th").value).toFixed(2);buildMini();};
+[["lB","b"],["lS","s"],["lO","o"],["lP","p"],["lC","c"],["lPdf","pdf"],["lBd","bd"]].forEach(function(p){$(p[0]).onchange=function(){state.ly[p[1]]=$(p[0]).checked?1:0;buildFeed();};});
+$("lPerf").onchange=function(){paintLegend();};
+Array.prototype.forEach.call(document.querySelectorAll("#seg button"),function(b){b.onclick=function(){state.color=b.dataset.m;Array.prototype.forEach.call(document.querySelectorAll("#seg button"),function(x){x.classList.toggle("on",x===b);});buildFeed();};});
+Array.prototype.forEach.call(document.querySelectorAll("#scope button"),function(b){b.onclick=function(){state.scope=b.dataset.s;Array.prototype.forEach.call(document.querySelectorAll("#scope button"),function(x){x.classList.toggle("on",x===b);});buildFeed();};});
+$("themeBtn").onclick=function(){var h=document.documentElement;h.dataset.theme=h.dataset.theme==="dark"?"light":"dark";$("themeBtn").textContent=h.dataset.theme==="dark"?"切换浅色":"切换深色";buildMini();};
+$("iX").onclick=function(){$("ins").classList.remove("on");};$("iOpen").onclick=function(){alert("demo：打开源文件 "+$("iP").textContent);};$("iRel").onclick=function(){alert("demo：以该节点为中心（生产：锚点加权）");};
+$("zin").onclick=function(){state.k=Math.min(1.6,state.k*1.15);$("zlab").textContent=Math.round(state.k*100)+"%";$("stream").style.fontSize=(14*state.k>17?17:14*state.k)+"px";};
+$("zout").onclick=function(){state.k=Math.max(.7,state.k/1.15);$("zlab").textContent=Math.round(state.k*100)+"%";$("stream").style.fontSize=(14*state.k<11?11:14*state.k)+"px";};
+$("zfit").onclick=function(){state.k=1;$("zlab").textContent="100%";$("stream").style.fontSize="";};
+buildFeed();
+</script>
+</body>
+</html>

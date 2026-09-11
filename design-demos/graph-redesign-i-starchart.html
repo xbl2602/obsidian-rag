@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图谱观赏 I · 星图星座 Star Chart — obsidian-rag</title>
+<style>
+/* I · 星图星座：单文件离线 / 系统字体 / 实底浮层 / 无常驻合成层 */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--font-ui:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;--font-mono:Consolas,"Courier New",monospace}
+[data-theme="dark"]{
+  --canvas:#04060D;--float:#0A0E18;--float2:#101624;--ink:#EAF0FC;--body:#B9C6E2;--sec:#7C89A6;--ph:#525C76;
+  --hair:rgba(255,255,255,.10);--hair2:rgba(255,255,255,.20);
+  --accent:#9DB8FF;--accent-dim:rgba(157,184,255,.12);
+  --c0:#34D399;--c1:#7DB8FF;--c2:#FBBF24;--c3:#C084FC;
+  --fail:#F87171;--pend:#8B93A7;
+}
+[data-theme="light"]{
+  --canvas:#E8EDF6;--float:#FFFFFF;--float2:#EEF2F9;--ink:#16203A;--body:#31405F;--sec:#5F6D8F;--ph:#98A1B8;
+  --hair:rgba(20,30,60,.12);--hair2:rgba(20,30,60,.24);
+  --accent:#1D6FD1;--accent-dim:rgba(29,111,209,.10);
+  --c0:#0E9F6E;--c1:#1D6FD1;--c2:#B45309;--c3:#9333EA;
+  --fail:#DC2626;--pend:#8A8F9E;
+}
+html,body{height:100%}
+body{background:var(--canvas);color:var(--body);font-family:var(--font-ui);font-size:14px;overflow:hidden}
+.top{position:fixed;top:0;left:0;right:0;z-index:30;display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--float);border-bottom:1px solid var(--hair)}
+.brand{color:var(--ink);font-weight:700;font-size:14px;white-space:nowrap}
+.brand small{color:var(--sec);font-weight:400;font-size:11px;margin-left:8px}
+.tag{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:2px 10px;white-space:nowrap}
+.seg{display:flex;gap:4px;background:var(--float2);border:1px solid var(--hair);border-radius:10px;padding:3px}
+.seg button{font-size:12px;color:var(--sec);border:0;border-radius:7px;padding:4px 12px;background:transparent;cursor:pointer}
+.seg button.on{color:var(--ink);background:var(--accent-dim);box-shadow:inset 0 0 0 1px var(--accent)}
+.libs{display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--body);border:1px solid var(--hair);border-radius:99px;padding:4px 11px 4px 8px;background:transparent;cursor:pointer}
+.chip i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.chip small{font-family:var(--font-mono);color:var(--sec);font-size:10.5px}
+.chip.off{opacity:.38}
+.chip.off i{background:transparent !important;box-shadow:inset 0 0 0 1px var(--sec)}
+.spacer{flex:1}
+.search{display:flex;align-items:center;gap:6px;position:relative}
+.sdrop{position:absolute;top:36px;right:0;width:330px;max-width:78vw;max-height:330px;overflow:auto;background:var(--float);border:1px solid var(--hair2);border-radius:12px;padding:6px;display:none;z-index:60}
+.sdrop.open{display:block}
+.sitem{display:flex;gap:9px;align-items:flex-start;width:100%;text-align:left;background:transparent;border:0;border-radius:9px;padding:8px 9px;cursor:pointer;color:var(--body);font-family:var(--font-ui)}
+.sitem:hover{background:var(--float2)}
+.sitem.cur{background:var(--accent-dim)}
+.sitem .dot{flex:none;width:9px;height:9px;border-radius:50%;margin-top:5px}
+.sitem .tx{flex:1;min-width:0}
+.sitem b{display:block;color:var(--ink);font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sitem b mark{color:var(--accent);background:transparent}
+.sitem .tx span{display:block;font-size:11.5px;color:var(--sec);line-height:1.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sitem .src{flex:none;font-family:var(--font-mono);font-size:10px;color:var(--accent);border:1px solid var(--hair);border-radius:99px;padding:1px 8px;margin-top:3px;white-space:nowrap}
+.sfoot{padding:6px 9px 4px;font-family:var(--font-mono);font-size:10.5px;color:var(--sec)}
+.count{font-family:var(--font-mono);font-size:11px;color:var(--sec);min-width:28px;text-align:right}
+.card{position:fixed;left:14px;bottom:44px;z-index:40;width:340px;max-width:calc(100vw - 28px);background:var(--float);border:1px solid var(--hair2);border-radius:14px;padding:13px 15px 12px;display:none;line-height:1.7}
+.card.open{display:block}
+.card h3{color:var(--ink);font-size:14px;margin:0 26px 2px 0}
+.card .lib{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--body);margin-bottom:6px}
+.card .lib i{width:10px;height:10px;border-radius:50%;flex:none}
+.card .lib em{font-style:normal;font-family:var(--font-mono);font-size:10.5px;color:var(--accent);border:1px solid var(--hair);border-radius:99px;padding:0 8px;margin-left:auto;white-space:nowrap}
+.card p{font-size:12px;color:var(--body);margin:0 0 6px}
+.card .m{font-family:var(--font-mono);font-size:11px;color:var(--sec)}
+.card .go{margin-top:9px;display:flex;gap:8px;align-items:center}
+.card .go button{font-size:12px;color:var(--ink);background:var(--accent-dim);border:1px solid var(--accent);border-radius:9px;padding:5px 14px;cursor:pointer}
+.card .hint{font-family:var(--font-mono);font-size:10.5px;color:var(--sec)}
+.card .x{position:absolute;top:8px;right:10px;border:0;background:transparent;color:var(--sec);font-size:15px;cursor:pointer;padding:2px 6px}
+.card .x:hover{color:var(--ink)}
+.search input{width:172px;font-size:12px;color:var(--ink);background:var(--float2);border:1px solid var(--hair);border-radius:9px;padding:6px 10px;outline:none;font-family:var(--font-ui)}
+.search input::placeholder{color:var(--ph)}
+.search input:focus{border-color:var(--accent)}
+.hits{font-family:var(--font-mono);font-size:11px;color:var(--accent);min-width:64px}
+.theme-btn{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:9px;padding:6px 12px;background:transparent;cursor:pointer}
+.theme-btn:hover{color:var(--ink);border-color:var(--hair2)}
+#cv{position:fixed;inset:0;display:block;cursor:grab}
+#cv.drag{cursor:grabbing}
+.legend{position:fixed;right:14px;top:64px;z-index:20;background:var(--float);border:1px solid var(--hair);border-radius:12px;padding:10px 12px;font-size:11.5px;color:var(--sec);line-height:1.9;max-width:220px}
+.legend b{color:var(--ink);font-size:12px}
+.status{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;align-items:center;gap:14px;padding:8px 16px;background:var(--float);border-top:1px solid var(--hair);font-family:var(--font-mono);font-size:11.5px;color:var(--sec)}
+.status .ok{color:var(--accent)}
+#tip{position:fixed;z-index:50;display:none;max-width:280px;background:var(--float);border:1px solid var(--hair2);border-radius:10px;padding:9px 12px;font-size:12px;color:var(--body);line-height:1.7;pointer-events:none}
+#tip b{color:var(--ink);font-size:13px}
+#tip .m{font-family:var(--font-mono);font-size:11px;color:var(--sec)}
+#tip .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand">I · 星图星座<small>观赏型 demo · 致敬深空星图，一星即一篇</small></div>
+  <span class="tag">500 笔记 · 单画布</span>
+  <div class="seg" id="dens"><button data-n="50">50</button><button data-n="150">150</button><button data-n="500" class="on">500</button></div>
+  <div class="libs" id="libs"></div>
+  <div class="spacer"></div>
+  <div class="search"><input id="q" type="text" placeholder="⌕ 搜索 500 星 · 标题/摘要/主题" autocomplete="off"><span class="count" id="count"></span><span class="hits" id="hits"></span><div class="sdrop" id="sdrop"></div></div>
+  <button class="theme-btn" id="theme">浅色</button>
+</div>
+<canvas id="cv"></canvas>
+<div class="legend"><b>图例 · 星域即分界</b><br>
+● 翡翠星域 · 实心星<br>
+✦ 苍蓝星域 · 十字星<br>
+◆ 琥珀星域 · 菱形星<br>
+○ 紫雾星域 · 环形星<br>
+星等＝块数 · 细线＝星座连线<br>
+<span style="color:var(--fail)">✕</span>＝管线失败 · 灰＝待处理</div>
+<div class="status"><span id="stCount" class="ok"></span><span id="stCam"></span><span id="stFps"></span><span>拖拽平移 · 滚轮缩放 · 双击重置 · 回车首个＋信息卡 · 下拉点选 · Esc 清除复位 · 约每 8s 一颗流星</span></div>
+<div id="tip"></div>
+<div class="card" id="card"></div>
+<script>
+'use strict';
+/* ---------- seeded 假数据 ---------- */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+var R=mulberry32(20260912);
+function rr(a,b){return a+(b-a)*R();}
+function pick(a){return a[(R()*a.length)|0];}
+function gauss(){return (R()+R()+R()-1.5)/1.5;}
+var LIBS=[
+ {id:'tech', name:'翡翠星域', star:'orb',   topics:['向量检索','切块策略','重排模型','显存仲裁','混合检索','量化部署','索引管线','缓存设计']},
+ {id:'paper',name:'苍蓝星域', star:'cross', topics:['注意力机制','对比学习','长文建模','多模态对齐','检索增强','扩散模型','稀疏激活','评估基准']},
+ {id:'meet', name:'琥珀星域', star:'dia',   topics:['周会纪要','评审决议','排期对齐','故障复盘','需求澄清','okr 制定','面试记录','发布检查']},
+ {id:'spark',name:'紫雾星域', star:'ring',  topics:['产品脑洞','交互灵感','叙事结构','视觉拼贴','城市观察','梦境记录','阅读摘抄','实验想法']}
+];
+var SUF=['札记','速记','精读','复盘','备忘','摘录','梳理','拾遗','考','谈','碎笔','深读'];
+var seen={};
+function mkTitle(topic){var t=topic+pick(SUF);if(seen[t]){seen[t]++;return t+'·'+String(seen[t]).padStart(2,'0');}seen[t]=1;return t;}
+var SUM_A=['要点梳理与复用清单','含方法步骤与坑点','附对比表与引用','可直接复用的结论','含待办与后续问题'];
+var SUM_B=['已沉淀为模板','仍在补充案例','等一次集中重写','引用较多值得重读','与三篇旧记相关'];
+function mkSum(topic,chunks,k){return topic+'·'+SUM_A[k%SUM_A.length]+'，'+chunks+' 块，'+SUM_B[(k*7)%SUM_B.length]+'。';}
+var WORLD={w:1600,h:1000};
+var CENTERS=[[430,290],[1170,290],[430,710],[1170,710]];
+var NOTES=[];
+(function(){
+  var order=[];for(var i=0;i<500;i++)order.push(i%4);
+  for(var i=order.length-1;i>0;i--){var j=(R()*(i+1))|0;var t=order[i];order[i]=order[j];order[j]=t;}
+  var base=new Date(2026,8,10).getTime();
+  for(var k=0;k<500;k++){
+    var li=order[k],L=LIBS[li],c=CENTERS[li],topic=pick(L.topics);
+    var sr=R(),st=sr<0.70?'ok':sr<0.85?'partial':sr<0.93?'failed':'pending';
+    var d=new Date(base-((R()*180)|0)*864e5);
+    var chunks=1+((Math.pow(R(),2.4)*120)|0);
+    NOTES.push({id:k,lib:li,title:mkTitle(topic),topic:topic,sum:mkSum(topic,chunks,k),
+      updated:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'),
+      chunks:chunks,status:st,
+      x:c[0]+gauss()*290,y:c[1]+gauss()*205,ph:R()*6.28,sp:rr(1.2,3.4),
+      twk:R()<0.45?1:0}); // 45% 星参与闪烁
+  }
+  LIBS.forEach(function(L,li){
+    var arr=NOTES.filter(function(n){return n.lib===li;}).sort(function(a,b){return b.chunks-a.chunks;});
+    arr.forEach(function(n,idx){n.rank=idx;n.hub=idx<5;n.capital=idx===0;});
+  });
+})();
+/* 星座连线：每星连同域最近邻（封顶每域 110 条，跨域航线 6 条 hub 互连） */
+var LINKS=[],ROUTES=[];
+(function(){
+  LIBS.forEach(function(L,li){
+    var arr=NOTES.filter(function(n){return n.lib===li;});
+    var used={},count=0;
+    arr.forEach(function(a,i){
+      if(count>=110)return;
+      var bi=-1,bd=1e18;
+      for(var j=0;j<arr.length;j++){if(j===i||used[i+'_'+j])continue;
+        var dx=a.x-arr[j].x,dy=a.y-arr[j].y,d=dx*dx+dy*dy;if(d<bd){bd=d;bi=j;}}
+      if(bi>=0&&bd<220*220){LINKS.push([a,arr[bi]]);used[i+'_'+bi]=1;used[bi+'_'+i]=1;count++;}
+    });
+  });
+  var caps=NOTES.filter(function(n){return n.capital;});
+  for(var i=0;i<caps.length;i++)for(var j=i+1;j<caps.length;j++)ROUTES.push([caps[i],caps[j]]);
+})();
+/* 远景星尘 */
+var DUST=[];for(var di=0;di<220;di++)DUST.push({x:R()*1600,y:R()*1000,r:rr(.4,1.3),ph:R()*6.28});
+var state={density:500,vis:[true,true,true,true],q:'',hits:[],hover:-1,
+  cam:{x:800,y:500,k:1},tween:null,theme:'dark',reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,
+  meteor:null,nextMeteor:5};
+var cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+var base=document.createElement('canvas'),btx=base.getContext('2d');
+var DPR=1,W=0,H=0,baseDirty=true;
+function cssVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+function libColor(li){return cssVar('--c'+li);}
+function hexA(hex,a){var n=parseInt(hex.slice(1),16);return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';}
+function fit(){var k=Math.min(W/WORLD.w,H/WORLD.h)*0.98;state.cam={x:800,y:500,k:k};state.tween=null;baseDirty=true;}
+function resize(){DPR=Math.min(devicePixelRatio||1,1.5);W=innerWidth;H=innerHeight;
+  cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';
+  base.width=W*DPR;base.height=H*DPR;fit();}
+addEventListener('resize',resize);
+function w2s(x,y){return [(x-state.cam.x)*state.cam.k+W/2,(y-state.cam.y)*state.cam.k+H/2];}
+/* ---------- 底图：星云雾＋银河带＋星尘（相机变化才重绘） ---------- */
+function drawBase(){
+  btx.setTransform(DPR,0,0,DPR,0,0);
+  btx.fillStyle=cssVar('--canvas');btx.fillRect(0,0,W,H);
+  var dark=state.theme==='dark';
+  LIBS.forEach(function(L,li){
+    if(!state.vis[li])return;
+    var c=w2s(CENTERS[li][0],CENTERS[li][1]),rad=340*state.cam.k,col=libColor(li);
+    if(!col.startsWith('#'))col='#7DB8FF';
+    var g=btx.createRadialGradient(c[0],c[1],0,c[0],c[1],rad);
+    g.addColorStop(0,hexA(col,dark?0.10:0.13));g.addColorStop(1,hexA(col,0));
+    btx.fillStyle=g;btx.fillRect(c[0]-rad,c[1]-rad,rad*2,rad*2);
+  });
+  // 银河光带（500 档更显，密度即纹理）
+  if(state.density===500){
+    btx.save();btx.translate(W/2,H/2);btx.rotate(-0.42);
+    var g2=btx.createLinearGradient(0,-120,0,120);
+    var mc=dark?'157,184,255':'29,111,209';
+    g2.addColorStop(0,'rgba('+mc+',0)');g2.addColorStop(0.5,'rgba('+mc+','+(dark?0.06:0.08)+')');g2.addColorStop(1,'rgba('+mc+',0)');
+    btx.fillStyle=g2;btx.fillRect(-W,-120,W*2,240);btx.restore();
+  }
+  // 星尘
+  btx.fillStyle=dark?'rgba(220,232,255,.5)':'rgba(30,45,80,.4)';
+  DUST.forEach(function(d){var s=w2s(d.x,d.y);btx.globalAlpha=.25+.35*Math.abs(Math.sin(d.ph));btx.fillRect(s[0],s[1],d.r,d.r);});
+  btx.globalAlpha=1;baseDirty=false;
+}
+var STATUS_TXT={ok:'索引正常',partial:'部分生效',failed:'管线失败',pending:'待处理'};
+function visibleNotes(){
+  return NOTES.filter(function(n){
+    if(!state.vis[n.lib])return false;
+    if(state.density===50)return true;
+    if(state.density===150)return (n.id%10)<3;
+    return (n.id%2)===0;});
+}
+function starR(n){return (state.density===500?1.6:2.1)+Math.pow(n.chunks/120,0.5)*(state.density===500?2.6:3.4)+(n.capital?2.2:n.hub?1:0);}
+var stCount=document.getElementById('stCount'),stCam=document.getElementById('stCam'),stFps=document.getElementById('stFps');
+var tip=document.getElementById('tip'),q=document.getElementById('q'),hitsEl=document.getElementById('hits');
+var lastT=0,fpsE=60;
+function matchQ(n,s){return n.title.toLowerCase().indexOf(s)>=0||n.topic.toLowerCase().indexOf(s)>=0||(n.sum&&n.sum.toLowerCase().indexOf(s)>=0)||LIBS[n.lib].name.indexOf(state.q.trim())>=0;}
+function drawStar(g,x,y,n,col,now,dimA){
+  var r=starR(n),L=LIBS[n.lib];
+  var tw=n.twk&&!state.reduced?0.72+0.28*Math.sin(now*n.sp+n.ph):1;
+  g.globalAlpha=dimA*tw;
+  if(L.star==='orb'){ // 光晕实心星
+    var gr=g.createRadialGradient(x,y,0,x,y,r*3.2);
+    gr.addColorStop(0,col);gr.addColorStop(0.35,col);gr.addColorStop(1,'rgba(0,0,0,0)');
+    g.globalAlpha=dimA*tw*0.5;g.fillStyle=gr;g.beginPath();g.arc(x,y,r*3.2,0,6.29);g.fill();
+    g.globalAlpha=dimA*tw;g.fillStyle=n.status==='failed'?cssVar('--fail'):col;
+    g.beginPath();g.arc(x,y,r,0,6.29);g.fill();
+    if(n.capital||n._hit){g.fillStyle='#fff';g.beginPath();g.arc(x,y,r*0.42,0,6.29);g.fill();}
+  }else if(L.star==='cross'){
+    g.strokeStyle=n.status==='failed'?cssVar('--fail'):col;g.lineWidth=Math.max(1.2,r*0.5);g.lineCap='round';
+    g.beginPath();g.moveTo(x-r*2.1,y);g.lineTo(x+r*2.1,y);g.moveTo(x,y-r*2.1);g.lineTo(x,y+r*2.1);g.stroke();
+    g.fillStyle='#fff';g.beginPath();g.arc(x,y,r*0.5,0,6.29);g.fill();
+  }else if(L.star==='dia'){
+    g.fillStyle=n.status==='failed'?cssVar('--fail'):col;
+    g.beginPath();g.moveTo(x,y-r*1.7);g.lineTo(x+r*1.3,y);g.lineTo(x,y+r*1.7);g.lineTo(x-r*1.3,y);g.closePath();g.fill();
+  }else{ // ring
+    g.strokeStyle=n.status==='failed'?cssVar('--fail'):col;g.lineWidth=1.6;
+    g.beginPath();g.arc(x,y,r*1.25,0,6.29);g.stroke();
+    g.fillStyle=col;g.beginPath();g.arc(x,y,r*0.45,0,6.29);g.fill();
+  }
+  if(n.status==='failed'){g.strokeStyle=cssVar('--fail');g.lineWidth=1.4;
+    g.beginPath();g.moveTo(x-r-4,y-r-4);g.lineTo(x+r+4,y+r+4);g.moveTo(x+r+4,y-r-4);g.lineTo(x-r-4,y+r+4);g.stroke();}
+  g.globalAlpha=1;
+}
+function frame(t){
+  requestAnimationFrame(frame);
+  var now=t/1000,dt=Math.min(0.05,now-(lastT||now));lastT=now;if(dt>0)fpsE=fpsE*0.95+(1/Math.max(dt,1e-3))*0.05;
+  if(state.tween){var tw=state.tween,f=Math.min(1,(now-tw.t0)/0.6),e=1-Math.pow(1-f,3);
+    state.cam.x=tw.x0+(tw.x1-tw.x0)*e;state.cam.y=tw.y0+(tw.y1-tw.y0)*e;state.cam.k=tw.k0+(tw.k1-tw.k0)*e;
+    baseDirty=true;if(f>=1)state.tween=null;}
+  if(state.reduced&&!baseDirty&&!state.tween)return;
+  if(baseDirty)drawBase();
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);ctx.drawImage(base,0,0,W,H);
+  var qs=state.q.trim(),dimQs=qs.length>0,sl=qs.toLowerCase();
+  var list=visibleNotes(),inSet={};
+  list.forEach(function(n){n._hit=dimQs?matchQ(n,sl):false;inSet[n.id]=1;});
+  // 星座连线（只连可见）
+  ctx.lineWidth=1;
+  LIBS.forEach(function(L,li){if(!state.vis[li])return;ctx.strokeStyle=libColor(li);ctx.globalAlpha=state.theme==='dark'?0.16:0.22;
+    ctx.beginPath();
+    LINKS.forEach(function(lk){if(lk[0].lib!==li||!inSet[lk[0].id]||!inSet[lk[1].id])return;
+      var a=w2s(lk[0].x,lk[0].y),b=w2s(lk[1].x,lk[1].y);
+      ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);});
+    ctx.stroke();ctx.globalAlpha=1;});
+  // 跨域航线
+  ctx.strokeStyle=cssVar('--sec');ctx.setLineDash([4,6]);ctx.globalAlpha=.5;ctx.beginPath();
+  ROUTES.forEach(function(rt){if(!state.vis[rt[0].lib]||!state.vis[rt[1].lib])return;
+    var a=w2s(rt[0].x,rt[0].y),b=w2s(rt[1].x,rt[1].y);ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);});
+  ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=1;
+  // 星
+  var labelCap=state.density===500?8:state.density===150?26:70,labels=0;
+  var sorted=list.slice().sort(function(a,b){return (b.capital-a.capital)||(b.hub-a.hub)||(b.chunks-a.chunks);});
+  sorted.forEach(function(n){
+    var s=w2s(n.x,n.y);if(s[0]<-40||s[1]<-40||s[0]>W+40||s[1]>H+40)return;
+    var col=n.status==='pending'?cssVar('--pend'):libColor(n.lib);
+    var dimA=dimQs?(n._hit?1:0.10):1;
+    drawStar(ctx,s[0],s[1],n,col,now,dimA);
+    if(n.id===state.hover||n._hit){ctx.strokeStyle='#fff';ctx.lineWidth=1.3;ctx.globalAlpha=dimA;
+      ctx.beginPath();ctx.arc(s[0],s[1],starR(n)+6+(n._hit&&!state.reduced?Math.sin(now*4)*1.5:0),0,6.29);ctx.stroke();ctx.globalAlpha=1;}
+    var want=n.capital||(n.hub&&state.density!==500)||(state.density===50&&n.chunks>40)||n._hit||n.id===state.hover;
+    if(want&&labels<labelCap){labels++;
+      ctx.globalAlpha=dimQs&&!n._hit?0.15:1;
+      ctx.font=(n.capital?'700 ':'')+'12px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle=cssVar('--ink');ctx.textAlign='center';
+      ctx.fillText(n.capital?'✦ '+n.title:n.title,s[0],s[1]-starR(n)-10);
+      ctx.font='10px Consolas,monospace';ctx.fillStyle=cssVar('--sec');
+      ctx.fillText(n.chunks+' 块 · '+STATUS_TXT[n.status],s[0],s[1]+starR(n)+14);
+      ctx.globalAlpha=1;}
+  });
+  // 信标脉冲（每域 1 环）＋流星（环境动效，封顶各 1）
+  if(!state.reduced){
+    LIBS.forEach(function(L,li){if(!state.vis[li])return;
+      var c=w2s(CENTERS[li][0],CENTERS[li][1]),ph=(now*0.4+li*0.25)%1;
+      ctx.strokeStyle=libColor(li);ctx.globalAlpha=(1-ph)*0.4;ctx.lineWidth=1.4;
+      ctx.beginPath();ctx.arc(c[0],c[1],14+ph*54,0,6.29);ctx.stroke();ctx.globalAlpha=1;});
+    if(!state.meteor&&now>state.nextMeteor){
+      var mx0=rr(0.1,0.7)*W,my0=rr(0.05,0.3)*H;
+      state.meteor={x:mx0,y:my0,vx:rr(280,420),vy:rr(120,200),life:0};}
+    if(state.meteor){var m=state.meteor;m.life+=dt;
+      m.x+=m.vx*dt;m.y+=m.vy*dt;
+      var a2=Math.max(0,1-m.life/1.1);
+      ctx.strokeStyle='rgba(220,235,255,'+(a2*0.9)+')';ctx.lineWidth=1.8;ctx.lineCap='round';
+      ctx.beginPath();ctx.moveTo(m.x,m.y);ctx.lineTo(m.x-m.vx*0.22,m.y-m.vy*0.22);ctx.stroke();
+      if(m.life>1.1){state.meteor=null;state.nextMeteor=now+rr(5,10);}}
+  }
+  // 星域名牌
+  ctx.textAlign='center';
+  var SYM=['●','✦','◆','○'];
+  LIBS.forEach(function(L,li){if(!state.vis[li])return;
+    var s=w2s(CENTERS[li][0],CENTERS[li][1]-280),col=libColor(li);
+    ctx.font='700 13px "Segoe UI","Microsoft YaHei",sans-serif';
+    var txt=SYM[li]+' '+L.name+' · 125 篇',wpx=ctx.measureText(txt).width+22;
+    ctx.fillStyle=cssVar('--float');ctx.strokeStyle=col;ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.rect(s[0]-wpx/2,s[1]-13,wpx,24);ctx.fill();ctx.stroke();
+    ctx.fillStyle=col;ctx.fillText(txt,s[0],s[1]+4);});
+  stCount.textContent='可见 '+list.length+' / 500 · '+state.density+' 档';
+  stCam.textContent='缩放 '+Math.round(state.cam.k/(Math.min(W/WORLD.w,H/WORLD.h)*0.98)*100)+'%';
+  stFps.textContent='FPS '+Math.round(fpsE)+' · 单 rAF · 连线 ≤446 · 动效 ≤6';
+}
+/* ---------- 交互 ---------- */
+var libsEl=document.getElementById('libs');
+LIBS.forEach(function(L,li){
+  var b=document.createElement('button');b.className='chip';
+  b.innerHTML='<i style="background:var(--c'+li+')"></i>'+L.name+' <small>125</small>';
+  b.onclick=function(){var on=state.vis.filter(Boolean).length;
+    if(state.vis[li]&&on===1)return;state.vis[li]=!state.vis[li];
+    b.classList.toggle('off',!state.vis[li]);baseDirty=true;refreshHits();};
+  libsEl.appendChild(b);
+});
+document.getElementById('dens').addEventListener('click',function(e){
+  var b=e.target.closest('button');if(!b)return;
+  this.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});
+  b.classList.add('on');state.density=+b.dataset.n;baseDirty=true;});
+document.getElementById('theme').onclick=function(){
+  state.theme=state.theme==='dark'?'light':'dark';
+  document.documentElement.dataset.theme=state.theme;
+  this.textContent=state.theme==='dark'?'浅色':'深色';baseDirty=true;};
+function refreshHits(){
+  var s=state.q.trim().toLowerCase();
+  if(!s){state.hits=[];hitsEl.textContent='';return;}
+  state.hits=NOTES.filter(function(n){return state.vis[n.lib]&&matchQ(n,s);});
+  hitsEl.textContent='命中 '+state.hits.length;renderDrop();}
+/* ---------- 检索示范：输入计数＋下拉＋信息卡（搜索仍是配角） ---------- */
+var sdrop=document.getElementById('sdrop'),card=document.getElementById('card'),countEl=document.getElementById('count');
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function markSub(t,s){var i=t.toLowerCase().indexOf(s);if(s&&i>=0)return esc(t.slice(0,i))+'<mark>'+esc(t.slice(i,i+s.length))+'</mark>'+esc(t.slice(i+s.length));return esc(t);}
+function flyTo(n){var k0=Math.min(W/WORLD.w,H/WORLD.h)*0.98;
+  state.tween={x0:state.cam.x,y0:state.cam.y,k0:state.cam.k,x1:n.x,y1:n.y,k1:Math.max(state.cam.k,k0*1.4),t0:performance.now()/1000};}
+function openCard(n){
+  card.innerHTML='<button class="x" id="cardX">×</button><h3>'+esc(n.title)+'</h3>'
+    +'<div class="lib"><i style="background:var(--c'+n.lib+')"></i>'+LIBS[n.lib].name+' · '+esc(n.topic)+'<em>'+STATUS_TXT[n.status]+'</em></div>'
+    +'<p>'+esc(n.sum)+'</p>'
+    +'<div class="m">'+esc(n.updated)+' · '+n.chunks+' 块 · #'+n.id+'</div>'
+    +'<div class="go"><button id="cardGo">飞瞄此星</button><span class="hint">Esc 关闭 · 清空恢复全景</span></div>';
+  card.classList.add('open');
+  document.getElementById('cardX').onclick=closeCard;
+  document.getElementById('cardGo').onclick=function(){flyTo(n);};}
+function closeCard(){card.classList.remove('open');card.innerHTML='';}
+function renderDrop(){
+  var s=state.q.trim().toLowerCase();
+  if(!s||!state.hits.length){sdrop.classList.remove('open');sdrop.innerHTML='';return;}
+  var html='',shown=0;
+  for(var i=0;i<state.hits.length&&shown<8;i++){var h=state.hits[i];shown++;
+    html+='<button class="sitem'+(i===0?' cur':'')+'" data-id="'+h.id+'"><span class="dot" style="background:var(--c'+h.lib+')"></span>'
+      +'<span class="tx"><b>'+markSub(h.title,s)+'</b><span>'+esc(h.sum)+'</span></span>'
+      +'<span class="src">'+LIBS[h.lib].name+'</span></button>';}
+  html+='<div class="sfoot">命中 '+state.hits.length+' 星 · 回车飞往首个 · 点击飞瞄＋信息卡</div>';
+  sdrop.innerHTML=html;sdrop.classList.add('open');
+  var items=sdrop.querySelectorAll('.sitem');
+  for(var j=0;j<items.length;j++)(function(b){
+    b.onclick=function(){var id=+b.getAttribute('data-id');
+      for(var m=0;m<NOTES.length;m++)if(NOTES[m].id===id){flyTo(NOTES[m]);openCard(NOTES[m]);break;}};
+  })(items[j]);
+}
+var deb=null;
+q.addEventListener('input',function(){state.q=q.value;
+  var s=q.value.trim();countEl.textContent=s?(s.length+' 字'):'';
+  if(!s){state.hits=[];hitsEl.textContent='';renderDrop();closeCard();fit();return;}
+  clearTimeout(deb);deb=setTimeout(function(){refreshHits();renderDrop();},160);});
+q.addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&state.hits.length){flyTo(state.hits[0]);openCard(state.hits[0]);renderDrop();}
+  if(e.key==='Escape'){q.value='';state.q='';countEl.textContent='';refreshHits();renderDrop();closeCard();fit();q.blur();}});
+var drag=null;
+cv.addEventListener('pointerdown',function(e){drag={x:e.clientX,y:e.clientY};cv.classList.add('drag');cv.setPointerCapture(e.pointerId);});
+cv.addEventListener('pointermove',function(e){
+  if(drag){state.cam.x-=(e.clientX-drag.x)/state.cam.k;state.cam.y-=(e.clientY-drag.y)/state.cam.k;
+    drag={x:e.clientX,y:e.clientY};baseDirty=true;state.tween=null;return;}
+  var mx=e.clientX,my=e.clientY,best=null,bd=15;
+  var list=visibleNotes();
+  for(var i=0;i<list.length;i++){var n=list[i],s=w2s(n.x,n.y);
+    var d=Math.hypot(s[0]-mx,s[1]-my);if(d<bd){bd=d;best=n;}}
+  state.hover=best?best.id:-1;
+  if(best){tip.style.display='block';tip.style.left=(mx+16)+'px';tip.style.top=(my+14)+'px';
+    tip.innerHTML='<b>'+best.title+'</b><br><span class="dot" style="background:var(--c'+best.lib+')"></span>'+LIBS[best.lib].name+' · '+best.topic+'<br><span class="m">'+best.updated+' · '+best.chunks+' 块 · '+STATUS_TXT[best.status]+'</span>';}
+  else tip.style.display='none';});
+cv.addEventListener('pointerup',function(){drag=null;cv.classList.remove('drag');});
+cv.addEventListener('wheel',function(e){e.preventDefault();
+  var mx=e.clientX-W/2,my=e.clientY-H/2;
+  var wx=state.cam.x+mx/state.cam.k,wy=state.cam.y+my/state.cam.k;
+  state.cam.k=Math.min(4,Math.max(0.25,state.cam.k*Math.exp(-e.deltaY*0.0012)));
+  state.cam.x=wx-mx/state.cam.k;state.cam.y=wy-my/state.cam.k;
+  state.tween=null;baseDirty=true;},{passive:false});
+cv.addEventListener('dblclick',fit);
+resize();requestAnimationFrame(frame);
+</script>
+</body>
+</html>

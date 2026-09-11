@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图谱观赏 M · 珊瑚礁 Reef Glow — obsidian-rag</title>
+<style>
+/* M · 珊瑚礁：单文件离线 / 系统字体 / 实底浮层 / 单画布 */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--font-ui:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;--font-mono:Consolas,"Courier New",monospace}
+[data-theme="dark"]{
+  --canvas:#0E3A4C;--float:#10333F;--float2:#143B49;--ink:#EAF7F5;--body:#B9D6D2;--sec:#7FA3A0;--ph:#4F6E6C;
+  --hair:rgba(255,255,255,.12);--hair2:rgba(255,255,255,.24);
+  --accent:#5EEAD4;--accent-dim:rgba(94,234,212,.12);
+  --c0:#34D399;--c1:#7DB8FF;--c2:#FBBF24;--c3:#E879F9;
+  --fail:#F87171;--pend:#8B9AA3;--sea1:#2A8AA0;--sea2:#155A72;--sand:#C9AE72;
+}
+[data-theme="light"]{
+  --canvas:#8FD8EA;--float:#FFFFFF;--float2:#EAF6F2;--ink:#123038;--body:#2E4A52;--sec:#5F7D84;--ph:#93ABB0;
+  --hair:rgba(18,48,56,.14);--hair2:rgba(18,48,56,.28);
+  --accent:#0E7490;--accent-dim:rgba(14,116,144,.10);
+  --c0:#0E9F6E;--c1:#1D6FD1;--c2:#B45309;--c3:#A21CAF;
+  --fail:#DC2626;--pend:#8A8F9E;--sea1:#7FD4E8;--sea2:#BDE8D8;--sand:#E4D3A0;
+}
+html,body{height:100%}
+body{background:var(--canvas);color:var(--body);font-family:var(--font-ui);font-size:14px;overflow:hidden}
+.top{position:fixed;top:0;left:0;right:0;z-index:30;display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--float);border-bottom:1px solid var(--hair)}
+.brand{color:var(--ink);font-weight:700;font-size:14px;white-space:nowrap}
+.brand small{color:var(--sec);font-weight:400;font-size:11px;margin-left:8px}
+.tag{font-family:var(--font-mono);font-size:10.5px;color:var(--sec);border:1px solid var(--hair);border-radius:99px;padding:2px 10px;white-space:nowrap}
+.seg{display:flex;gap:4px;background:var(--float2);border:1px solid var(--hair);border-radius:10px;padding:3px}
+.seg button{font-size:12px;color:var(--sec);border:0;border-radius:7px;padding:4px 12px;background:transparent;cursor:pointer}
+.seg button.on{color:var(--ink);background:var(--accent-dim);box-shadow:inset 0 0 0 1px var(--accent)}
+.libs{display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--body);border:1px solid var(--hair);border-radius:99px;padding:4px 11px 4px 8px;background:transparent;cursor:pointer}
+.chip i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.chip small{font-family:var(--font-mono);color:var(--sec);font-size:10.5px}
+.chip.off{opacity:.38}
+.chip.off i{background:transparent !important;box-shadow:inset 0 0 0 1px var(--sec)}
+.spacer{flex:1}
+.search{display:flex;align-items:center;gap:6px}
+.search input{width:172px;font-size:12px;color:var(--ink);background:var(--float2);border:1px solid var(--hair);border-radius:9px;padding:6px 10px;outline:none;font-family:var(--font-ui)}
+.search input::placeholder{color:var(--ph)}
+.search input:focus{border-color:var(--accent)}
+.hits{font-family:var(--font-mono);font-size:11px;color:var(--accent);min-width:64px}
+.theme-btn{font-size:12px;color:var(--sec);border:1px solid var(--hair);border-radius:9px;padding:6px 12px;background:transparent;cursor:pointer}
+.theme-btn:hover{color:var(--ink);border-color:var(--hair2)}
+#cv{position:fixed;inset:0;display:block;cursor:grab}
+#cv.drag{cursor:grabbing}
+.legend{position:fixed;right:14px;top:64px;z-index:20;background:var(--float);border:1px solid var(--hair);border-radius:12px;padding:10px 12px;font-size:11.5px;color:var(--sec);line-height:1.9;max-width:220px}
+.legend b{color:var(--ink);font-size:12px}
+.status{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;align-items:center;gap:14px;padding:8px 16px;background:var(--float);border-top:1px solid var(--hair);font-family:var(--font-mono);font-size:11.5px;color:var(--sec)}
+.status .ok{color:var(--accent)}
+#tip{position:fixed;z-index:50;display:none;max-width:280px;background:var(--float);border:1px solid var(--hair2);border-radius:10px;padding:9px 12px;font-size:12px;color:var(--body);line-height:1.7;pointer-events:none}
+#tip b{color:var(--ink);font-size:13px}
+#tip .m{font-family:var(--font-mono);font-size:11px;color:var(--sec)}
+#tip .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand">M · 珊瑚礁<small>观赏型 demo · 致敬深海珊瑚礁，一鱼即一篇</small></div>
+  <span class="tag">500 笔记 · 单画布</span>
+  <div class="seg" id="dens"><button data-n="50">50</button><button data-n="150">150</button><button data-n="500" class="on">500</button></div>
+  <div class="libs" id="libs"></div>
+  <div class="spacer"></div>
+  <div class="search"><input id="q" type="text" placeholder="⌕ 弱搜索 · 标题/主题" autocomplete="off"><span class="hits" id="hits"></span></div>
+  <button class="theme-btn" id="theme">浅滩</button>
+</div>
+<canvas id="cv"></canvas>
+<div class="legend"><b>图例 · 礁区即分界</b><br>
+❋ 藻场 · 分枝珊瑚＋波线界<br>
+◈ 贝丘 · 扇贝纹＋双线界<br>
+◎ 管礁 · 管状环＋虚线界<br>
+☾ 母湾 · 海葵须＋泡链界<br>
+○ 浮游光点＝笔记 · 鱼＝hub<br>
+<span style="color:var(--fail)">红</span>＝管线失败 · 灰＝待处理</div>
+<div class="status"><span id="stCount" class="ok"></span><span id="stCam"></span><span id="stFps"></span><span>拖拽平移 · 滚轮缩放 · 双击重置 · 回车飞往首个命中 · Esc 清除</span></div>
+<div id="tip"></div>
+<script>
+'use strict';
+/* ---------- seeded 假数据：500 浮游 / 4 礁区 ---------- */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+var R=mulberry32(20260922);
+function rr(a,b){return a+(b-a)*R();}
+function pick(a){return a[(R()*a.length)|0];}
+function gauss(){return (R()+R()+R()-1.5)/1.5;}
+var LIBS=[
+ {id:'tech', name:'翡翠藻场', motif:'branch', topics:['向量检索','切块策略','重排模型','显存仲裁','混合检索','量化部署','索引管线','缓存设计']},
+ {id:'paper',name:'苍蓝贝丘', motif:'fan',    topics:['注意力机制','对比学习','长文建模','多模态对齐','检索增强','扩散模型','稀疏激活','评估基准']},
+ {id:'meet', name:'琥珀管礁', motif:'tube',   topics:['周会纪要','评审决议','排期对齐','故障复盘','需求澄清','okr 制定','面试记录','发布检查']},
+ {id:'spark',name:'紫雾母湾', motif:'jelly',  topics:['产品脑洞','交互灵感','叙事结构','视觉拼贴','城市观察','梦境记录','阅读摘抄','实验想法']}
+];
+var SUF=['札记','速记','精读','复盘','备忘','摘录','梳理','拾遗','考','谈','碎笔','深读'];
+var seen={};
+function mkTitle(topic){var t=topic+pick(SUF);if(seen[t]){seen[t]++;return t+'·'+String(seen[t]).padStart(2,'0');}seen[t]=1;return t;}
+var SUM_A=['要点梳理与复用清单','含方法步骤与坑点','附对比表与引用','可直接复用的结论','含待办与后续问题'];
+var SUM_B=['已沉淀为模板','仍在补充案例','等一次集中重写','引用较多值得重读','与三篇旧记相关'];
+function mkSum(topic,chunks){return topic+'·'+pick(SUM_A)+'，'+chunks+' 块，'+pick(SUM_B)+'。';}
+var WORLD={w:1600,h:1000};
+var CENTERS=[[430,420],[1170,400],[430,740],[1170,730]];
+var ZR={x:330,y:230};
+var NOTES=[];
+(function(){
+  var order=[];for(var i=0;i<500;i++)order.push(i%4);
+  for(var i=order.length-1;i>0;i--){var j=(R()*(i+1))|0;var t=order[i];order[i]=order[j];order[j]=t;}
+  var base=new Date(2026,8,10).getTime();
+  for(var k=0;k<500;k++){
+    var li=order[k],L=LIBS[li],c=CENTERS[li],topic=pick(L.topics);
+    var sr=R(),st=sr<0.70?'ok':sr<0.85?'partial':sr<0.93?'failed':'pending';
+    var d=new Date(base-((R()*180)|0)*864e5);
+    var chunks=1+((Math.pow(R(),2.4)*120)|0);
+    NOTES.push({id:k,lib:li,title:mkTitle(topic),topic:topic,sum:mkSum(topic,chunks),
+      updated:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'),
+      chunks:chunks,status:st,
+      x:c[0]+gauss()*260,y:c[1]+gauss()*175,ph:R()*6.28,sp:rr(0.6,1.6),dx:rr(-8,8),dy:rr(-6,6)});
+  }
+  LIBS.forEach(function(L,li){
+    var arr=NOTES.filter(function(n){return n.lib===li;}).sort(function(a,b){return b.chunks-a.chunks;});
+    arr.forEach(function(n,idx){n.rank=idx;n.hub=idx<5;n.capital=idx===0;});
+  });
+})();
+/* 珊瑚林（静态，底图缓存：每礁 10 株程序珊瑚，与笔记数无关） */
+var CORALS=[];
+(function(){
+  LIBS.forEach(function(L,li){
+    for(var i=0;i<10;i++){
+      CORALS.push({lib:li,x:CENTERS[li][0]+gauss()*260,y:CENTERS[li][1]+gauss()*160+40,
+        s:rr(14,30),a:rr(0,6.28)});
+    }
+  });
+})();
+var state={density:500,vis:[true,true,true,true],q:'',hits:[],hover:-1,
+  cam:{x:800,y:520,k:1},tween:null,theme:'dark',reduced:matchMedia('(prefers-reduced-motion: reduce)').matches};
+var cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+var base=document.createElement('canvas'),btx=base.getContext('2d');
+var DPR=1,W=0,H=0,baseDirty=true;
+function cssVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+function libColor(li){return cssVar('--c'+li);}
+function hexA(hex,a){var n=parseInt(hex.slice(1),16);return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';}
+function fit(){var k=Math.min(W/WORLD.w,H/WORLD.h)*0.98;state.cam={x:800,y:520,k:k};state.tween=null;baseDirty=true;}
+function resize(){DPR=Math.min(devicePixelRatio||1,1.5);W=innerWidth;H=innerHeight;
+  cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';
+  base.width=W*DPR;base.height=H*DPR;fit();}
+addEventListener('resize',resize);
+function w2s(x,y){return [(x-state.cam.x)*state.cam.k+W/2,(y-state.cam.y)*state.cam.k+H/2];}
+/* 珊瑚绘制（底图用，世界坐标→屏幕的局部变换由调用方包 save/scale） */
+function coral(g,lib,x,y,s,col,alpha){
+  g.strokeStyle=col;g.fillStyle=col;g.globalAlpha=alpha;g.lineWidth=Math.max(1.2,s*0.09);g.lineCap='round';
+  var i,a2;
+  if(lib===0){ // 分枝：三叉枝
+    for(i=0;i<5;i++){a2=-Math.PI/2+(i-2)*0.5;
+      g.beginPath();g.moveTo(x,y);g.quadraticCurveTo(x+Math.cos(a2)*s*0.5,y+Math.sin(a2)*s*0.5,
+        x+Math.cos(a2)*s,y+Math.sin(a2)*s);g.stroke();
+      g.beginPath();g.arc(x+Math.cos(a2)*s,y+Math.sin(a2)*s,s*0.12,0,6.29);g.fill();}
+  }else if(lib===1){ // 扇贝：同心弧
+    for(i=1;i<=3;i++){g.beginPath();g.arc(x,y,s*i/3,Math.PI,0);g.stroke();}
+    g.beginPath();g.moveTo(x-s,y);g.lineTo(x+s,y);g.stroke();
+  }else if(lib===2){ // 管状：三管
+    for(i=-1;i<=1;i++){g.beginPath();
+      g.moveTo(x+i*s*0.4- s*0.12,y);g.lineTo(x+i*s*0.4-s*0.12,y-s*0.8);
+      g.moveTo(x+i*s*0.4+s*0.12,y);g.lineTo(x+i*s*0.4+s*0.12,y-s*0.8);
+      g.stroke();
+      g.beginPath();g.ellipse(x+i*s*0.4,y-s*0.8,s*0.12,s*0.06,0,0,6.29);g.stroke();}
+  }else{ // 海葵：须
+    for(i=0;i<7;i++){a2=-Math.PI/2+(i-3)*0.28;
+      g.beginPath();g.moveTo(x,y);
+      g.quadraticCurveTo(x+Math.cos(a2)*s*0.4,y-s*0.4,x+Math.cos(a2)*s*0.7,y+Math.sin(a2)*s*0.7);g.stroke();}
+    g.beginPath();g.arc(x,y,s*0.16,0,6.29);g.fill();
+  }
+  g.globalAlpha=1;
+}
+/* ---------- 底图：海水＋远礁＋沙床＋贝壳＋珊瑚林＋礁界 ---------- */
+function drawBase(){
+  btx.setTransform(DPR,0,0,DPR,0,0);
+  var dark=state.theme==='dark';
+  var sea=btx.createLinearGradient(0,0,0,H);
+  sea.addColorStop(0,cssVar('--sea1'));sea.addColorStop(0.62,cssVar('--sea2'));
+  sea.addColorStop(0.621,dark?'#0F2E3B':'#D9CE9E');sea.addColorStop(1,dark?'#0B2530':'#EFE3B8');
+  btx.fillStyle=sea;btx.fillRect(0,0,W,H);
+  // 远礁剪影
+  btx.fillStyle=dark?'#123847':'#9CC4C4';btx.globalAlpha=dark?0.8:0.6;
+  for(var fi=0;fi<9;fi++){
+    var fx=(fi*211)%1600,fw=90+((fi*67)%80),fh=60+((fi*41)%70);
+    var a=w2s(fx,812-fh),b=w2s(fx+fw,812);
+    btx.beginPath();btx.ellipse((a[0]+b[0])/2,b[1],(b[0]-a[0])/2,(b[1]-a[1]),0,Math.PI,0);btx.fill();
+  }
+  btx.globalAlpha=1;
+  // 沙纹
+  btx.strokeStyle=dark?'rgba(220,200,150,.25)':'rgba(140,110,60,.30)';btx.lineWidth=1.2;
+  for(var si=0;si<12;si++){
+    var sy=830+si*15,s0=w2s(0,sy);
+    btx.beginPath();
+    for(var sx=0;sx<=1600;sx+=80){var p=w2s(sx,sy+Math.sin(sx*0.02+si)*5);btx.lineTo(p[0],p[1]);}
+    btx.stroke();
+  }
+  // 贝壳 pebbles
+  for(var pi2=0;pi2<40;pi2++){
+    var px=(pi2*397)%1600,py=840+((pi2*251)%150),pp=w2s(px,py);
+    btx.fillStyle=pi2%3?cssVar('--sand'):'#fff';btx.globalAlpha=dark?0.4:0.55;
+    btx.beginPath();btx.ellipse(pp[0],pp[1],3.4,2.2,(pi2%5)*0.4,0,6.29);btx.fill();
+  }
+  btx.globalAlpha=1;
+  // 珊瑚林
+  btx.save();
+  btx.translate(W/2,H/2);btx.scale(state.cam.k,state.cam.k);btx.translate(-state.cam.x,-state.cam.y);
+  CORALS.forEach(function(c){
+    if(!state.vis[c.lib])return;
+    var col=libColor(c.lib);
+    coral(btx,c.lib,c.x,c.y,c.s,col.startsWith('#')?col:'#7DB8FF',dark?0.75:0.8);
+  });
+  btx.restore();
+  // 礁区界（线型四库各异）
+  var k=state.cam.k;
+  LIBS.forEach(function(L,li){
+    if(!state.vis[li])return;
+    var c=w2s(CENTERS[li][0],CENTERS[li][1]),rx=ZR.x*k,ry=ZR.y*k,col=libColor(li);
+    btx.strokeStyle=col;btx.lineWidth=2;
+    if(li===0){ // 波线界：双椭圆，正弦抖动
+      btx.setLineDash([]);btx.globalAlpha=0.8;
+      btx.beginPath();
+      for(var a2=0;a2<=6.29+0.01;a2+=0.12){
+        var wob=1+0.035*Math.sin(a2*5);
+        var ex=c[0]+Math.cos(a2)*rx*wob,ey=c[1]+Math.sin(a2)*ry*wob;
+        a2?btx.lineTo(ex,ey):btx.moveTo(ex,ey);}
+      btx.closePath();btx.stroke();btx.globalAlpha=1;
+    }else if(li===1){ // 双线界
+      btx.setLineDash([]);
+      btx.beginPath();btx.ellipse(c[0],c[1],rx,ry,0,0,6.29);btx.stroke();
+      btx.globalAlpha=0.5;btx.lineWidth=1;
+      btx.beginPath();btx.ellipse(c[0],c[1],rx-10,ry-10,0,0,6.29);btx.stroke();btx.globalAlpha=1;
+    }else if(li===2){btx.setLineDash([12,8]);
+      btx.beginPath();btx.ellipse(c[0],c[1],rx,ry,0,0,6.29);btx.stroke();btx.setLineDash([]);
+    }else{ // 泡链界
+      btx.setLineDash([1,11]);btx.lineWidth=3.4;btx.lineCap='round';
+      btx.beginPath();btx.ellipse(c[0],c[1],rx,ry,0,0,6.29);btx.stroke();btx.lineCap='butt';
+    }
+    // 礁区淡底
+    btx.fillStyle=col;btx.globalAlpha=dark?0.06:0.09;
+    btx.beginPath();btx.ellipse(c[0],c[1],rx,ry,0,0,6.29);btx.fill();btx.globalAlpha=1;
+  });
+  baseDirty=false;
+}
+var STATUS_TXT={ok:'索引正常',partial:'部分生效',failed:'管线失败',pending:'待处理'};
+function visibleNotes(){
+  return NOTES.filter(function(n){
+    if(!state.vis[n.lib])return false;
+    if(state.density===500)return true;
+    if(state.density===150)return (n.id%10)<3;
+    return (n.id%10)===0;});
+}
+function matchQ(n,s){return n.title.toLowerCase().indexOf(s)>=0||n.topic.toLowerCase().indexOf(s)>=0||
+  n.sum.toLowerCase().indexOf(s)>=0||LIBS[n.lib].name.indexOf(state.q.trim())>=0;}
+var stCount=document.getElementById('stCount'),stCam=document.getElementById('stCam'),stFps=document.getElementById('stFps');
+var tip=document.getElementById('tip'),q=document.getElementById('q'),hitsEl=document.getElementById('hits');
+var bubbles=[];for(var bi3=0;bi3<16;bi3++)bubbles.push({x:R()*1600,y:R()*1000,r:rr(1.5,4),sp:rr(20,50),ph:R()*6.28});
+var plank=[];for(var pli=0;pli<12;pli++)plank.push({x:R()*1600,y:rr(120,800),ph:R()*6.28,sp:rr(0.4,1.0)});
+var school={x:-200,t:0}; // 鱼群剪影周期巡游
+var lastT=0,fpsE=60;
+function drawFish(g,x,y,s,dir,col,alpha){
+  g.fillStyle=col;g.globalAlpha=alpha;
+  g.beginPath();g.ellipse(x,y,s,s*0.45,0,0,6.29);g.fill();
+  g.beginPath();g.moveTo(x-dir*s,y);g.lineTo(x-dir*s*1.8,y-s*0.5);g.lineTo(x-dir*s*1.8,y+s*0.5);g.closePath();g.fill();
+  g.globalAlpha=1;
+}
+function frame(t){
+  requestAnimationFrame(frame);
+  var now=t/1000,dt=Math.min(0.05,now-(lastT||now));lastT=now;if(dt>0)fpsE=fpsE*0.95+(1/Math.max(dt,1e-3))*0.05;
+  if(state.tween){var tw=state.tween,f=Math.min(1,(now-tw.t0)/0.6),e=1-Math.pow(1-f,3);
+    state.cam.x=tw.x0+(tw.x1-tw.x0)*e;state.cam.y=tw.y0+(tw.y1-tw.y0)*e;state.cam.k=tw.k0+(tw.k1-tw.k0)*e;
+    baseDirty=true;if(f>=1)state.tween=null;}
+  if(state.reduced&&!baseDirty&&!state.tween)return;
+  if(baseDirty)drawBase();
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);ctx.drawImage(base,0,0,W,H);
+  var qs=state.q.trim(),dimQs=qs.length>0,sl=qs.toLowerCase(),dark=state.theme==='dark';
+  var list=visibleNotes();
+  // 丁达尔光柱（环境，3 束缓摆）
+  if(!state.reduced){
+    ctx.fillStyle=dark?'rgba(160,230,255,.05)':'rgba(255,255,255,.28)';
+    for(var ri=0;ri<3;ri++){
+      var rx0=300+ri*420+Math.sin(now*0.2+ri)*30;
+      var a=w2s(rx0,0),b=w2s(rx0-160,1000);
+      ctx.beginPath();
+      ctx.moveTo(a[0]-34*state.cam.k,a[1]);ctx.lineTo(a[0]+34*state.cam.k,a[1]);
+      ctx.lineTo(b[0]+90*state.cam.k,b[1]);ctx.lineTo(b[0]-90*state.cam.k,b[1]);
+      ctx.closePath();ctx.fill();}
+  }
+  // 节点：浮游光点 / 鱼 / 礁冠
+  var dotR=state.density===500?2.4:state.density===150?3:3.8;
+  var labelCap=state.density===500?8:state.density===150?22:64,labels=0;
+  var sorted=list.slice().sort(function(a,b){return (b.capital-a.capital)||(b.hub-a.hub)||(b.chunks-a.chunks);});
+  sorted.forEach(function(n){
+    var dx=state.reduced?0:Math.sin(now*n.sp+n.ph)*n.dx,dy=state.reduced?0:Math.cos(now*n.sp*0.8+n.ph)*n.dy;
+    var s=w2s(n.x+dx,n.y+dy);if(s[0]<-50||s[1]<-50||s[0]>W+50||s[1]>H+50)return;
+    var col=n.status==='failed'?cssVar('--fail'):n.status==='pending'?cssVar('--pend'):libColor(n.lib);
+    var dimA=dimQs?(n._hit?1:0.12):1;
+    if(n.capital){
+      ctx.globalAlpha=dimA;
+      coral(ctx,n.lib,s[0],s[1]+8,20,col.startsWith('#')?col:'#7DB8FF',1);
+      ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(s[0],s[1]-14,2.6,0,6.29);ctx.fill();
+    }else if(n.hub){
+      drawFish(ctx,s[0],s[1],6.5,n.lib%2?1:-1,col,dimA);
+    }else{
+      var fl=state.reduced?0.9:0.6+0.4*Math.sin(now*n.sp*1.7+n.ph);
+      ctx.globalAlpha=dimA*fl;
+      ctx.fillStyle=col;
+      if(n.lib===0){ctx.fillRect(s[0]-1.4,s[1]-4,2.8,8);ctx.fillRect(s[0]-4,s[1]-1.4,8,2.8);}
+      else if(n.lib===1){ctx.beginPath();ctx.moveTo(s[0],s[1]-dotR-1);ctx.lineTo(s[0]+dotR,s[1]);ctx.lineTo(s[0],s[1]+dotR+1);ctx.lineTo(s[0]-dotR,s[1]);ctx.closePath();ctx.fill();}
+      else if(n.lib===2){ctx.beginPath();ctx.arc(s[0],s[1],dotR+1,0,6.29);ctx.strokeStyle=col;ctx.lineWidth=1.6;ctx.stroke();
+        ctx.beginPath();ctx.arc(s[0],s[1],1.4,0,6.29);ctx.fill();}
+      else{ctx.beginPath();ctx.arc(s[0],s[1],dotR+1,0,4.2);ctx.strokeStyle=col;ctx.lineWidth=1.8;ctx.stroke();}
+    }
+    ctx.globalAlpha=dimA;
+    if(n.id===state.hover||n._hit){ctx.strokeStyle='#fff';ctx.lineWidth=1.4;
+      ctx.beginPath();ctx.arc(s[0],s[1],12+(n._hit&&!state.reduced?Math.sin(now*4)*1.5:0),0,6.29);ctx.stroke();}
+    var want=n.capital||(n.hub&&state.density!==500)||(state.density===50&&n.chunks>40)||n._hit||n.id===state.hover;
+    if(want&&labels<labelCap){labels++;
+      ctx.globalAlpha=dimQs&&!n._hit?0.15:1;
+      ctx.font=(n.capital?'700 ':'')+'12px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle=dark?'#FFFFFF':cssVar('--ink');ctx.textAlign='center';
+      ctx.fillText(n.capital?'❋ '+n.title:n.title,s[0],s[1]-22);
+      ctx.font='10px Consolas,monospace';ctx.fillStyle=dark?'#B9D6D2':cssVar('--sec');
+      ctx.fillText(n.chunks+' 块 · '+STATUS_TXT[n.status],s[0],s[1]+16);
+      ctx.globalAlpha=1;}
+    ctx.globalAlpha=1;
+  });
+  // 气泡＋浮游尘＋鱼群
+  if(!state.reduced){
+    bubbles.forEach(function(b){
+      b.y-=b.sp*dt;if(b.y<40){b.y=980;b.x=R()*1600;}
+      var s=w2s(b.x+Math.sin(now+b.ph)*10,b.y);
+      ctx.strokeStyle=dark?'rgba(200,240,255,.5)':'rgba(255,255,255,.7)';ctx.lineWidth=1.2;
+      ctx.beginPath();ctx.arc(s[0],s[1],b.r,0,6.29);ctx.stroke();});
+    plank.forEach(function(p){
+      var s=w2s(p.x+Math.sin(now*p.sp+p.ph)*24,p.y);
+      ctx.fillStyle='#FFF7D6';ctx.globalAlpha=0.4+0.3*Math.sin(now*1.5+p.ph);
+      ctx.fillRect(s[0],s[1],2,2);ctx.globalAlpha=1;});
+    school.t+=dt;
+    if(school.t>16){school.t=0;school.x=-200;}
+    if(school.t<8){
+      school.x+=90*dt;
+      for(var fi2=0;fi2<5;fi2++){
+        var s2=w2s(school.x-fi2*36,220+fi2*14+Math.sin(now*3+fi2)*6);
+        drawFish(ctx,s2[0],s2[1],7,1,dark?'rgba(10,30,40,.8)':'rgba(40,70,90,.7)',0.85);}
+    }
+  }
+  // 礁区铭牌
+  ctx.textAlign='center';
+  var SYM=['❋','◈','◎','☾'];
+  LIBS.forEach(function(L,li){if(!state.vis[li])return;
+    var s=w2s(CENTERS[li][0],CENTERS[li][1]-ZR.y-28),col=libColor(li);
+    ctx.font='700 13px "Segoe UI","Microsoft YaHei",sans-serif';
+    var txt=SYM[li]+' '+L.name+' · 125 篇',wpx=ctx.measureText(txt).width+22;
+    ctx.fillStyle=cssVar('--float');ctx.strokeStyle=col;ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.rect(s[0]-wpx/2,s[1]-13,wpx,24);ctx.fill();ctx.stroke();
+    ctx.fillStyle=col;ctx.fillText(txt,s[0],s[1]+4);});
+  stCount.textContent='可见 '+list.length+' / 500 · '+state.density+' 档';
+  stCam.textContent='缩放 '+Math.round(state.cam.k/(Math.min(W/WORLD.w,H/WORLD.h)*0.98)*100)+'%';
+  stFps.textContent='FPS '+Math.round(fpsE)+' · 单 rAF · 泡16＋尘12＋鱼群';
+}
+/* ---------- 交互 ---------- */
+var libsEl=document.getElementById('libs');
+LIBS.forEach(function(L,li){
+  var b=document.createElement('button');b.className='chip';
+  b.innerHTML='<i style="background:var(--c'+li+')"></i>'+L.name+' <small>125</small>';
+  b.onclick=function(){var on=state.vis.filter(Boolean).length;
+    if(state.vis[li]&&on===1)return;state.vis[li]=!state.vis[li];
+    b.classList.toggle('off',!state.vis[li]);baseDirty=true;refreshHits();};
+  libsEl.appendChild(b);
+});
+document.getElementById('dens').addEventListener('click',function(e){
+  var b=e.target.closest('button');if(!b)return;
+  this.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});
+  b.classList.add('on');state.density=+b.dataset.n;baseDirty=true;});
+document.getElementById('theme').onclick=function(){
+  state.theme=state.theme==='dark'?'light':'dark';
+  document.documentElement.dataset.theme=state.theme;
+  this.textContent=state.theme==='dark'?'浅滩':'深海';baseDirty=true;};
+function refreshHits(){
+  var s=state.q.trim().toLowerCase();
+  if(!s){state.hits=[];hitsEl.textContent='';return;}
+  state.hits=NOTES.filter(function(n){return state.vis[n.lib]&&matchQ(n,s);});
+  hitsEl.textContent='命中 '+state.hits.length;}
+var deb=null;
+q.addEventListener('input',function(){state.q=q.value;clearTimeout(deb);deb=setTimeout(refreshHits,160);});
+q.addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&state.hits.length){var n=state.hits[0],k0=Math.min(W/WORLD.w,H/WORLD.h)*0.98;
+    state.tween={x0:state.cam.x,y0:state.cam.y,k0:state.cam.k,x1:n.x,y1:n.y,k1:Math.max(state.cam.k,k0*1.4),t0:performance.now()/1000};}
+  if(e.key==='Escape'){q.value='';state.q='';refreshHits();}});
+var drag=null;
+cv.addEventListener('pointerdown',function(e){drag={x:e.clientX,y:e.clientY};cv.classList.add('drag');cv.setPointerCapture(e.pointerId);});
+cv.addEventListener('pointermove',function(e){
+  if(drag){state.cam.x-=(e.clientX-drag.x)/state.cam.k;state.cam.y-=(e.clientY-drag.y)/state.cam.k;
+    drag={x:e.clientX,y:e.clientY};baseDirty=true;state.tween=null;return;}
+  var mx=e.clientX,my=e.clientY,best=null,bd=15;
+  var list=visibleNotes();
+  for(var i=0;i<list.length;i++){var n=list[i],s=w2s(n.x,n.y);
+    var d=Math.hypot(s[0]-mx,s[1]-my);if(d<bd){bd=d;best=n;}}
+  state.hover=best?best.id:-1;
+  if(best){tip.style.display='block';tip.style.left=(mx+16)+'px';tip.style.top=(my+14)+'px';
+    tip.innerHTML='<b>'+best.title+'</b><br><span class="dot" style="background:var(--c'+best.lib+')"></span>'+LIBS[best.lib].name+' · '+best.topic+'<br><span class="m">'+best.updated+' · '+best.chunks+' 块 · '+STATUS_TXT[best.status]+'</span>';}
+  else tip.style.display='none';});
+cv.addEventListener('pointerup',function(){drag=null;cv.classList.remove('drag');});
+cv.addEventListener('wheel',function(e){e.preventDefault();
+  var mx=e.clientX-W/2,my=e.clientY-H/2;
+  var wx=state.cam.x+mx/state.cam.k,wy=state.cam.y+my/state.cam.k;
+  state.cam.k=Math.min(4,Math.max(0.25,state.cam.k*Math.exp(-e.deltaY*0.0012)));
+  state.cam.x=wx-mx/state.cam.k;state.cam.y=wy-my/state.cam.k;
+  state.tween=null;baseDirty=true;},{passive:false});
+cv.addEventListener('dblclick',fit);
+resize();requestAnimationFrame(frame);
+</script>
+</body>
+</html>
