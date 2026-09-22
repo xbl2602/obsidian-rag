@@ -122,8 +122,9 @@ OBSIDIAN_VAULT="$(pwd)/vault_export" .venv/bin/python server.py
    ```bash
    OBSIDIAN_VAULT="$(pwd)/vault_export" .venv/bin/python -c "from retriever import hybrid_search; print(hybrid_search('免费证书', top_k=3))"
    ```
-   首次调用会下载 bge-m3 嵌入模型（数十秒~数分钟）；默认启用重排器
-   （bge-reranker-v2-m3，~1.1GB）时首次检索再加载一次，之后毫秒级。
+   首次调用会下载 bge-m3 嵌入模型（数十秒~数分钟）；已下载后走**离线优先加载**
+   （只读本地缓存、跳过 HF 联网核对，冷加载约 2~3 秒）。默认启用重排器
+   （bge-reranker-v2-m3）时首次检索再加载一次（同样离线优先，约 2~3 秒）。
    返回含 `[来源]` 与正文即成功。
 
 ## 4. 只读靶子数据用法（不导入也能用）
@@ -179,6 +180,16 @@ C:\Users\xbl26\projects\obsidian-rag\.venv\Scripts\python.exe gui\stop.py
 单杀 python 会让 flet.exe 成孤儿残留；stop.py 按命令行匹配 python*+flet.exe 全清，
 并清理 PID 文件。
 
+### 8.1 guiweb（新版桌面壳，问题42）
+
+- 启动：`python guiweb/app.py`（pywebview 桌面壳 + HTML/JS 前端）；契约见
+  `guiweb/contracts.md`，功能对齐清单 `guiweb/FEATURE_PARITY.md`。
+- 路径级勾选抽屉等能力目前 guiweb 独有，Flet 版不同步；改共享层
+  （store/config_editor）两套 GUI 都要过一遍。
+- **错峰铁律（问题59 B2）**：`python wemm_indexer.py --backend on` 是**独立进程**，
+  与 MCP 常驻的 bge 同抢一块显存——MCP 索引/导航在跑时不要手跑 CLI 建页库
+  （反之亦然）；显存不足时 CLI 会先打警告，拉不起则记终态下轮重试。
+
 ## 9. WEMM 页级视觉导航与 GPU 显存仲裁（问题37/39/41，2026-09-04 起）
 
 - 页级视觉导航默认开启（`wemm_backend=on`）：**建页库跟随索引自动跑**（增量/全量重建
@@ -190,8 +201,12 @@ C:\Users\xbl26\projects\obsidian-rag\.venv\Scripts\python.exe gui\stop.py
   PID：`data/wemm_server.pid`。
 - **GPU 显存互斥（gpu_arbiter.py）**：同一时刻只允许一个模型驻留显存——WEMM 加载前等
   空闲显存 ≥5.5GB；bge-m3 加载前显存不足会先请求 WEMM 卸载（`POST /evict`，检索优先；
-  被抢占的页索引批次落失败终态、下轮自动重试）；MCP server 空闲 10 分钟自动卸载
-  bge-m3/reranker。**fail-open 铁律**：显存探测失败绝不阻塞任何路径——若探测异常导致
+  被抢占的页索引批次落失败终态、下轮自动重试）；MCP server 空闲
+  `gpu_idle_unload_seconds`（默认 5 分钟，0 = 常驻不卸载）自动卸载
+  bge-m3/reranker（索引运行期间跳过，不会抽走正在用的模型）。**BGE↔WEMM 交接**：
+  建文字索引只用 bge，开跑前会先放下检索专用的 reranker 并主动让 WEMM 下线；
+  文字库建完后不急着放 bge——真要去渲染页面拉看图服务时才放（纯笔记增量不白放）。
+  **fail-open 铁律**：显存探测失败绝不阻塞任何路径——若探测异常导致
   行为退化，先查 `nvidia-smi` 是否可用，不要拆掉仲裁逻辑。
 - 诊断顺序：`wemm_status()`（服务/页库状态）→ `index_failures()`（文字索引失败溯源）→
   GUI「文件生效明细」逐文件核对 → `data/wemm_server.log` 看服务侧。

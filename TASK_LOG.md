@@ -2643,3 +2643,341 @@ preview 解析成功但只写临时缓存，所以生产 0 local 缓存是对的
   把 top_k 调大（如 15~20）…」；搜「UIUX」→ 给 top_k 建议 + 回填/折叠说明；
   搜「怎么让我的笔记更好找」→ 给整批偏低 + 命中含非笔记库（skills）两条。
 
+## 问题56：模型冷加载提速（离线优先 + 可配空闲卸载 + 重排 fp16）（2026-09-12）
+
+> 用户诉求："大部分程序都花在加载模型上，有没有可靠解法"。先实测定位再动手，
+> 四项经用户逐项审批后执行。
+
+### 定位（实测，每场景独立子进程冷加载）
+
+| 场景 | import（进程固定） | 模型加载 | 合计 |
+|---|---|---|---|
+| 嵌入 现状（联网解析） | 5.2s | 11.38s | 16.4s |
+| 嵌入 离线 `local_files_only` | 5.2s | **2.59s** | 7.7s |
+| 重排 现状 fp32（联网解析） | 5.2s | 10.21s | 15.4s |
+| 重排 离线 fp32 | 5.2s | 2.57s | 7.6s |
+| 重排 离线 fp16 | 5.2s | 2.49s | 7.5s |
+
+根因：`SentenceTransformer/CrossEncoder` 传 **repo id** 时，即使模型已下载，
+每次加载都要先向 huggingface.co 核对 commit/文件新鲜度（串行 HTTPS 往返），
+实测占冷加载约 8 秒（GitHub sentence-transformers#2842 亦记录 6~7x）。
+
+### 四项改动
+
+1. **离线优先加载**（`index._load_pretrained`，嵌入 `_build_model` + 重排
+   `_get_reranker` 共用）：先 `local_files_only=True` 只读本地缓存，抛 `OSError`
+   （本地缺文件/首次下载）才回退联网。无模型/结果差异，纯少等。冷加载 11.4s→2.6s。
+2. **空闲卸载时间可配**：`server._GPU_IDLE_UNLOAD_S` 硬编码 600s → 新键
+   `gpu_idle_unload_seconds`（DEFAULTS/模板/设置页三处同步，默认 **1800s**，
+   **0 = 常驻不卸载**）。桌面"隔一会儿再查"不再每次重付冷加载。
+3. **重排器 fp16**（`_get_reranker` 加 `torch_dtype=float16`）：显存/读盘减半，
+   官方（BAAI）推荐。**阈值重测**：真库 12 组查询 fp32 vs fp16 逐条对比，分数
+   几乎逐位相同（仅一处 0.89→0.88），命中率完全一致 → `CONF_TIER_STRONG=0.75` /
+   `confidence_warn_threshold=0.30` 无需调整。
+4. **清 bge-m3 冗余**：查 HF 官方发现 main 只有 `pytorch_model.bin`（无 safetensors），
+   本地那份 safetensors 是**未合并的 PR 快照**（孤儿，2.17GB，main 用不到）。
+   删除孤儿快照 + 其 ref，回收 **2.17GB**；main 完整、离线加载验证通过。
+   （"切 safetensors"因官方无此产物不可行，如实记录。）
+
+### 回归
+
+- 新增用例（`audit_regression_test.py`）：离线优先"先本地后回退/命中不联网"、
+  两条加载路径必须穿 `_load_pretrained` 且重排 fp16、空闲卸载键可配且 0 合法。
+- `tests/run.py` 14/14 全绿（46.9s）；`verify_export_import` 顺带 17.3s→13.0s
+  （真模型走离线加载的副作用）。真库 9 个 collection 原样、无污染。
+
+## 问题57：显存管理补强 + 修复 config.json 静默失效（2026-09-12）
+
+> 用户反馈："检索后拉起了 bge-m3+reranker，但建索引时不释放，显存一直满"，
+> 同时要求空闲卸载改 5 分钟、有新调用刷新计时。
+
+### 显存管理两个真实缺口
+
+1. **建索引从不主动放下 reranker**：`index_library` 此前只在 WEMM 页同步阶段
+   才释放模型。检索留下的 reranker（~1.1GB，检索专用）会全程陪跑索引，纯浪费。
+   → 修：`index_library` 进 `_index_core` 前先 `release_reranker()`（bge 保留，
+   本轮要拿它嵌块）；与 WEMM 后端无关，off 也释放。
+2. **空闲卸载只看计时器**：`server._gpu_idle_unload_daemon` 原先只比活动时间戳，
+   而 `_touch_gpu_activity()` 在任务开头只调一次。阈值缩到 5 分钟后，长索引
+   会被空闲线程**半路抽走正在用的 bge**→反复重载。→ 修：守护线程先读
+   `read_progress().get("running")`，任务运行期间刷新活动时间并跳过卸载
+   （等价于计时从任务结束才起算）。
+
+### 顺带修复：config_editor 写坏 config.json（严重）
+
+- **现象**：`data/config.json` 第 177 行 `confidence_drop_threshold` 少一个逗号 →
+  整份 JSON 解析失败 → `config.load_config` 静默回退全部默认值，用户真实设置
+  （MinerU Key、`pdf_scan_backend=mineru-local` 等）全部被悄悄忽略（日志走 stderr，
+  不易察觉）。
+- **根因**：`config_editor._replace_value` 用 `rest.rstrip().endswith(",")` 判断
+  原行是否以逗号结尾；当行尾有 `// 行内注释` 时 rstrip 落在注释文字上 → 误判
+  "无逗号" → 替换后把逗号（连同注释）一起吞掉。docstring 声称"保留行内注释"，
+  实际从未保留。
+- **修复**：新增 `_value_span`（字符串含转义 / 数组可嵌套 / 标量各自正确收边），
+  只替换值文本、原样保留其后的逗号与行内注释；`apply_updates` 写盘前用
+  `config._strip_json_comments/_strip_trailing_commas + json.loads` 校验，坏 JSON
+  一律拒绝写入。已把用户 `data/config.json` 缺失的逗号补回、验证解析通过。
+- **回归**：新增 `test_replace_value_preserves_comma_and_inline_comment`、
+  `test_replace_value_keeps_config_valid`（对真实模板多轮替换后仍可解析）、
+  `test_apply_updates_rejects_invalid_json`。
+
+### 配置变更
+
+- `gpu_idle_unload_seconds` 默认 1800 → **300（5 分钟）**；DEFAULTS/模板/设置页同步，
+  实机 `data/config.json` 已改 300。
+
+### 回归
+
+- 新增 `test_indexing_releases_reranker_up_front`、更新
+  `test_gpu_idle_unload_is_configurable`（默认 300 + 运行中跳过）与
+  `test_auto_phase_follows_index_library`（承认开跑前 reranker 释放）。
+- `tests/run.py` 14/14 全绿（45.8s），真库 collection 原样。
+
+## 问题59：完整修复 9 红灯 + 多 Agent 并发调度与资源管理（2026-09-12）
+
+> council 咨询模式评审（`.council-state/round-plan-5/`，6 委员：🔴9/🟡35/🟢29）
+> 后用户拍板"完整修复 + 多 Agent 并发 MCP 调度与资源管理"，立 GOAL.md（C1–C4 全绿）。
+> 并发方案用户亲选 **C：全局 GPU 互斥锁**（而非"navigate 遇索引回忙"的轻方案）。
+
+### C 方案：`gpu_arbiter.GPU_LOCK`（RLock，多 Agent 调度总线）
+
+- 同进程一切"改变显存里住着谁"的操作全持锁：bge 加载/释放、reranker 释放、
+  evict、让路判定；纯查询不持锁天然可并发。RLock 保证 navigate 持锁调
+  release 不自死锁；持有期只包判定 + 快速变更，`ensure_server` 120s 长等待
+  永远在锁外；拿不到锁（15s）走降级不硬等。
+- `get_model` 检查-加载-赋值全程持锁 + 锁内双重检查（B6 单飞，2 线程实测
+  loads 2→1）；`release_model`/`fallback_to_cpu`/`_try_switch_back_cuda`/
+  `_vram_maybe_evict_wemm`/`index_library` 开跑驱逐全部进锁。
+- `navigate_knowledge`：持锁做"`_index_running` 判定 + 释放"原子操作；在跑或
+  拿不到锁 → veto（只查已活着的服务，否则回忙，绝不从索引线程嘴里拔模型）。
+- `server` 空闲守护：检查-释放原子化（判定完释放前索引启动也抽不走）。
+
+### 9 红灯逐项
+
+- B1：`_load_pretrained` 回退放宽到 `(OSError, ValueError, RuntimeError)`，
+  联网也失败则抛带清理指引的 RuntimeError（光放宽未必自愈，已如实记）。
+- B2：CLI 是独立进程、`before_serve` 够不着 MCP 侧——不补无用回调，改为
+  `_warn_if_vram_low()` 显存不足先警告 + AI_GUIDE 错峰铁律。
+- B3：见 C 方案 veto（另发现 `ensure_server` 本身不查显存，如实记，未动）。
+- B4：`_auto_batch_size` 探针包 try，失败取保守上限进正常降级链。
+- B5：prune 存活集补读 base `index_meta.json`（不存在零副作用）。
+- B6：见 C 方案单飞（`retriever._reranker_lock` 作对照已注记）。
+- B7：`_check_idle_unload` 看 `_active_requests`（与 `_idle_exit_daemon` 同款守卫）；
+  `/evict` 先 `_API_LOCK` 后 `_INNER_LOCK`（与 parse 同序不死锁），注释"等走完"
+  变成真的。后果订正：此前是 deferred 空转活锁而非误落终态。
+- B8：两处 navigate 文案改字（reindex 本来就自动同步页库）；server 1800 残留改 300。
+- B9：AI_GUIDE 补 §8.1 guiweb（含 B2 错峰铁律）。
+
+### 回归
+
+- 新增 `tests/test_mcp_scheduling.py` 25/25（B1/B3 真跑 navigate/B4/B5/B6×2/B7/
+  B2/锁单例；假加载器 + `_IsoEnv`，零真实模型；server 经信号隔离后导入真测）。
+  经用户确认**已编入 `tests/run.py` SUITES**（A 组）：全量 15 套，`test_mcp_scheduling`
+  套内 25/25、整轮 64s。注册后首次全量实测无套间污染。
+- `tests/run.py` 15/15 全绿（64.2s）；真库 9 个 collection 原样；C2/C3/C4 原命令全绿。
+- 待用户人工：Vault 用户文档组同步（跨工作区）；B2 若要根治需跨进程协调（另立目标）。
+
+## 问题58：BGE↔WEMM 交接收紧（主动让路 + 延后释放）（2026-09-12）
+
+> 用户追问："建库时 WEMM 用不到，建完了轮到 WEMM、BGE 用不到"。核对后发现：
+> "建完放 BGE 给 WEMM"这半段是硬的（问题41 已有），但"建库期间 WEMM 别占显存"
+> 这半段是**被动**的（只在 BGE 加载撞显存不足时才踢），且释放 BGE 过于激进。
+
+### A. 建索引开跑前主动 evict WEMM（让"BGE 阶段无 WEMM"变硬）
+
+- 原状：`get_model()` 里 `_vram_maybe_evict_wemm()` 只在 BGE **加载**且空闲显存
+  不足时才踢 WEMM——极端时序下 BGE 可能先撞上 WEMM 占显存 → OOM → 降级 CPU。
+- 修：`index_library` 进 `_index_core` 前，若 wemm 开启且服务在线，主动
+  `evict_wemm`（`index.py`；fail-open，服务不在/探测失败静默跳过）。
+
+### B. BGE 释放延后到"真要渲染"（避免白放）
+
+- 原状：`_wemm_auto_phase` 无条件先 `release_reranker()`+`release_model()`，
+  哪怕本轮没有 PDF 需要渲染（纯 md 增量）也白放 BGE，下次搜索重新上车。
+- 修：删除该无条件释放，改为把释放包成 `before_serve` 回调传给
+  `wemm_indexer.index_wemm_library`；`_ensure_server_lazy` 在**首次真正要拉
+  看图服务**前调一次。无页可渲染 → 回调不触发 → BGE 原地保留。
+  顺带清掉与 `index_library` 开跑前 reranker 释放重复的那次。
+
+### 回归
+
+- 新增/更新（`test_wemm_indexer.py`）：`test_indexing_proactively_evicts_wemm`
+  （在线则 evict、off 零探测）、`test_before_serve_only_when_rendering`
+  （渲染轮调一次、快速路径不调）、`test_before_serve_precedes_ensure_server`
+  （顺序契约）、`test_auto_phase_follows_index_library` 改为断言回调延后释放。
+- `tests/run.py` 14/14 全绿，WEMM Indexer 67/67。
+
+## 问题60：库简介——导航性内容简介，采样生成 + 用户覆盖保护（2026-09-16）
+
+> 用户："`list_libraries` 只能告诉 agent 有什么库、标题和一些元数据，但不能告诉
+> agent 这个库到底有什么内容，agent 通读全文前根本不知道值不值得查。"
+> 追问设计细节：谁来写（用户写不现实，几百篇文档；AI 顺手写又跟"检索省 token"
+> 的本意矛盾）、几百个 md 文件几万字怎么喂给 LLM 不爆 token、用户手写后 AI 要不要
+> 能覆盖。用户拍板：生成只能显式触发（GUI 按钮 / 对话明确要求）、用户和 AI 都能写、
+> AI 想覆盖用户手写内容前必须 double confirm、本地/云端 LLM 二选一设置页可配。
+
+### A. 数据模型（`library.py`）
+
+- registry 条目新增 `summary` 字段：`{text, source: none|ai|user, updated_at,
+  fingerprint, model}`，不进 `OVERRIDE_KEYS`（这是内容数据不是继承式配置）。
+- 唯一写口 `set_library_summary`（同 `set_selection` 先例）：校验 source 合法
+  （只收 ai/user）、长度上限 `SUMMARY_MAX_CHARS=300`，GUI 直改、GUI 刷新生成、
+  MCP 门禁通过后的写入统一走这一处。读侧 `get_library_summary` 对非法/缺失字段
+  静默兜底空白态，防手改逃逸。
+
+### B. 采样与生成（新文件 `library_summary.py`）
+
+- 不需要也不能把几百篇文档全文喂给 LLM：库内每个块在索引时已经过 BGE-M3 编码
+  存进 Chroma，这是免费副产品。直接在这份向量空间里做**最远点采样**
+  （farthest-point sampling：从任一点出发，每步选与已选点集最远的下一个点，
+  确定性、无需 k-means 那样迭代收敛、天然覆盖语义分散区域）取 15~25 个代表块，
+  输入规模由采样数固定，与库到底有 300 篇还是 3000 篇文档基本无关。
+- `content_fingerprint`：聚合库内文件的 相对路径:md5（复用 `index.load_meta`，
+  不重算）；`is_stale` 判断已生成简介的指纹是否对不上当前内容，`list_libraries`
+  据此标注"简介或已过时"。
+- LLM 调用复用 `retriever.hyde_generate` 的 OpenAI 兼容 chat completions 调用
+  方式（`urllib.request`，零新依赖），加一个可选 `api_key`：本地服务（如 LM
+  Studio）留空即可，云端只需换 URL + 填 Key 走 Bearer 认证——本地/云端只是
+  `config.library_summary_llm_url`/`_model`/`_api_key` 三个字段的取值差异，
+  不是两套代码路径。
+
+### C. 覆盖保护（新文件 `summary_gate.py`，仿 `selection_gate.py`）
+
+- `source` 为 `none`/`ai` 时可直接覆盖，不需要门禁；一旦 `source=="user"`
+  （用户在 GUI 手写过），AI 想覆盖必须走两段式确认——`make_proposal` 生成
+  提案号+6位确认码（10分钟TTL）→ `consume_proposal` 校验后一次性消费——与
+  `selection_gate.py` 完全同一套机制，两个门禁互不依赖、各管各的数据面。
+  用户自己在 GUI 编辑框手动改并保存不经过此门禁，无条件生效（不存在"用户向
+  自己确认"的说法）。
+
+### D. MCP 工具（`server.py`）
+
+- `list_libraries` 展示每库简介（没有则提示未生成，过时则标注）。
+- 新增只读 `get_library_sample(library, k)`：吐采样片段给 agent 自己组织语言写；
+  新增 `propose_library_summary(library, text)`：非 user 锁定时直接写生效，
+  锁定时走门禁生成提案；`apply_library_summary(library, proposal_id,
+  confirmation_code)`：确认后写入。三者 docstring 内硬编码触发纪律
+  （"仅在用户明确要求…才调用"）与内容规范（导航性质、禁止逐字摘抄、≤300字、
+  不点名具体笔记），因为 agent 运行时只读 docstring，不读 AGENTS.md。
+
+### E. GUI（仅 guiweb，Flet `gui/` 暂缓）
+
+- 库卡片新增简介展示区 +「简介」按钮打开弹层：可手动编辑保存（`source=user`，
+  无条件生效）、可点「刷新简介」调用生成（若当前是用户手写，先返回
+  `needs_confirm` 由前端弹二次确认，用户同意后带 `force=true` 重调才覆盖——
+  GUI 侧的"当面确认"不需要 MCP 那套确认码，用户此刻就在界面上）。
+- 设置页新增「库简介生成」分组（`library_summary_llm_url`/`_model`/`_api_key`，
+  仿 HyDE 字段渲染），因 `config_editor.py` 是两套 GUI 共享层，Flet `gui/` 的
+  设置页自动一并可见，无需额外改动。
+- `guiweb/contracts.md`/`FEATURE_PARITY.md` 同步；`wiring_check.py` 三向对齐
+  （契约方法↔`mock.js`实现↔`app.js`调用）全绿。
+
+### 回归
+
+- 新增 `tests/test_library_summary.py` 49/49（唯一写口校验/指纹翻转/最远点
+  采样含空库与collection异常降级/fake urlopen 覆盖 LLM 调用成功·失败·空白·
+  api_key 头/summary_gate 门禁全流程含过期与重放拒绝/写入语义仅 user 锁定），
+  已编入 `tests/run.py` SUITES（A 组）。
+- `tests/run.py` 16/16 全绿（93.1s）；`guiweb/wiring_check.py` 全绿；
+  `config.template_consistency_errors()` 空（DEFAULTS/CONFIG_TEMPLATE 一致）。
+- 待用户人工：真实本地/云端 LLM 端到端冒烟（无现成服务，需用户自行配置
+  LM Studio 或云端 Key 后验证）；Vault 用户文档组同步（跨工作区）。
+
+### 附记（2026-09-16，用户真机实测反馈，两个真 bug + 一次交互返工）
+
+> 用户接入 LM Studio 实测：先是 `TypeError: truth value of an array...
+> ambiguous`；改用 `/v1/chat/completions` 端点后又炸——LM Studio 日志显示
+> 连接在整 30 秒被客户端掐断，此时模型（思考型模型 qwen3.6-35b-a3b）还在
+> `reasoning_content` 阶段没写到最终 `content`。随后追加需求：config 里
+> timeout/token 预算要能调；GUI 要能"一键刷新当前选择的全部库"而不是一个个点；
+> 点了刷新之后要能关掉窗口，且要有更明确的动效告诉用户任务确实在跑。
+
+**F1（真 bug）：numpy 真值判断**——`library_summary.sample_representative_chunks`
+里 `data.get("embeddings") or []` 对 Chroma 返回的 numpy 数组做真值判断，
+数组元素数 >1 时 Python/numpy 直接拒绝回答"真假"并抛异常。改为一律
+`is None`/`len()==0` 判空。测试同步加固：`test_sample_representative_chunks`
+改用 `np.array(embs)` 而非 python list 灌假 collection——用 list 测不出这个坑，
+这是本次教训（结构相同不代表真值语义相同）。
+
+**F2（真 bug）：本地思考型模型的超时/预算太紧**——`call_llm` 原 30s 超时、
+400 max_tokens 是照抄 `hyde_generate`（那是查询期的轻量调用），但库简介生成
+调的是用户自己的本地大模型，思考阶段可能就要几十秒，reasoning_content 也要
+吃掉一部分 token 预算。改为超时 180s、预算 2000，且都做成可调配置项
+`library_summary_llm_timeout_seconds`/`_max_tokens`（写法同 `hyde_llm_*`）；
+`call_llm` 新增识别：`content` 空但 `reasoning_content` 非空时明确判定为
+"思考没写完"，绝不把思考过程当简介返回（这是内心独白，不是概括，返回它会
+直接违反"一段导航性文字"的内容规范）。
+
+**交互返工：生成从同步阻塞改成后台任务 + 轮询**——原设计里点"刷新简介"是
+一次同步的 `refresh_library_summary` 调用，前端等 promise resolve，思考型
+模型跑 1~3 分钟期间弹层等于"卡住"，用户也没法关窗口去干别的。改成
+`refresh_library_summaries_batch`（立即返回）+ `refresh_library_summaries_poll`
+（前端 800ms 轮询），单库/批量共用同一条路径（names 传一个元素即单库）——
+跟提取试验台的 `preview_start`/`preview_poll` 是同一套异步模式。关掉「库简介」
+弹层、切到别的标签页都不影响任务继续跑，跑完不管用户在不在原弹层都会 toast。
+库页顶部新增常驻状态条（`.mini-spin` 转圈 + "X/Y（当前：库名）"进度文案）+
+"隐藏（后台继续跑）"按钮——用户要的"更明确的动效"与"能关窗口"由这一套机制
+一起满足。新增"刷新全部简介"按钮：目标 = 当前"库范围"多选（`S.scope`，
+复用已有的全局库范围选择器，空=全部库）；批量遇到 source=user（用户手写）
+的库会跳过并记 `needs_confirm`，全部跑完后一次性汇总问"这 N 个库要不要也
+覆盖"，而不是每个库分别弹一次打断节奏。
+
+回归：`tests/test_library_summary.py` 50/50（新增思考型模型"只有
+reasoning_content"场景的用例）；`tests/run.py` 16/16；`guiweb/wiring_check.py`
+全绿（契约方法改名 `refresh_library_summary` → `refresh_library_summaries_batch`
++ `refresh_library_summaries_poll`，`contracts.md`/mock.js/app.js 三向同步）。
+
+### 附记二（2026-09-16，真机连续批量刷新暴露的 3 个问题）
+
+> 用户实测批量刷新多个库后反馈：① 生成出来的简介明显"串味"，像是把上一个库
+> 的内容也算了进去，不应该每次都是全新的；② 手写简介被拒绝覆盖一次之后，之后
+> 刷新别的库它还是会反复再问同一个库要不要覆盖；③ 简介弹窗生成完之后点进去
+> 看不到内容，而且弹窗本身太小，可读性几乎为零。
+
+**真 bug①：本地 LLM 服务端"提示词前缀缓存"跨库串味**——`build_prompt` 原来
+把 `_PROMPT_INSTRUCTIONS`（固定不变的规范文字）和库名等每次都变的内容拼进
+同一条 user 消息里；批量连续刷新时，每个库发出去的请求前几百字节逐字相同、
+后面才分叉。这正是 llama.cpp/LM Studio 这类本地推理服务端"提示词前缀缓存"
+（复用相同前缀的 KV cache 加速生成）最容易在"匹配到一半"处出问题、把上一次
+请求的话题续到这次回答里的触发条件——不是代码真的"传递了上下文"，是本地
+服务端的缓存匹配点落在了不该落的地方。
+
+第一版修法是索性关掉缓存（`cache_prompt: false`），用户反馈："别一刀切关掉，
+一开始都是用的固定规范提示词，应该让这段留在缓存里给后面的库提速，同时避免
+串味。"于是改成**结构性**修法：把 `_PROMPT_INSTRUCTIONS` 单独拆成一条
+system 消息（逐库调用时这段文字逐字不变），`build_prompt` 只负责拼库名/
+文件/采样片段这条 user 消息（每次都不同）。两条消息分开发，服务端的前缀
+缓存命中点精确落在 system 消息末尾——要么整条 system 消息完全匹配复用
+（safe，speed 收益还在），要么 user 消息一开始就不匹配、整条重算，不存在
+"匹配到一半"的歧义地带，速度和正确性都要。不再需要 `cache_prompt: false`
+这个字段，云端/本地两条路径又统一了，不用再区分要不要加它。
+
+**真 bug②：批量场景下同一个手写库被反复追问**——原逻辑里用户对"要不要覆盖
+手写简介"点了否/关掉确认框后，这个决定不会被记住，下次刷新（哪怕只是想刷新
+别的库、并没打算动这个库）它又会被排进 needs_confirm、又弹一次确认——用户
+明明已经表过态，却被无限重复打扰。修：`app.js` 新增会话级免打扰记忆
+`SUMBATCH.skip`（Set，只活在这次页面会话里，刷新页面即清空，不做持久化——
+覆盖用户内容这种事不该被"记住太久"），批量场景里已经问过且被拒绝的库直接
+静默跳过、不再弹窗，只汇总计入"已跳过"提示；但如果用户专门打开那个库自己的
+简介弹窗、主动点"刷新简介"，视为一次明确的针对性动作，会清掉这条免打扰记忆
+重新问一次——批量场景的"别烦我"和单库场景的"我就是要动这个库"是两种不同
+意图，不能用同一个开关兜底。
+
+**真 bug③：简介弹窗太小，生成完看不出内容**——`mSum` 弹窗原用 `modal-wide`
+（560px）+ 96px 高的文本框、12.5px 小字号，300 字的一段话挤在里面基本看不清，
+用户描述为"点进去看不到简介"。改用已有的 `modal-doc`（720px）宽度类，文本框
+新增 `.sum-textarea-lg`（最小高度 260px、14px 字号、1.8 行高），可读性问题
+本质是尺寸问题，不是数据没写进去。
+
+回归：`tests/run.py` 16/16；`guiweb/wiring_check.py` 全绿（本轮改动不涉及
+契约方法签名，未触碰 `contracts.md`）。
+
+**内容规范拍板**：给用户 3 个候选方向——①范围地图型（总体定位+主题板块）、
+②检索决策卡型（直接说"适合查什么/查不到什么"，不列主题）、③性质画像型
+（讲内容形式/详略/更新频率而非主题）。用户选①+②融合。改写
+`_PROMPT_INSTRUCTIONS`：简介必须同时做两件事——先给总体定位和库内主要
+主题板块（口语化提及，不用编号/项目符号罗列），再明确写"适合来这查什么类型
+的问题"和"大概率查不到什么"（正反两面都要有），直接服务于 agent"值不值得
+查"这个决策，而不是只报主题范围让 agent 自己去猜。其余约束不变（禁止逐字
+摘抄、不点名具体笔记、100~300字一段话、不用 markdown）。
+

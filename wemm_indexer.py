@@ -181,12 +181,15 @@ def _file_md5(path):
 
 
 def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
-                       url=None, model=None, dim=None, progress=None):
+                       url=None, model=None, dim=None, progress=None,
+                       before_serve=None):
     """对一个注册库做 WEMM 页级索引（增量自愈）。
 
     cfg = effective_config(lib)。backend=False 或 wemm_backend=off 时直接返回
     （调用方负责本函数之外的门禁判定）。
     agent_allowed：None = 无限制；后缀集合 = 仅处理这些格式的 PDF，其余冻结（红线6）。
+    before_serve：可选无参回调；在**首次真正要拉看图服务（=要占显存）之前**调一次，
+    供调用方释放 bge/reranker 让路。没有要渲染的页时根本不会触发（问题58 B）。
     返回统计 dict。
     """
     from config import CFG
@@ -260,6 +263,13 @@ def index_wemm_library(cfg, backend=True, full=False, agent_allowed=None,
         if server_state["tried"]:
             return False
         server_state["tried"] = True
+        # 让路回调（问题58 B）：真要拉看图服务（=要占显存）前才通知调用方释放
+        # bge/reranker。无页可渲染时不会走到这里，故不会白放。
+        if before_serve is not None:
+            try:
+                before_serve()
+            except Exception:
+                pass
         import gpu_arbiter
         ok, detail = gpu_arbiter.ensure_server(log=log)
         server_state["ready"] = ok
@@ -412,6 +422,21 @@ def log(*args):
     print("[wemm-indexer]", *args, file=sys.stderr)
 
 
+def _warn_if_vram_low():
+    """CLI 跨进程争用提示（问题59 B2）：本进程是独立进程，before_serve 够不着
+    MCP 常驻的 bge——MCP 索引/导航在跑时手跑本命令会同抢显存。显存不足先警告，
+    由用户决定是否错峰（ensure_server 本身 fail-open，拉不起记终态下轮重试）。"""
+    try:
+        import gpu_arbiter
+        free = gpu_arbiter.vram_free_gb(max_age=0.0)
+        if free is not None and free < gpu_arbiter.WEMM_MIN_VRAM_GB:
+            log(f"警告：当前空闲显存仅 {free:.1f}GB（WEMM 需 ≥{gpu_arbiter.WEMM_MIN_VRAM_GB}GB）——"
+                f"可能 MCP 侧 bge/WEMM 正占用。建议与 MCP 索引/导航错峰（见 AI_GUIDE），"
+                f"否则本轮可能拉起失败记终态下轮重试。")
+    except Exception:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--library", default="all", help="库名（或 all=全部注册库）")
@@ -428,6 +453,8 @@ def main():
         return
     if backend_cfg == "local":
         backend_cfg = "on"
+
+    _warn_if_vram_low()  # 问题59 B2：跨进程争用先警告（独立进程，回调够不着 MCP 侧）
 
     # 问题41：看图服务不再预检——index_wemm_library 内部懒拉起（有页要渲染
     # 才拉），全部命中快速路径时零拉起零开销

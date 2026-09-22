@@ -35,11 +35,14 @@ from retriever import release_reranker
 from index import (HEARTBEAT_TIMEOUT, LockBusyError, collect_md_files,
                    index_library, kb_stale, load_meta, log, progress_text,
                    prune_unreferenced_data, read_progress, resolve_note_relations)
-from library import (effective_config, list_summary, load_registry, meta_path,
-                     norm_sel_path, resolve_entries, resolve_selection,
-                     set_config, set_selection)
+from library import (effective_config, get_library_summary, list_summary,
+                     load_registry, meta_path, norm_sel_path, resolve_entries,
+                     resolve_selection, set_config, set_library_summary,
+                     set_selection)
 from retriever import hybrid_search_hyde, reset_bm25_index
+import library_summary
 import selection_gate
+import summary_gate
 from singleton import acquire_singleton
 from wemm_retriever import wemm_search
 import gpu_arbiter
@@ -49,9 +52,11 @@ server = MCPServer("obsidian-rag", title="Obsidian RAG", version="0.2.1")
 # 进程内后台索引状态（防重复启动；进度详情在 index_progress.json）
 _background = {"thread": None, "pid": None}
 
-# GPU 活动时间戳与空闲卸载（问题41：bge-m3 "完工即卸"——10 分钟无检索/索引
-# 活动就释放常驻模型给 WEMM/其他用途让路；下次检索 get_model 懒加载回来）
-_GPU_IDLE_UNLOAD_S = 600.0
+# GPU 活动时间戳与空闲卸载（问题41：bge-m3 空闲即卸，给 WEMM/其他用途让路；
+# 下次检索 get_model 懒加载回来）。空闲阈值由 config.gpu_idle_unload_seconds 现读
+# （2026-09-12：原硬编码 600s 太短，桌面"隔一会儿查一次"每次都重付冷加载；
+# 问题57 改为默认 300s，0 = 常驻不卸载；回退常量同步 300）。
+_GPU_IDLE_UNLOAD_DEFAULT_S = 300.0
 _gpu_activity = {"ts": time.time()}
 
 
@@ -59,22 +64,46 @@ def _touch_gpu_activity():
     _gpu_activity["ts"] = time.time()
 
 
+def _gpu_idle_limit_s():
+    """空闲卸载阈值（秒）；配置非法时回退默认。≤0 视为常驻不卸载。"""
+    try:
+        return float(CFG.get("gpu_idle_unload_seconds", _GPU_IDLE_UNLOAD_DEFAULT_S))
+    except (TypeError, ValueError):
+        return _GPU_IDLE_UNLOAD_DEFAULT_S
+
+
 def _gpu_idle_unload_daemon():
     while True:
         time.sleep(60)
         try:
-            if time.time() - _gpu_activity["ts"] < _GPU_IDLE_UNLOAD_S:
-                continue
-            import index as _idx
-            from retriever import _reranker as _rr  # noqa: 惰性快照判定是否有货
-            has_model = _idx._model is not None
-            has_rr = _rr is not None
-            if not has_model and not has_rr:
-                continue
-            release_reranker()
-            release_model()
-            log("GPU 空闲 %.0f 秒，已释放 bge-m3/reranker 常驻显存（下次检索自动懒加载）"
-                % _GPU_IDLE_UNLOAD_S)
+            # 问题59：检查-释放原子化（持 GPU_LOCK）——"索引在跑"判定与卸载
+            # 必须是同一个临界区，否则判定完、释放前索引刚好启动，照样抽走
+            # 正在用的模型。有任务在跑（索引/页库）：刷新活动时间并跳过——
+            # 绝不卸载正在用的模型（阈值缩到 5 分钟后，长索引若只靠起点计时
+            # 会被半路抽走 bge→反复重载）。
+            with gpu_arbiter.GPU_LOCK:
+                try:
+                    running = bool(read_progress().get("running"))
+                except Exception:
+                    running = False
+                if running:
+                    _touch_gpu_activity()
+                    continue
+                limit = _gpu_idle_limit_s()
+                if limit <= 0:            # 0 = 常驻不卸载（最快：下次检索零冷加载）
+                    continue
+                if time.time() - _gpu_activity["ts"] < limit:
+                    continue
+                import index as _idx
+                from retriever import _reranker as _rr  # noqa: 惰性快照判定是否有货
+                has_model = _idx._model is not None
+                has_rr = _rr is not None
+                if not has_model and not has_rr:
+                    continue
+                release_reranker()
+                release_model()
+                log("GPU 空闲 %.0f 秒，已释放 bge-m3/reranker 常驻显存（下次检索自动懒加载）"
+                    % limit)
         except Exception as e:
             log(f"GPU 空闲卸载检查失败（忽略）：{type(e).__name__}: {e}")
 
@@ -290,7 +319,12 @@ def ensure_fresh():
 
 @server.tool()
 def list_libraries() -> str:
-    """列出全部已注册知识库（库名/路径/块数/最近索引/独立配置覆盖），供 search_knowledge 的 libraries/exclude 参数选库。库名是唯一标识：未知库名会被拒绝并提示可用库。"""
+    """列出全部已注册知识库（库名/路径/块数/最近索引/独立配置覆盖/内容简介），供 search_knowledge 的 libraries/exclude 参数选库。库名是唯一标识：未知库名会被拒绝并提示可用库。
+
+    每库的"简介"是一段导航性文字（这个库大致讲什么），帮你在真正检索/通读
+    之前先判断值不值得往这查——不是检索结果的替代品。没有简介的库不代表
+    没内容，只是还没生成过；如果用户明确要求，你可以调用 get_library_sample
+    采样后自己写一段，再用 propose_library_summary 提交。"""
     try:
         rows = list_summary()
     except Exception as e:
@@ -310,6 +344,18 @@ def list_libraries() -> str:
             datetime.fromtimestamp(r["last_indexed"]).strftime("%Y-%m-%d %H:%M")
         over = f"（覆盖：{r['overrides']}）" if r["overrides"] else ""
         lines.append(f"  {r['name']:<22}{blocks:>7}  {last:<17}{r['path']} {over}")
+        summary = r.get("summary") or {}
+        text = summary.get("text") or ""
+        if not text:
+            lines.append("      简介：（未生成）")
+            continue
+        try:
+            cfg = effective_config(next(e for e in load_registry() if e["name"] == r["name"]))
+            stale = library_summary.is_stale(cfg, summary)
+        except Exception:
+            stale = False
+        tag = "（内容可能已变化，简介或已过时）" if stale else ""
+        lines.append(f"      简介：{text}{tag}")
     return "\n".join(lines)
 
 
@@ -392,6 +438,111 @@ def apply_selection_changes(library: str, proposal_id: str, confirmation_code: s
         return f"（{err}）"
     except Exception as err:
         log(f"apply_selection_changes 失败：{err}")
+        return f"（应用失败：{err}）"
+
+
+# ---------------------------------------------------------------------------
+# 库简介（问题60）：导航/澄清性质的一段话，帮你在真正检索/通读全文之前先
+# 判断"这个库值不值得往这查"。生成绝不自动触发——只能由用户在 GUI 点
+# 「刷新简介」，或在对话里向你明确提出请求后，你才调用下面这两个写入工具。
+# 覆盖保护复用 selection_gate 同款两段式确认（数据面在 summary_gate.py）：
+# 库简介若是用户手写的，你想改写必须先 propose 拿到确认码，讲给用户听、
+# 得到明确同意后才能 apply；库简介若从没被人手写过，propose 会直接生效。
+# ---------------------------------------------------------------------------
+@server.tool()
+def get_library_sample(library: str, k: int = 20) -> str:
+    """只读：从某库已建索引的内容里采样出一批有代表性的片段（最远点采样，覆盖
+    库内语义空间的分散区域），供你自己组织语言写一段库简介。
+
+    ⚠ 仅在用户明确要求你生成/更新某库的简介时才调用本工具——不要在检索
+    问答过程中顺手调用，那不是本工具的用途。
+
+    看完采样后写简介必须遵守（这不是建议，是硬约束）——必须同时做到①②两件事，
+    只写主题范围而不给判断依据、或反过来，都不合格：
+    ① 先一两句给总体定位（这库大致是什么性质/服务于什么），再概括库内主要
+      覆盖哪几类主题或板块（口语化提及即可，不要用编号/项目符号罗列成清单）；
+    ② 接着明确写清楚"适合来这库查什么类型的问题"、以及"大概率查不到什么"
+      （正反两面都要有）——直接服务于"值不值得往这查"这个决策，而不是把
+      主题范围甩给对方自己去猜；
+    ③ 禁止逐字摘抄下面给的片段原文，必须用你自己的话概括转写；
+    ④ 不点名任何一篇具体笔记的细节，只讲库整体范围；
+    ⑤ 100~300 字，一段话，不用 markdown、不分点、不用标题；
+    ⑥ 写好后调用 propose_library_summary(library, text) 提交，不要自己
+      把文本回复给用户就结束——那样不会真正写入。"""
+    try:
+        e = resolve_entries(library, "")[0]
+        cfg = effective_config(e)
+        rows = library_summary.sample_representative_chunks(cfg, k=k)
+        if not rows:
+            return (f"（库「{e['name']}」尚未建索引或索引为空，无法采样。"
+                    f"先调用 reindex_knowledge 建好索引再重试。）")
+        files = sorted({r["file"] for r in rows if r["file"]})
+        lines = [f"库「{e['name']}」代表性采样（{len(rows)} 个片段，涉及 {len(files)} 份文件，"
+                f"仅供你概括主题用，禁止逐字摘抄）：", ""]
+        for r in rows:
+            head = " / ".join(x for x in (r["title"], r["heading"]) if x)
+            lines.append(f"- [{r['file']}{(' · ' + head) if head else ''}] {r['text']}")
+        return "\n".join(lines)
+    except ValueError as err:
+        return f"（{err}）"
+    except Exception as err:
+        log(f"get_library_sample 失败：{err}")
+        return f"（采样失败：{err}）"
+
+
+@server.tool()
+def propose_library_summary(library: str, text: str) -> str:
+    """提交一段库简介（100~300 字，导航/澄清性质，见 get_library_sample 的写作约束）。
+
+    行为分两种情况，你不用自己判断走哪条——本工具会自动处理：
+    - 该库简介此前是空白或由 AI 生成的：直接写入生效，返回确认信息。
+    - 该库简介是用户手写的：不会直接覆盖，而是生成一份待确认提案（含 6 位
+      确认码），你必须把新简介完整展示给用户，得到用户明确同意后，携带
+      提案号与确认码调用 apply_library_summary 才会真正生效。未经用户
+      同意就调用 apply 是严重违规。"""
+    try:
+        e = resolve_entries(library, "")[0]
+        cfg = effective_config(e)
+        current = get_library_summary(e)
+        if current["source"] != "user":
+            fp = library_summary.content_fingerprint(cfg)
+            set_library_summary(e["name"], text, source="ai", fingerprint=fp, model="agent")
+            log(f"库简介已直接写入（库={e['name']}，此前非用户手写）")
+            return f"✅ 简介已写入（此前该库简介为空或系统生成，无需确认）：{text.strip()[:300]}"
+        try:
+            proposal_id, code, diff = summary_gate.make_proposal(e["name"], text)
+        except summary_gate.GateError as err:
+            return f"（{err}）"
+        log(f"库简介覆盖提案已生成（库={library}，提案={proposal_id}）——等待用户确认")
+        return diff
+    except ValueError as err:
+        return f"（{err}）"
+    except Exception as err:
+        log(f"propose_library_summary 失败：{err}")
+        return f"（提案失败：{err}）"
+
+
+@server.tool()
+def apply_library_summary(library: str, proposal_id: str, confirmation_code: str) -> str:
+    """应用已获用户确认的库简介覆盖提案。只有 propose_library_summary 返回的
+    提案号 + 用户看到的确认码二者匹配、且未过期（10 分钟）时才会生效——
+    这是硬编码门禁，无任何配置可绕过。"""
+    try:
+        try:
+            text = summary_gate.consume_proposal(library, proposal_id, confirmation_code)
+        except summary_gate.GateError as err:
+            log(f"AUDIT 库简介提案被拒（库={library}，提案={proposal_id}）：{err}")
+            return f"（{err}）"
+        e = resolve_entries(library, "")[0]
+        cfg = effective_config(e)
+        fp = library_summary.content_fingerprint(cfg)
+        set_library_summary(library, text, source="ai", fingerprint=fp, model="agent")
+        log(f"AUDIT 库简介已生效（库={library}，提案={proposal_id}，经用户确认）")
+        return f"✅ 库简介已更新（经用户确认）：{text}"
+    except ValueError as err:
+        return f"（{err}）"
+    except Exception as err:
+        log(f"apply_library_summary 失败：{err}")
         return f"（应用失败：{err}）"
 
 
@@ -531,18 +682,45 @@ def navigate_knowledge(query: str, top_k: int = 5, libraries: str = "",
         if cfg_backend == "off":
             return ("（WEMM 视觉导航未开启：Config→视觉导航（WEMM）将 wemm_backend"
                     " 设为 on/local，然后重新调用本工具——看图服务会按需自动拉起，"
-                    "页索引请跑 python wemm_indexer.py --backend on。注意："
-                    "reindex_knowledge 只重建文字索引，不建 WEMM 页库。）")
-        # 问题41 显存互斥：本进程的 bge-m3/reranker 对页级导航毫无用处，先释放
-        # 给 WEMM 让路（下次文字检索懒加载回来），再按需拉起看图服务
+                    "页索引随 reindex_knowledge/自动同步自动建（reindex_knowledge 重建"
+                    "文字索引并自动同步 WEMM 页库；急用可跑 python wemm_indexer.py "
+                    "--backend on 立即建，注意与 MCP 索引/导航错峰，见 AI_GUIDE）。）")
+        # 问题59 C（GPU_LOCK 全局互斥 + 索引互斥 veto）：让路"判定-执行"原子化。
+        # 索引在跑（或 15s 拿不到锁）→ veto：跳过 release/ensure，绝不从索引线程
+        # 嘴里拔模型；只查已活着的服务。ensure 长等待永远在锁外（120s 不挡别人）。
+        veto = False
+        got = gpu_arbiter.GPU_LOCK.acquire(
+            timeout=gpu_arbiter.GPU_LOCK_ACQUIRE_TIMEOUT_S)
         try:
-            release_reranker()
-            release_model()
-            ok, detail = gpu_arbiter.ensure_server()
-            if not ok:
-                return f"（看图服务拉起失败：{detail}）"
-        except Exception as e:
-            log(f"navigate 前的 GPU 让路/拉起失败（忽略，按原路径继续）：{e}")
+            if got and not _index_running():
+                # 问题41 显存互斥：本进程的 bge-m3/reranker 对页级导航毫无用处，
+                # 先释放给 WEMM 让路（下次文字检索懒加载回来）
+                try:
+                    release_reranker()
+                    release_model()
+                except Exception:
+                    pass
+            else:
+                veto = True
+        finally:
+            if got:
+                gpu_arbiter.GPU_LOCK.release()
+        try:
+            wemm_alive = bool(wemm_url) and gpu_arbiter.server_alive(wemm_url)
+        except Exception:
+            wemm_alive = False
+        if veto:
+            if not wemm_alive:
+                return ("（索引任务进行中（或显存正忙），本次不抢占模型——"
+                        "页索引随索引自动同步，稍后重试即可。）")
+            # 服务已在：直接查，不拉起（拉起是驻留变更，veto 期一律不做）
+        else:
+            try:
+                ok, detail = gpu_arbiter.ensure_server()
+                if not ok:
+                    return f"（看图服务拉起失败：{detail}）"
+            except Exception as e:
+                log(f"navigate 前的 GPU 让路/拉起失败（忽略，按原路径继续）：{e}")
         entries = resolve_entries(libraries, exclude,
                                   defaults=CFG.get("default_libraries", []))
         names = [e["name"] for e in entries]
@@ -550,9 +728,9 @@ def navigate_knowledge(query: str, top_k: int = 5, libraries: str = "",
         if not results:
             head = f"（{err}）" if err else "（WEMM 页索引为空或未命中。"
             if not err:
-                head += ("先在命令行运行 python wemm_indexer.py --backend on 建 WEMM"
-                         " 页索引（reindex_knowledge 不建页库），或换用"
-                         " search_knowledge 文本检索。）")
+                head += ("页索引随 reindex_knowledge/自动同步自动建；急用先在命令行运行"
+                         " python wemm_indexer.py --backend on 立即建（与 MCP 索引/导航"
+                         "错峰，见 AI_GUIDE），或换用 search_knowledge 文本检索。）")
             return head
         lines = [f"页级导航（{query!r}）—— 最相关的 PDF 与页码："]
         for lib, rel, abs_path, page, score in results:

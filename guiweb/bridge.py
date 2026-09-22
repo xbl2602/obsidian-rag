@@ -153,6 +153,11 @@ class Bridge:
         self._pv_started = 0.0
         self._pv_result = None
         self._pv_done = False
+        # 库简介批量刷新状态（问题60 附记：单库/批量共用同一后台任务，
+        # 前端关掉弹层不影响任务继续跑，与提取试验台同一 start/poll 模式）
+        self._sumref_lock = threading.Lock()
+        self._sumref = {"running": False, "total": 0, "done": 0,
+                        "current": None, "results": {}, "started": 0.0}
 
     # ---------- 推送通道 ----------
     def bind_window(self, wnd):
@@ -346,6 +351,84 @@ class Bridge:
         if not errors:
             self._log("更新库配置：%s（%s）" % (name, ", ".join(updates or {})))
         return {"ok": not errors, "errors": errors}
+
+    # ---------- 库简介（问题60）----------
+    def set_library_summary(self, name, text):
+        """用户在 GUI 直接手写/编辑简介：无条件生效，不经过确认门禁——
+        门禁只保护"AI 想覆盖用户已写内容"，用户改自己的东西不需要向自己确认。"""
+        from library import set_library_summary as _set
+        try:
+            _set(name, text, source="user")
+            self._log("手动编辑库简介：%s" % name)
+            return {"ok": True}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    def refresh_library_summaries_batch(self, names, force=False):
+        """批量（或单库，names 传一个元素）后台生成/刷新简介，立即返回，前端
+        用 refresh_library_summaries_poll 轮询——单库刷新也走这条路径，不再
+        单独同步阻塞：本地思考型模型一次生成可能要 1~3 分钟，同步等待会让
+        弹层「卡住」，用户也没法关窗口去干别的；后台线程 + 轮询让关闭任何
+        弹层都不影响任务继续跑，完成后自动 toast 通知。
+
+        names 为空/None = 当前已注册的全部库。force=True 时连 source=user
+        （用户手写过）的库也直接覆盖——前端在批量场景下先跑一遍收集有哪些
+        被跳过（needs_confirm），一次性问用户"这几个库要不要也覆盖"，
+        而不是每个库分别弹一次。
+        LLM 调用是外部网络请求，读 Chroma 是只读，不加载本地模型、不写向量，
+        不违反 GUI 零侵入红线。"""
+        with self._sumref_lock:
+            if self._sumref["running"]:
+                return {"ok": False, "error": "已有简介刷新任务在运行，请等它跑完或稍后再试"}
+            from library import load_registry
+            all_names = [e["name"] for e in load_registry()]
+            targets = [n for n in (names or all_names) if n in all_names]
+            if not targets:
+                return {"ok": False, "error": "没有可刷新的库（库名不在注册表里）"}
+            self._sumref = {"running": True, "total": len(targets), "done": 0,
+                            "current": targets[0], "results": {}, "started": time.time()}
+        threading.Thread(target=self._run_summary_refresh_batch,
+                         args=(targets, bool(force)), daemon=True,
+                         name="sum-refresh-batch").start()
+        self._log("库简介刷新已启动：%s%s" %
+                  ("、".join(targets), "（强制覆盖手写）" if force else ""))
+        return {"ok": True, "total": len(targets)}
+
+    def _run_summary_refresh_batch(self, names, force):
+        from library import get_library_summary, load_registry, set_library_summary as _set
+        import library_summary
+        for name in names:
+            with self._sumref_lock:
+                self._sumref["current"] = name
+            entry = next((e for e in load_registry() if e["name"] == name), None)
+            result = None
+            if entry is None:
+                result = {"ok": False, "error": "库不存在"}
+            else:
+                current = get_library_summary(entry)
+                if current.get("source") == "user" and not force:
+                    result = {"ok": False, "needs_confirm": True}
+                else:
+                    try:
+                        text, fp, model = library_summary.generate_summary(name)
+                        _set(name, text, source="ai", fingerprint=fp, model=model)
+                        result = {"ok": True, "text": text}
+                    except Exception as e:  # noqa: BLE001
+                        result = {"ok": False, "error": str(e)}
+            with self._sumref_lock:
+                self._sumref["results"][name] = result
+                self._sumref["done"] += 1
+        n_ok = sum(1 for r in self._sumref["results"].values() if r.get("ok"))
+        with self._sumref_lock:
+            self._sumref["current"] = None
+            self._sumref["running"] = False
+        self._log("库简介刷新完成：%d/%d 成功" % (n_ok, len(names)))
+
+    def refresh_library_summaries_poll(self):
+        with self._sumref_lock:
+            s = self._sumref
+            return {"running": s["running"], "total": s["total"], "done": s["done"],
+                    "current": s["current"], "results": dict(s["results"])}
 
     # ---------- 勾选范围（问题44：库内文件/文件夹级勾选建模） ----------
     def selection_tree(self, name, sub=""):

@@ -34,6 +34,9 @@ DEFAULTS = {
     "embed_batch_size": 8,        # index_vault 分批嵌入的批次（自动按显存收紧，此为上限）
     "encode_batch_size": 32,      # encode_safe 默认批次（查询/编码入口通用，自动按显存收紧）
     "cuda_cooldown_seconds": 300, # CUDA 失败后冷却期
+    "gpu_idle_unload_seconds": 300,   # 检索侧空闲多久卸载 bge-m3/reranker 释放显存
+                                  # （问题41；0=常驻不卸载；默认 5 分钟——任何新检索/
+                                  # 索引调用即刷新计时，正在跑的任务绝不被抽走）
 
     # ---- 锁与并发 ----
     "lock_timeout_seconds": 60,
@@ -67,6 +70,15 @@ DEFAULTS = {
     "hyde_min_confidence": 0.5,    # 首轮 top1 置信度低于此值才触发 HyDE（命中好的查询零开销）；
                                    # 0.5 = 重排器"无法判断"线（真分尺度）。2026-09-11 前重排分
                                    # 被 sigmoid 两次压在 0.5 上方，此项几乎不可能命中——现已可用
+
+    # ---- 库简介生成（问题60，可选，需 LLM；本地/云端二选一）----
+    "library_summary_llm_url": "http://localhost:1234/v1/chat/completions",
+    "library_summary_llm_model": "qwen2.5-3b-instruct",
+    "library_summary_llm_api_key": "",  # 留空=本地服务免鉴权；填了=云端走 Bearer 认证
+    "library_summary_llm_timeout_seconds": 180,  # 本地思考型模型（如 Qwen3）光是思考阶段
+                                       # 就可能超过 30s，太短会在模型答完前掐断连接
+    "library_summary_llm_max_tokens": 2000,  # 思考型模型的 reasoning_content 先吃掉一部分
+                                       # 预算，太小会出现"想完了但没预算写正文"（content 为空）
 
     # ---- 工具默认值 ----
     "default_top_k": 5,
@@ -214,6 +226,12 @@ CONFIG_TEMPLATE = """\
   // CUDA 失败（OOM 等）后冷却的秒数：冷却期内不尝试 GPU，到期自动轻量探测。
   // 影响：显存暂时不足时避免反复崩；显存恢复后最多等待一个冷却期切换。
   "cuda_cooldown_seconds": 300,
+
+  // 检索侧空闲多久自动卸载 bge-m3/reranker 常驻显存（问题41：给 WEMM 等让路）。
+  // 0 = 常驻不卸载；默认 300（5 分钟）——桌面用完尽快腾显存。任何新检索/索引
+  // 调用都会刷新计时；正在跑的任务期间不会卸载（避免抽走正在用的模型）。
+  // 冷加载已走离线优先（约 2~3 秒），故 5 分钟的"重新上车"代价很小。
+  "gpu_idle_unload_seconds": 300,
 
   // ----------------------------------------------------------
   // 四、写锁与索引并发（防 Chroma 写损坏）
@@ -450,7 +468,35 @@ CONFIG_TEMPLATE = """\
   //   90 ≈ 13s/页（更清楚，慢一个量级）
   //   120 ≈ 25s/页（最清楚，数百页会建数小时）
   // 改后 WEMM 能力签名变化，下一轮页索引自动重渲染全部页向量，无需 --full。
-  "wemm_render_dpi": 60
+  "wemm_render_dpi": 60,
+
+  // ----------------------------------------------------------
+  // 十一、库简介生成（问题60，可选，需 LLM，默认关）
+  // ----------------------------------------------------------
+  //
+  // list_libraries 只报得出库名/路径/块数这类元数据，回答不了"这库里到底
+  // 讲什么"。库简介是一段导航性文字，帮 agent 检索前先判断值不值得往这查。
+  // 生成只能被显式触发（GUI「刷新简介」按钮 / 对话里明确要求 agent 生成），
+  // 绝不在索引流程里自动跑；写入受 source=user 覆盖保护（见 AI_GUIDE.md）。
+  //
+  // OpenAI 兼容 chat completions 端点，与 hyde_llm_url 同款协议：本地服务
+  // （如 LM Studio）留空 api_key 即可；换成云端 API 时把 url 换成云端地址、
+  // 填上 api_key 走 Bearer 认证——本地/云端只是这三个字段的取值差异。
+  "library_summary_llm_url": "http://localhost:1234/v1/chat/completions",
+  "library_summary_llm_model": "qwen2.5-3b-instruct",
+
+  // 云端 API Key：留空=本地服务（无需鉴权）；填了=请求带 Authorization: Bearer。
+  // 敏感信息：不会出现在任何日志中。
+  "library_summary_llm_api_key": "",
+
+  // 单次生成的超时秒数。本地"思考型"模型（如 Qwen3 系列，先输出隐藏的
+  // reasoning 再给最终答案）光是思考阶段就可能超过半分钟；调小可能在模型
+  // 答完前掐断连接（真实复现：30s 超时时模型仍在思考，最终答案永远拿不到）。
+  "library_summary_llm_timeout_seconds": 180,
+
+  // 单次生成的 token 预算。思考型模型的 reasoning 会先吃掉一部分预算，
+  // 太小会出现"想完了但没预算写正文"（拿到的 content 是空的）。
+  "library_summary_llm_max_tokens": 2000
 }
 """
 
@@ -527,6 +573,7 @@ _POSITIVE_KEYS = frozenset((
     "stall_timeout", "return_chunk_limit", "max_chunks_per_file", "bm25_k1",
     "dense_candidate_factor", "dense_min_candidates", "default_top_k", "keep_exports",
     "import_upsert_batch", "mineru_timeout_seconds",
+    "library_summary_llm_timeout_seconds", "library_summary_llm_max_tokens",
 ))
 
 

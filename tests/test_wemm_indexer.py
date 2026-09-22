@@ -158,13 +158,13 @@ class _FakeImageEncoder:
 
 
 def _run(iso, cfg, enc, full=False, agent_allowed=None, url="http://x:1", dim=8,
-         progress=None):
+         progress=None, before_serve=None):
     orig = wi.call_embed_image
     wi.call_embed_image = enc
     try:
         return wi.index_wemm_library(
             cfg, backend=True, full=full, agent_allowed=agent_allowed,
-            url=url, dim=dim, progress=progress)
+            url=url, dim=dim, progress=progress, before_serve=before_serve)
     finally:
         wi.call_embed_image = orig
 
@@ -398,17 +398,22 @@ def test_auto_phase_follows_index_library():
     """index_library 文字索引完成后自动接 WEMM 同步（问题41 接线）。
 
     _index_core 打桩（本轮只测接线，不真跑文字索引）：
-    - backend on → index_wemm_library 被调用、full 标志透传、bge-m3 被释放让路；
-    - backend off → 完全跳过（连释放都不做）；
+    - 任何库开跑前先 release_reranker（建索引只用 bge-m3，reranker 是检索专用，
+      留着白占 ~1.1GB）；与 WEMM 后端无关；
+    - backend on → 额外接 index_wemm_library、full 透传，并把"让路"作为
+      before_serve 回调传下去（只有真要渲染时才放 bge，问题58 B）；
+    - backend off → 只做开跑前的 reranker 释放，不接 WEMM 阶段；
     - WEMM 阶段炸了 → 吞异常，绝不波及文字索引返回。
     """
     import config as cfgmod
     calls = []
     releases = []
 
-    def fake_wemm(cfg, backend=True, full=False, agent_allowed=None, **kw):
+    def fake_wemm(cfg, backend=True, full=False, agent_allowed=None,
+                  before_serve=None, **kw):
         calls.append({"name": cfg.get("name"), "full": full,
-                      "agent_allowed": agent_allowed})
+                      "agent_allowed": agent_allowed,
+                      "before_serve": before_serve})
         return {"pages": 1}
 
     saved = (cfgmod.CFG.get("wemm_backend"), wi.index_wemm_library,
@@ -427,14 +432,20 @@ def test_auto_phase_follows_index_library():
             ok("auto: backend on 调用一次", len(calls) == 1, str(calls))
             ok("auto: full 透传", bool(calls) and calls[0]["full"] is True)
             ok("auto: 门禁透传", bool(calls) and calls[0]["agent_allowed"] == {"pdf"})
-            ok("auto: bge-m3 已释放让路", releases == ["r", "m"], str(releases))
+            # B：不再建完文字库就放 bge，只留开跑前那次 reranker 释放
+            ok("auto: 不预放 bge，只放 reranker", releases == ["r"], str(releases))
+            ok("auto: 传了 before_serve 回调（延后让路）",
+               bool(calls) and callable(calls[0]["before_serve"]))
+            calls[0]["before_serve"]()
+            ok("auto: before_serve 释放 reranker+bge 让路",
+               releases == ["r", "r", "m"], str(releases))
 
             calls.clear()
             releases.clear()
             cfgmod.CFG["wemm_backend"] = "off"
             index.index_library(lib, full=False)
-            ok("auto: off 完全跳过", not calls and not releases,
-               f"{calls}/{releases}")
+            ok("auto: off 只做开跑前 reranker 释放，不接 WEMM 阶段",
+               not calls and releases == ["r"], f"{calls}/{releases}")
 
             def boom(*a, **k):
                 raise RuntimeError("wemm down")
@@ -664,6 +675,67 @@ def test_wemm_auto_phase_reports_wemm_progress_then_done():
     finally:
         wi.index_wemm_library = orig_wemm
         index.release_model = orig_release
+        if saved_backend is None:
+            cfgmod.CFG.pop("wemm_backend", None)
+        else:
+            cfgmod.CFG["wemm_backend"] = saved_backend
+
+
+def test_before_serve_only_when_rendering():
+    """问题58 B：before_serve 只在"真要拉看图服务渲染页面"前调一次；全命中快速
+    路径（无页可渲染）时根本不调——避免纯 md 增量白放 bge。"""
+    with _IsoEnv() as iso:
+        try:
+            _make_text_pdf(iso.vault / "a.pdf", pages=1)
+            cfg = _default_cfg(iso.vault)
+            enc = _FakeImageEncoder()
+            served = []
+            _run(iso, cfg, enc, before_serve=lambda: served.append("s"))
+            ok("before_serve: 渲染轮调用一次", served == ["s"], str(served))
+            served.clear()
+            _run(iso, cfg, enc, before_serve=lambda: served.append("s"))
+            ok("before_serve: 无页可渲染时不调用", not served, str(served))
+        finally:
+            iso.cleanup()
+
+
+def test_before_serve_precedes_ensure_server():
+    """顺序契约：before_serve（腾显存）必须先于 ensure_server（拉服务加载模型）。"""
+    import inspect
+    src = inspect.getsource(wi.index_wemm_library)
+    assert "before_serve()" in src and "ensure_server(" in src
+    ok("before_serve: 先于 ensure_server",
+       src.index("before_serve()") < src.index("ensure_server("))
+
+
+def test_indexing_proactively_evicts_wemm():
+    """问题58 A：建索引开跑前，若 WEMM 在线则主动 evict（BGE 文字阶段不需要它），
+    不再依赖 BGE 加载撞显存不足才被动踢；fail-open，wemm_backend off 不探测。"""
+    import config as cfgmod
+    evicted = []
+    saved_backend = cfgmod.CFG.get("wemm_backend")
+    saved_alive = gpu_arbiter.server_alive
+    saved_evict = gpu_arbiter.evict_wemm
+    gpu_arbiter.server_alive = lambda url: True
+    gpu_arbiter.evict_wemm = lambda url: (evicted.append(url), True)[1]
+    cfgmod.CFG["wemm_backend"] = "on"
+    lib = {"name": "L", "path": "X", "collection": "kb_L",
+           "exclude_dirs": [], "exclude_files": set(),
+           "exclude_patterns": (), "extensions": ["md"],
+           "chunk_char_limit": 1500, "short_doc_char_limit": 200}
+    try:
+        with patch.object(index, "_index_core", lambda *a, **k: {"chunks": 0}), \
+             patch.object(index, "_wemm_auto_phase", lambda *a, **k: {}), \
+             patch("retriever.release_reranker", lambda: None):
+            index.index_library(lib)
+            ok("evict A: 在线则开跑前主动 evict", len(evicted) == 1, str(evicted))
+            evicted.clear()
+            cfgmod.CFG["wemm_backend"] = "off"
+            index.index_library(lib)
+            ok("evict A: off 时零探测零 evict", not evicted, str(evicted))
+    finally:
+        gpu_arbiter.server_alive = saved_alive
+        gpu_arbiter.evict_wemm = saved_evict
         if saved_backend is None:
             cfgmod.CFG.pop("wemm_backend", None)
         else:

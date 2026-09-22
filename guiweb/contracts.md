@@ -55,7 +55,9 @@
 ```json
 [{"name":"技术笔记","path":"…","collection":"tech_notes","blocks":5731,
   "last_indexed":1788000000.0|null,"overrides":"chunk_char_limit=600",
-  "state":"ok","issues":{"scanned":3}}]
+  "state":"ok","issues":{"scanned":3},
+  "summary":{"text":"…","source":"none|ai|user","updated_at":1788000000.0|null,
+             "fingerprint":"…"|null,"model":"…"|null}}]
 ```
 
 ### get_library_config(name) → 库配置弹层数据
@@ -75,6 +77,24 @@
 - `extensions` 传字符串如 `"md,pdf"`；空字符串 = 恢复继承（内部转 unset）。
 - `agent_formats` 只收已启用格式中的二进制子集（如 `"pdf,docx"`）；空字符串 = 撤销授权。
 ### unset_library_config(name, keys:[...]) → {ok}
+
+### 库简介（问题60）
+### set_library_summary(name, text) → {ok, error?}
+- 用户在 GUI 直接手写/保存：无条件生效（source=user），不经过任何确认门禁。
+### refresh_library_summaries_batch(names, force=False) → {ok, total?, error?}
+- 后台线程生成/刷新一个或多个库的简介，**立即返回**，前端用
+  refresh_library_summaries_poll 轮询进度——单库刷新也走这条路径（names 传
+  一个元素），不再同步阻塞：本地思考型模型一次生成可能要 1~3 分钟，关掉任何
+  弹层都不影响任务继续跑，完成后前端自动 toast。
+- names 为空/null = 当前已注册的全部库；已有任务在跑时返回 `{ok:false,error:"…"}`。
+- force=false 时，遇到 source=user（用户手写过）的库会跳过并在 poll 结果里标
+  `needs_confirm:true`，不强行覆盖；前端汇总后一次性问用户是否连它们也覆盖，
+  同意则带 force=true 对这些库单独重调一次。
+### refresh_library_summaries_poll() → {running, total, done, current, results:{name:{ok,text?,error?,needs_confirm?}}}
+- current = 正在处理的库名（null=空闲）；results 只含已处理完的库。
+- 生成用 library_summary.generate_summary：从 Chroma 已有向量做最远点采样 + 调
+  config.library_summary_llm_* 指向的 OpenAI 兼容 LLM。只读 Chroma + 外部网络
+  调用，不加载本地模型、不写向量，不违反"GUI 零侵入观察者"红线。
 
 ### start_index(full, libraries) → {ok, already_running?}
 - `libraries`: `""`=全部注册库，否则逗号分隔。
@@ -224,7 +244,7 @@ GUI=用户本人，直接生效（无需 MCP 那套确认码）；下一轮索�
 |---|---|
 | 图谱（默认） | graph 数据渲染、图层开关（双链/归属/WEMM页/缓存/PDF原件/库着色/库边界）、检索涟漪+轨道、Inspector（管线区块/双链/语义近邻定位）、库过滤 |
 | 检索 | 输入+TopK+展开正文+库范围、结构化结果、置信度徽章、片段展开、关联笔记（懒加载+缓存）、打开源文件、耗时 |
-| 库 | 列表（块数/最近索引/覆盖摘要/状态）、添加、每库配置（格式/门禁/排除/切块/覆盖与继承）、移除双确认、打开文件夹、库范围多选（影响检索与重建目标） |
+| 库 | 列表（块数/最近索引/覆盖摘要/状态）、添加、每库配置（格式/门禁/排除/切块/覆盖与继承）、移除双确认、打开文件夹、库范围多选（影响检索与重建目标）、库简介（导航性内容简介，手动编辑/LLM 刷新，用户手写内容覆盖前二次确认，问题60） |
 | 索引 | 增量/全量（红确认：目标库+总块数+预计+检索可用性警告）、五阶段 stepper、pct/ETA/耗时、心跳五态+note、DEAD 告警、停止按钮、上次耗时 |
 | 诊断 | 失败明细表（含 will_retry，行点击展开日志详情+打开源文件；全部库聚合）、WEMM 状态+探测、近似去重、导出/导入（确认门禁） |
 | 设置 | 12 分组全部字段、rebuild ⟳ 标记、choices 下拉、suggest 芯片（✓使用中）、secret 密码框、保存热读、云端同意门禁 |

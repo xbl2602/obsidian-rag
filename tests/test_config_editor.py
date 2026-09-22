@@ -3,6 +3,7 @@
 验证：定位赋值行、值类型序列化、注释保留、批量写回回滚。
 运行：cd obsidian-rag && .venv\\Scripts\\python tests\\test_config_editor.py
 """
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -146,6 +147,55 @@ def test_kind_of():
     assert ce.kind_of("fusion_dense_weight") == "float"
     assert ce.kind_of("exclude_dirs") == "list"
     assert ce.kind_of("nope") is None
+
+
+def test_replace_value_preserves_comma_and_inline_comment():
+    """行尾逗号与行内 // 注释必须原样保留。
+
+    2026-09-12 修：旧实现按整行 rstrip 判断逗号，行尾有 // 注释时 rstrip 落在
+    注释文字上 → 误判"无逗号" → 连逗号一起吞掉，JSON 断裂、整个 config.json
+    静默回退默认值（用户实测：真实设置全被忽略）。
+    """
+    out = ce._replace_value(
+        '  "confidence_warn_threshold": 0.3,  // 低置信标注\n',
+        "confidence_warn_threshold", "0.4")
+    assert '"confidence_warn_threshold": 0.4,' in out
+    assert "// 低置信标注" in out, "行内注释必须保留"
+    # URL 字符串值（含 //）不得被误当注释破坏
+    out = ce._replace_value(
+        '  "hyde_llm_url": "http://localhost:1234/v1/chat/completions",\n',
+        "hyde_llm_url", '"http://x/y"')
+    assert out.rstrip("\n").endswith('"http://x/y",'), out
+    # 数组值（内部含逗号）整体替换、尾逗号保留
+    out = ce._replace_value(
+        '  "exclude_dirs": [".obsidian", "TEMP"],\n', "exclude_dirs", '["a", "b"]')
+    assert '"exclude_dirs": ["a", "b"],' in out
+
+
+def test_replace_value_keeps_config_valid():
+    """对真实模板做几轮替换后仍能解析（注释/尾逗号容错后）——防再写出坏配置。"""
+    from config import (CONFIG_TEMPLATE, _strip_json_comments,
+                        _strip_trailing_commas)
+    text = CONFIG_TEMPLATE
+    text = ce._replace_value(text, "confidence_drop_threshold", "0.1")
+    text = ce._replace_value(text, "exclude_dirs", '["x"]')
+    text = ce._replace_value(text, "hyde_llm_url", '"http://h/i"')
+    parsed = json.loads(_strip_trailing_commas(_strip_json_comments(text)))
+    assert parsed["confidence_drop_threshold"] == 0.1
+    assert parsed["exclude_dirs"] == ["x"]
+    assert parsed["hyde_llm_url"] == "http://h/i"
+
+
+def test_apply_updates_rejects_invalid_json():
+    """替换若产出坏 JSON，写盘前必须中止且不改动原文件。"""
+    from unittest.mock import patch
+    broken = '{\n  "default_top_k": 5\n  "exclude_files": ["x"],\n}\n'
+    target = Path(tempfile.gettempdir()) / "never_write2.json"
+    with patch.object(ce, "load_raw", return_value=broken), \
+         patch.object(ce, "CONFIG_PATH", target):
+        errs = ce.apply_updates({"default_top_k": ("int", "8")})
+        assert "__file__" in errs, "坏 JSON 必须被拒绝：%r" % errs
+        assert not target.exists()
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -32,6 +33,21 @@ LOG_FILE = ROOT / "data" / "wemm_server.log"
 
 WEMM_MIN_VRAM_GB = 5.5   # WeMM-2B bf16 + 激活余量；低于此 WEMM 不进显存
 BGE_MIN_VRAM_GB = 3.5    # bge-m3 fp16 + CUDA context + 批次激活余量
+
+
+# GPU 驻留变更总锁（问题59，多 Agent 并发调度：C 方案全局互斥）。
+#
+# 语义：同进程内一切"改变显存里住着谁"的操作——bge-m3 加载/释放、reranker
+# 释放、WEMM/MinerU 的 evict、看图服务拉起前的让路判定——都必须先拿这把锁。
+# 纯查询（向量检索、页库查询、已拉起服务的编码）不拿锁，天然可并发。
+# 用 RLock（同线程可重入）：navigate 持锁做"查索引是否在跑 + 释放"原子
+# 判定，其间调 release_* 会再次拿锁；plain Lock 会自死锁。
+# 持有期纪律：只包"判定 + 快速变更"，绝不包 ensure_server 长等待（120s）；
+# 拿不到锁的请求走降级路径（只查已活着的服务 / 回忙），不得无限等。
+GPU_LOCK = threading.RLock()
+
+# 请求路径拿锁的最长等待（秒）：超时 → 视为"此刻不适合抢显存"，走降级。
+GPU_LOCK_ACQUIRE_TIMEOUT_S = 15.0
 
 
 def vram_free_gb(max_age=5.0):

@@ -17,11 +17,17 @@
   /* ---------- 基础假数据：库 ---------- */
   var LIBS = [
     { name: '技术笔记', path: 'D:\\Vault\\技术笔记', collection: 'tech_notes', state: 'ok', files: 1284, chunks: 5731,
-      last_indexed: 1788000000.0, overrides: 'chunk_char_limit=600', issues: { scanned: 3 } },
+      last_indexed: 1788000000.0, overrides: 'chunk_char_limit=600', issues: { scanned: 3 },
+      summary: { text: '以 Obsidian RAG 项目自身的开发笔记为主，涵盖索引流水线、混合检索排序、'
+        + 'GPU 显存仲裁与 MCP 工具设计等工程实现细节。', source: 'ai', updated_at: 1787950000.0,
+        fingerprint: 'demo1', model: 'qwen2.5-3b-instruct' } },
     { name: '论文阅读', path: 'E:\\reading\\papers', collection: 'paper_reading', state: 'stale', files: 412, chunks: 1930,
-      last_indexed: 1787900000.0, overrides: 'extensions=md,pdf', issues: { scanned: 5 } },
+      last_indexed: 1787900000.0, overrides: 'extensions=md,pdf', issues: { scanned: 5 },
+      summary: { text: '', source: 'none', updated_at: null, fingerprint: null, model: null } },
     { name: '会议记录', path: 'C:\\Notes\\会议记录', collection: 'meeting_notes', state: 'ok', files: 198, chunks: 645,
-      last_indexed: 1788050000.0, overrides: '', issues: {} }
+      last_indexed: 1788050000.0, overrides: '', issues: {},
+      summary: { text: '团队周会与项目评审的记录整理，按日期归档。', source: 'user',
+        updated_at: 1787800000.0, fingerprint: 'demo3', model: null } }
   ];
   function agg() {
     var f = 0, c = 0;
@@ -297,6 +303,31 @@
     previewEmit();
   }
 
+  /* ---------- 库简介批量刷新（问题60，演示逐库推进）---------- */
+  var sumref = { running: false, total: 0, done: 0, current: null, results: {}, names: [], force: false, timer: null };
+  function sumrefStep() {
+    var name = sumref.names[sumref.done];
+    var l = LIBS.find(function (x) { return x.name === name; });
+    if (!l) {
+      sumref.results[name] = { ok: false, error: '库不存在' };
+    } else if (l.summary && l.summary.source === 'user' && !sumref.force) {
+      sumref.results[name] = { ok: false, needs_confirm: true };
+    } else {
+      var text = '（演示生成）' + name + '库的内容概括：涵盖若干主题笔记，采样自现有索引块。';
+      l.summary = { text: text, source: 'ai', updated_at: Date.now() / 1000,
+        fingerprint: 'demo-' + Date.now(), model: 'qwen2.5-3b-instruct' };
+      sumref.results[name] = { ok: true, text: text };
+    }
+    sumref.done++;
+    if (sumref.done >= sumref.names.length) {
+      sumref.running = false; sumref.current = null;
+      pushLog('库简介刷新完成（演示）：' + sumref.names.join('、'));
+      return;
+    }
+    sumref.current = sumref.names[sumref.done];
+    sumref.timer = setTimeout(sumrefStep, 900);
+  }
+
   /* ---------- 失败明细 ---------- */
   var FAILS = [
     { lib: '论文阅读', rel: 'E:\\reading\\papers\\API 限流与重试实践.pdf', reason: 'extract-failed', will_retry: true,
@@ -372,8 +403,35 @@
     list_libraries: function () {
       return Promise.resolve(LIBS.map(function (l) {
         return { name: l.name, path: l.path, collection: l.collection, blocks: l.chunks,
-          last_indexed: l.last_indexed, overrides: l.overrides, state: l.state, issues: l.issues };
+          last_indexed: l.last_indexed, overrides: l.overrides, state: l.state, issues: l.issues,
+          summary: l.summary || { text: '', source: 'none', updated_at: null, fingerprint: null, model: null } };
       }));
+    },
+
+    set_library_summary: function (name, text) {
+      var l = LIBS.find(function (x) { return x.name === name; });
+      if (!l) return Promise.resolve({ ok: false, error: '库不存在：' + name });
+      l.summary = { text: text, source: 'user', updated_at: Date.now() / 1000,
+        fingerprint: l.summary && l.summary.fingerprint, model: null };
+      pushLog('手动编辑库简介：' + name);
+      return delay(120).then(function () { return { ok: true }; });
+    },
+
+    refresh_library_summaries_batch: function (names, force) {
+      if (sumref.running) return Promise.resolve({ ok: false, error: '已有简介刷新任务在运行，请等它跑完或稍后再试' });
+      var all = LIBS.map(function (l) { return l.name; });
+      var targets = (names && names.length ? names : all).filter(function (n) { return all.indexOf(n) >= 0; });
+      if (!targets.length) return Promise.resolve({ ok: false, error: '没有可刷新的库' });
+      sumref.running = true; sumref.total = targets.length; sumref.done = 0;
+      sumref.current = targets[0]; sumref.results = {}; sumref.names = targets; sumref.force = !!force;
+      pushLog('库简介刷新已启动（演示）：' + targets.join('、') + (force ? '（强制覆盖手写）' : ''));
+      sumref.timer = setTimeout(sumrefStep, 900);
+      return Promise.resolve({ ok: true, total: targets.length });
+    },
+
+    refresh_library_summaries_poll: function () {
+      return Promise.resolve({ running: sumref.running, total: sumref.total, done: sumref.done,
+        current: sumref.current, results: JSON.parse(JSON.stringify(sumref.results)) });
     },
 
     get_library_config: function (name) {

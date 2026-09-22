@@ -229,6 +229,11 @@ def _stop_inner_locked():
 def _check_idle_unload():
     if _IDle_UNLOAD_SECONDS <= 0:
         return
+    # 问题59 B7：在途解析中不卸载——_last_use 只在进入/成功时刷新，长解析
+    # （单文件超时 300+30×页数，200 页约 105min）期间必超 300s 阈值；
+    # 此前会杀死在途任务致 deferred 空转活锁。_idle_exit_daemon 早已同款守卫。
+    if _active_requests > 0:
+        return
     if time.time() - _last_use > _IDle_UNLOAD_SECONDS:
         with _INNER_LOCK:
             if time.time() - _last_use > _IDle_UNLOAD_SECONDS and _inner_alive():
@@ -424,11 +429,14 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/")
         if path == "/evict":
             # 双向抢占（checker B1）：bge/WEMM 加载前调这里把 MinerU 请下显存。
-            # 串行锁内停机：正在解析的等它走完（锁在 do_parse 内），不中断当次成果。
-            with _INNER_LOCK:
-                had = _inner_alive()
-                if had:
-                    _stop_inner_locked()
+            # 问题59 B7：先拿 _API_LOCK 再拿 _INNER_LOCK（与 /parse 持锁顺序一致，
+            # 故不死锁）——在途解析走完才停机，不中断当次成果。此前注释声称等待，
+            # 实则只持 _INNER_LOCK，do_parse 的长网络等待根本不在该锁内。
+            with _API_LOCK:
+                with _INNER_LOCK:
+                    had = _inner_alive()
+                    if had:
+                        _stop_inner_locked()
             self._send(200, {"ok": True, "evicted": had})
             return
         if path != "/parse":

@@ -81,10 +81,20 @@ GROUPS = [
              "「假设答案」，拿它去检索（术语更接近笔记原文）。默认关；触发才多花一跳。",
      "fields": [("hyde_enabled", "bool"), ("hyde_llm_url", "str"),
                 ("hyde_llm_model", "str"), ("hyde_min_confidence", "float")]},
+    {"title": "库简介生成", "level": "advanced", "icon": "AUTO_STORIES_OUTLINED",
+     "desc": "问题60：库管理页「刷新简介」按钮生成/更新导航性内容简介时调用的"
+             "LLM——与 HyDE 同款 OpenAI 兼容协议，本地服务留空 API Key 即可，"
+             "换云端只需改 URL 并填 Key。生成只能被显式触发，不会自动跑。",
+     "fields": [("library_summary_llm_url", "str"),
+                ("library_summary_llm_model", "str"),
+                ("library_summary_llm_api_key", "str"),
+                ("library_summary_llm_timeout_seconds", "int"),
+                ("library_summary_llm_max_tokens", "int")]},
     {"title": "性能与硬件", "level": "advanced", "icon": "SPEED_OUTLINED",
      "desc": "批次大小与 CUDA 冷却；运行时会自动按显存收紧。",
      "fields": [("embed_batch_size", "int"), ("encode_batch_size", "int"),
-                ("cuda_cooldown_seconds", "int")]},
+                ("cuda_cooldown_seconds", "int"),
+                ("gpu_idle_unload_seconds", "int")]},
     {"title": "锁与心跳", "level": "advanced", "icon": "MONITOR_HEART_OUTLINED",
      "desc": "多进程写保护与卡死判定阈值，单机单进程场景无需调整。",
      "fields": [("lock_timeout_seconds", "int"), ("lock_poll_seconds", "float"),
@@ -260,6 +270,17 @@ FIELD_META = {
                        "hint": "填本地服务里已加载的模型名（如 qwen2.5-3b-instruct）"},
     "hyde_min_confidence": {"label": "HyDE 触发阈值",
                             "hint": "首轮 top1 置信度低于此值才触发（0~1）；调大更爱触发"},
+    # ---- 库简介生成（问题60）----
+    "library_summary_llm_url": {"label": "库简介生成服务地址",
+                                "hint": "OpenAI 兼容接口；本地服务（如 LM Studio）或云端 API 地址均可"},
+    "library_summary_llm_model": {"label": "库简介生成模型名",
+                                  "hint": "填服务里已加载/云端提供的模型名"},
+    "library_summary_llm_api_key": {"label": "库简介生成 API Key", "secret": True,
+                                    "hint": "留空=本地服务免鉴权；填了=云端走 Bearer 认证，敏感信息不进任何日志"},
+    "library_summary_llm_timeout_seconds": {"label": "库简介生成超时（秒）",
+                                            "hint": "本地思考型模型（如 Qwen3）光思考阶段就可能超过半分钟，太短会在答完前掐断"},
+    "library_summary_llm_max_tokens": {"label": "库简介生成 Token 预算",
+                                       "hint": "思考型模型的思考过程先吃掉一部分预算，太小会出现「想完了但没预算写正文」"},
     # ---- 性能与硬件 ----
     "embed_batch_size": {"label": "索引嵌入批次",
                          "hint": "显存紧张调小；运行时自动收紧，此处为上限"},
@@ -267,6 +288,10 @@ FIELD_META = {
                           "hint": "单次编码显存占用，同样自动按显存收紧"},
     "cuda_cooldown_seconds": {"label": "CUDA 冷却秒数",
                               "hint": "GPU 失败（OOM 等）后的冷却期，避免反复崩"},
+    "gpu_idle_unload_seconds": {"label": "空闲卸载（秒）",
+                                "hint": "检索侧空闲多久卸载 bge-m3/reranker 释放显存；"
+                                        "0 = 常驻不卸载；默认 300 秒（5 分钟）——"
+                                        "任何新调用会刷新计时，跑任务时不卸载"},
     # ---- 锁与心跳 ----
     "lock_timeout_seconds": {"label": "写锁等待上限（秒）",
                              "hint": "超时报「锁繁忙」明确错误；经常多进程并发才需调大"},
@@ -288,7 +313,8 @@ FIELD_META = {
 
 # 主设置页不展示尖括号反斜杠的 vault，避免误改路径类长文本
 TEXT_EDITABLE = {"vault", "model_name", "collection_name", "truncate_mark",
-                 "hyde_llm_url", "hyde_llm_model"}
+                 "hyde_llm_url", "hyde_llm_model",
+                 "library_summary_llm_url", "library_summary_llm_model"}
 
 
 def missing_keys():
@@ -359,39 +385,86 @@ def _value_to_json(value, kind):
     raise ValueError("未知类型: %s" % kind)
 
 
+def _value_span(s):
+    """在 `"key": ` 之后的片段 s 里定位值文本的 [start, end)。
+
+    支持字符串（含 \\ 转义）、数组/对象（可嵌套、内部含字符串）、以及数字/布尔等
+    标量；标量以逗号/右括号/换行/行内 // 注释为止。用于**只替换值本身、原样保留
+    其后的逗号与行内注释**。
+
+    2026-09-12 修：旧实现按整行 rstrip 判断是否以逗号结尾，行尾带 // 注释时
+    rstrip() 落在注释文字上 → 误判"无逗号" → 连逗号一起被吞掉，JSON 断裂，
+    整个 config.json 静默回退默认值（用户实测：真实库配置全被忽略）。
+    """
+    i, n = 0, len(s)
+    while i < n and s[i] in " \t":
+        i += 1
+    start = i
+    if i >= n:
+        return None
+    c = s[i]
+    if c == '"':
+        i += 1
+        while i < n:
+            if s[i] == "\\":
+                i += 2
+                continue
+            if s[i] == '"':
+                i += 1
+                break
+            i += 1
+    elif c in "[{":
+        depth = 0
+        in_str = False
+        while i < n:
+            ch = s[i]
+            if in_str:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch in "[{":
+                depth += 1
+            elif ch in "]}":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    break
+            i += 1
+    else:
+        while i < n and s[i] not in ",]}\n" and s[i:i + 2] != "//":
+            i += 1
+    return (start, i) if i > start else None
+
+
 def _replace_value(raw, key, new_text):
-    """在 raw 中定位 "key": 的赋值行，替换其值文本（保留行首缩进与行内注释）。
+    """在 raw 中定位 `"key":` 的赋值行，只替换其值文本（保留缩进、尾逗号、行内注释）。
 
     若同一 key 出现在注释里（如模板注释示例），只替换真正赋值的那行。
-    匹配规则：行内容以 `"key" :` 开头（允许前导空白）且不是 // 注释。
+    匹配规则：行内容以 `"key" :` 开头（允许前导缩进）且不是 // 注释行。
+    值边界由 _value_span 解析（字符串/数组/标量各自正确收边）。
     """
     if key not in ALL_KEYS:
         return raw
     lines = raw.splitlines(keepends=True)
-    pat = re.compile(r'^\s*"' + re.escape(key) + r'"\s*:')
+    pat = re.compile(r'^\s*"' + re.escape(key) + r'"\s*:\s*')
     for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith("//"):
+        if line.lstrip().startswith("//"):
             continue
-        if pat.match(line):
-            indent = line[: len(line) - len(line.lstrip())]
-            rest = line[len(indent):]
-            m = re.match(r'"[^"]*"\s*:\s*[^,]*[,\n]?', rest)
-            if not m:
-                continue
-            newline = indent + '"%s": %s' % (key, new_text)
-            if rest.rstrip().endswith(","):
-                newline += ","
-            if not line.endswith("\n"):
-                newline = newline.rstrip("\n")
-            elif not newline.endswith("\n"):
-                newline += "\n"
-            lines[i] = newline
-            changed = True
-            break
-    else:
-        return raw
-    return "".join(lines) if changed else raw
+        m = pat.match(line)
+        if not m:
+            continue
+        after = line[m.end():]
+        span = _value_span(after)
+        if span is None:
+            continue
+        s, e = span
+        lines[i] = line[:m.end()] + new_text + after[e:]
+        return "".join(lines)
+    return raw
 
 
 def apply_updates(updates):
@@ -416,6 +489,14 @@ def apply_updates(updates):
             text = replaced
     if errors:
         return errors
+    # 写盘前校验：展开注释/尾逗号后必须仍是合法 JSON，否则拒绝写入。
+    # 防止任何替换 bug 把用户的 config.json 写坏——坏了会静默回退全部默认值，
+    # 真实设置（如 MinerU Key、后端）被悄悄忽略（2026-09-12 实测踩到）。
+    try:
+        from config import _strip_json_comments, _strip_trailing_commas
+        json.loads(_strip_trailing_commas(_strip_json_comments(text)))
+    except Exception as e:
+        return {"__file__": "写回结果不是合法 JSON，已中止（原文件未改动）：%s" % e}
     try:
         CONFIG_PATH.write_text(text, encoding="utf-8")
     except OSError as e:

@@ -5,6 +5,19 @@
 > 进度（2026-08-24）：**R1、R2 已完成并提交**（R1=177ede6，六件套全绿；R2=2ac21b5），
 > 明细见 TASK_LOG.md 问题 23/24。当前待办 = **R3：扫描件 OCR** + 用户确认开启真实 vault 的 extensions。
 > 历史备注：优先级修订时基线为 92af6e6、META_VERSION 8；现已升到 9 并完成一次真库重建。
+>
+> ✅ **2026-09-12 问题56（模型冷加载提速）已完成**：离线优先加载（跳 HF 联网核对，
+> 冷加载 ~4 倍快）+ 空闲卸载可配（`gpu_idle_unload_seconds`，默认 300s/5min，
+> 0=常驻）+ 重排器 fp16（阈值重测无变化）+ 清 bge-m3 孤儿快照 2.17GB。
+> 同日问题57：显存管理补强（建索引先放 reranker、空闲卸载加"运行中跳过"护栏）+
+> 修复 `config_editor` 行内注释吞逗号导致 config.json 静默失效的 bug。详见 TASK_LOG.md。
+> 同日问题58：BGE↔WEMM 交接收紧——建索引开跑前主动 evict WEMM（BGE 阶段不用它）、
+> WEMM 阶段改为"真要渲染才放 BGE"（before_serve 回调），纯笔记增量不白放。
+> 同日问题59（GOAL：完整修复 9 红灯 + 多 Agent 并发调度与资源管理）：`gpu_arbiter.GPU_LOCK`
+> 全局互斥（RLock，驻留变更全持锁、查询不持、navigate 15s 拿不到走降级）；get_model 单飞+
+> 释放/切回/降级全进锁；navigate 索引互斥 veto；idle 守护检查-释放原子化；B1 损坏缓存回退+
+> 清理指引；B4 探针 fail-open；B5 prune 补 base；B7 mineru 看在途 + evict 锁序；B2 CLI 警示+
+> 文档；B8/B9 文案。`tests/test_mcp_scheduling.py` 25/25（已编入 run.py SUITES，全量 15/15）。
 
 ## 交付轮次
 
@@ -606,3 +619,46 @@ python index.py --library "Obsidian Vault"
 - [ ] 待选：建议是否加配置开关（当前固定最多 2 条、恒开）
 - [ ] 待选：去重的"同名不同标题/同标题不同目录"识别要不要做成独立的库健康检查项
       （当前只在检索结果里提醒；`find_duplicates` 判的是内容相似度，实测 FLUENT 两篇仅 10% 重叠）
+
+## 库简介（问题60，2026-09-16）：list_libraries 补上"这库到底讲什么"
+
+> 状态：✅ 已完成（`library_summary.py` 采样生成 + `summary_gate.py` 覆盖保护 +
+> 3 个 MCP 工具 + guiweb 编辑/刷新入口）。详见 TASK_LOG.md 问题60。
+
+- [x] `library.py`：registry 新增 `summary` 字段 + 唯一写口 `set_library_summary`
+      （source=ai/user 校验 + 300 字上限）+ 读侧防御 `get_library_summary`
+- [x] `library_summary.py`：复用索引时已算好的 Chroma 块向量做最远点采样
+      （15~25 个代表块，输入规模与库大小无关）+ 内容指纹/过期判定 +
+      复用 `hyde_generate` 式 OpenAI 兼容调用（本地/云端只是 url/api_key 取值差异）
+- [x] `summary_gate.py`：仿 `selection_gate.py` 的两段式确认（source=user 时
+      AI 覆盖须提案号+确认码+TTL+一次性；用户自己改不经过此门禁）
+- [x] MCP：`get_library_sample`/`propose_library_summary`/`apply_library_summary`，
+      docstring 硬编码触发纪律（仅显式请求）与内容规范（导航性质/禁止摘抄/≤300字）；
+      `list_libraries` 展示简介与过期提示
+- [x] guiweb：库卡片简介展示+编辑入口、库页顶部"刷新全部简介"（目标=当前库范围
+      多选，空=全部库）+ 常驻进度条（转圈+X/Y+当前库名，可隐藏不影响后台继续跑）、
+      设置页「库简介生成」分组（`config_editor.py` 共享，Flet `gui/` 设置页同步可见）
+- [x] 生成改后台任务+轮询（`refresh_library_summaries_batch`/`_poll`，同提取
+      试验台 start/poll 模式）：单库/批量共用一条路径，关弹层/切标签页不影响
+      任务继续跑，完成后 toast；用户手写锁定的库批量时统一汇总问一次是否覆盖
+- [x] 真机实测修复（2026-09-16）：Chroma embeddings 是 numpy 数组，`or []` 类
+      真值判断直接抛异常，改 `is None`/`len()` 判空；本地思考型模型（Qwen3）
+      超时/token 预算太紧（30s/400 token 抄的是 HyDE 查询期配置），改 180s/2000
+      且做成可调配置 `library_summary_llm_timeout_seconds`/`_max_tokens`
+- [x] 回归：`tests/test_library_summary.py` 50/50，编入 `tests/run.py`
+      （16/16 全绿）；`guiweb/wiring_check.py` 全绿
+- [x] 真机连续批量刷新暴露的 3 个问题（2026-09-16 第二轮）：① 本地 LLM 服务端
+      "提示词前缀缓存"跨库串味（不是代码传上下文，是 llama.cpp/LM Studio 类
+      服务端复用了上一次请求的 KV 缓存）——`build_prompt` 把库名挪到全文第一行
+      + 显式声明"独立请求勿沿用"，`call_llm` 无 `api_key`（判定本地）时带
+      `cache_prompt: false`；② 批量场景里同一个手写库被反复追问覆盖——`app.js`
+      新增会话级免打扰记忆 `SUMBATCH.skip`，被拒绝过的库批量刷新时静默跳过，
+      仅在用户专门打开该库自己的弹窗点"刷新简介"时才清掉记忆重新问；③ 简介
+      弹窗太小看不清内容——改用 `modal-doc`（720px）+ `.sum-textarea-lg`（最小
+      高度 260px/14px 字号）
+- [ ] 待选：Flet `gui/app.py` 的库管理页补上同款编辑/刷新入口（本轮先 guiweb）
+- [ ] 待用户：真实本地（LM Studio）或云端 LLM 端到端冒烟（已用真实 LM Studio +
+      qwen3.6-35b-a3b 验证过修复有效，但尚未确认修复后完整跑出一份简介）
+- [x] 简介内容规范 3 选 1 已拍板：用户选"范围地图型 + 检索决策卡型"融合——
+      先总体定位+主要主题板块，再明确"适合查什么/大概率查不到什么"（正反
+      两面）；已改写进 `library_summary._PROMPT_INSTRUCTIONS`

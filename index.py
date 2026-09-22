@@ -606,13 +606,37 @@ def _cooldown_cuda(reason):
     log(f"CUDA 失败，进入 {CUDA_COOLDOWN_SECONDS}s 冷却（到期自动探测重试）：{reason}")
 
 
+def _load_pretrained(factory, model_id, **kwargs):
+    """离线优先加载 HF 模型：先只读本地缓存，本地缓存不可用再回退联网。
+
+    SentenceTransformer / CrossEncoder 传 repo id 时，默认每次加载都要先向
+    huggingface.co 核对当前 commit 与文件新鲜度，**即使模型早已下载**——实测
+    这一步占冷加载约 8 秒（联网 11.4s vs 离线 2.6s，约 4 倍）。local_files_only=True
+    直接跳过整轮联网核对，只读本地缓存。
+    本地失败（缺文件抛 OSError；损坏快照抛 ValueError 如截断 JSON / RuntimeError
+    如坏权重）一律回退联网下载，首次使用行为不变。联网也失败则抛带清理指引
+    的 RuntimeError（问题59 B1：此前只接 OSError，损坏缓存永不回退直接硬失败）。
+    无任何模型/结果差异，纯粹少等。
+    """
+    try:
+        return factory(model_id, local_files_only=True, **kwargs)
+    except (OSError, ValueError, RuntimeError) as e:
+        log(f"{model_id} 本地缓存不可用（{type(e).__name__}），回退联网加载…")
+    try:
+        return factory(model_id, local_files_only=False, **kwargs)
+    except Exception as e:
+        raise RuntimeError(
+            f"{model_id} 加载失败：本地缓存不可用且联网加载也失败（{e}）。"
+            f"若反复出现，请删除本地快照后重试") from e
+
+
 def _build_model(device, fp16=False):
     """构建模型实例；import 在函数内（延迟加载，import 本身可能因内存不足失败）。"""
     from sentence_transformers import SentenceTransformer
+    kwargs = {"device": device}
     if fp16:
-        return SentenceTransformer(MODEL_NAME, device=device,
-                                   model_kwargs={"torch_dtype": "float16"})
-    return SentenceTransformer(MODEL_NAME, device=device)
+        kwargs["model_kwargs"] = {"torch_dtype": "float16"}
+    return _load_pretrained(SentenceTransformer, MODEL_NAME, **kwargs)
 
 
 def _param_dtype_mixed(model):
@@ -658,21 +682,23 @@ def _try_switch_back_cuda():
     # 由埋点③（fallback_to_cpu 收尾）另起一段新宽限接续。
     _stall_grace(STALL_GRACE_MODEL_LOAD,
                  message="显存恢复，尝试自动切回 CUDA...")
-    old = _model
-    try:
-        _model = None  # 先释放 CPU 模型，避免新旧模型双份内存峰值
-        new, _ = _load_model("cuda")
-        _model, _device = new, "cuda"
-        log("显存已恢复，自动切回 CUDA")
-        _report_device("cuda", note="auto-switched-back")
-        old = None  # 引用释放收尾（B1）：不用 del——except 回滚分支要靠 old
-                    # 恢复 _model，收尾代码自己抛异常（log 管道断裂/
-                    # _report_device 失败）绝不能让回滚名字解绑定
-                    # （同红线1）。置于全部可抛操作之后，此后无失败路径。
-    except Exception as e:
-        _model, _device = old, "cpu"  # 回滚，继续用 CPU
-        _cooldown_cuda(str(e))
-        log(f"切回 CUDA 失败，保持 CPU：{e}")
+    import gpu_arbiter
+    with gpu_arbiter.GPU_LOCK:  # 问题59：释放-加载-回滚原子化，防并发复用错乱
+        old = _model
+        try:
+            _model = None  # 先释放 CPU 模型，避免新旧模型双份内存峰值
+            new, _ = _load_model("cuda")
+            _model, _device = new, "cuda"
+            log("显存已恢复，自动切回 CUDA")
+            _report_device("cuda", note="auto-switched-back")
+            old = None  # 引用释放收尾（B1）：不用 del——except 回滚分支要靠 old
+                        # 恢复 _model，收尾代码自己抛异常（log 管道断裂/
+                        # _report_device 失败）绝不能让回滚名字解绑定
+                        # （同红线1）。置于全部可抛操作之后，此后无失败路径。
+        except Exception as e:
+            _model, _device = old, "cpu"  # 回滚，继续用 CPU
+            _cooldown_cuda(str(e))
+            log(f"切回 CUDA 失败，保持 CPU：{e}")
 
 
 def _vram_maybe_evict_wemm():
@@ -684,34 +710,39 @@ def _vram_maybe_evict_wemm():
 
     显存仲裁 fail-open：探测失败 / 服务不在 / 请求失败一律静默放行，绝不阻塞
     正常加载路径——被抢占侧的批次由各自失败终态记账下轮重试。
+
+    持 GPU_LOCK 做判定-驱逐原子化（问题59：现唯一调用方 get_model 已持锁，
+    RLock 重入无碍；后续新增调用方也天然被覆）。内含 sleep(2)×2 段，
+    最多挡别的 transition 4s（见 performance B13，维持）。
     """
-    try:
-        import gpu_arbiter
-        from config import CFG as _CFG
-        free = gpu_arbiter.vram_free_gb()
-        if free is None or free >= gpu_arbiter.BGE_MIN_VRAM_GB:
-            return
-        murl = _CFG.get("mineru_local_url")
-        if murl and gpu_arbiter.server_alive(murl):
+    import gpu_arbiter
+    with gpu_arbiter.GPU_LOCK:
+        try:
+            from config import CFG as _CFG
+            free = gpu_arbiter.vram_free_gb()
+            if free is None or free >= gpu_arbiter.BGE_MIN_VRAM_GB:
+                return
+            murl = _CFG.get("mineru_local_url")
+            if murl and gpu_arbiter.server_alive(murl):
+                log(f"空闲显存 {free:.1f}GB 不足（需 >= {gpu_arbiter.BGE_MIN_VRAM_GB}GB），"
+                    f"请求 MinerU 本地解析服务让路…")
+                gpu_arbiter.evict_mineru(murl)
+                time.sleep(2.0)
+                try:
+                    free = gpu_arbiter.vram_free_gb(max_age=0.0)
+                except Exception:
+                    pass
+            if free is None or free >= gpu_arbiter.BGE_MIN_VRAM_GB:
+                return
+            url = _CFG.get("wemm_url")
+            if not url or not gpu_arbiter.server_alive(url):
+                return
             log(f"空闲显存 {free:.1f}GB 不足（需 >= {gpu_arbiter.BGE_MIN_VRAM_GB}GB），"
-                f"请求 MinerU 本地解析服务让路…")
-            gpu_arbiter.evict_mineru(murl)
+                f"请求 WEMM 看图服务让路…")
+            gpu_arbiter.evict_wemm(url)
             time.sleep(2.0)
-            try:
-                free = gpu_arbiter.vram_free_gb(max_age=0.0)
-            except Exception:
-                pass
-        if free is None or free >= gpu_arbiter.BGE_MIN_VRAM_GB:
-            return
-        url = _CFG.get("wemm_url")
-        if not url or not gpu_arbiter.server_alive(url):
-            return
-        log(f"空闲显存 {free:.1f}GB 不足（需 >= {gpu_arbiter.BGE_MIN_VRAM_GB}GB），"
-            f"请求 WEMM 看图服务让路…")
-        gpu_arbiter.evict_wemm(url)
-        time.sleep(2.0)
-    except Exception:
-        pass  # 仲裁失败绝不阻塞模型加载（fail-open 铁律）
+        except Exception:
+            pass  # 仲裁失败绝不阻塞模型加载（fail-open 铁律）
 
 
 def get_model():
@@ -719,37 +750,46 @@ def get_model():
 
     显存恢复后自动切回：CPU 模型缓存期间每次调用先做毫秒级 GPU 探测，
     通过即切换——无硬性等待窗口，最多一个冷却期粒度。
+
+    2026-09-13（问题59 B6/C：GPU_LOCK 单飞）：检查-加载-赋值全程持总锁，
+    并发冷加载只载一份（此前无锁，双线程各载一份并驻 2×1.2GB；reranker
+    侧 2026-08-15 已有 _reranker_lock 修同类 bug）。锁内双重检查：排队
+    期间已被别的线程载好则直接复用，不重复加载。
     """
     global _model, _device
     if _model is not None:
         if _device == "cpu" and _cuda_ready():
             _try_switch_back_cuda()
         return _model
-    if _cuda_ready():
-        try:
-            _vram_maybe_evict_wemm()
-            log("加载 embedding 模型（device=cuda）...")
-            # 埋点①cuda（问题 32）：冷加载全程在宽限内。必须在缓存未命中的
-            # 实际加载分支里、_load_model 调用之前写——放函数入口会随每次
-            # get_model 调用（每批一次）反复刷新宽限，等于把停滞看门狗永久静音。
-            _stall_grace(STALL_GRACE_MODEL_LOAD)
-            _model, _device = _load_model("cuda")
-            _report_device("cuda")
+    import gpu_arbiter
+    with gpu_arbiter.GPU_LOCK:
+        if _model is not None:  # 排队期间已被载好（单飞复用）
             return _model
-        except Exception as e:
-            log(f"CUDA 初始化失败（{e}），降级 CPU")
-            _cooldown_cuda(str(e))
+        if _cuda_ready():
             try:
-                import torch
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
-    log("加载 embedding 模型（device=cpu）...")
-    # 埋点①cpu（问题 32）：同 cuda 分支——只在真实加载前写一次，禁止入口化。
-    _stall_grace(STALL_GRACE_MODEL_LOAD)
-    _model, _device = _load_model("cpu")
-    _report_device("cpu", note="cuda-init-failed")
-    return _model
+                _vram_maybe_evict_wemm()
+                log("加载 embedding 模型（device=cuda）...")
+                # 埋点①cuda（问题 32）：冷加载全程在宽限内。必须在缓存未命中的
+                # 实际加载分支里、_load_model 调用之前写——放函数入口会随每次
+                # get_model 调用（每批一次）反复刷新宽限，等于把停滞看门狗永久静音。
+                _stall_grace(STALL_GRACE_MODEL_LOAD)
+                _model, _device = _load_model("cuda")
+                _report_device("cuda")
+                return _model
+            except Exception as e:
+                log(f"CUDA 初始化失败（{e}），降级 CPU")
+                _cooldown_cuda(str(e))
+                try:
+                    import torch
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+        log("加载 embedding 模型（device=cpu）...")
+        # 埋点①cpu（问题 32）：同 cuda 分支——只在真实加载前写一次，禁止入口化。
+        _stall_grace(STALL_GRACE_MODEL_LOAD)
+        _model, _device = _load_model("cpu")
+        _report_device("cpu", note="cuda-init-failed")
+        return _model
 
 
 def release_model():
@@ -757,19 +797,24 @@ def release_model():
 
     2026-09-04（问题40）：verify_export_import 的端到端检索对比要在主进程与
     子进程各加载一份模型——主进程模型不释放，8GB 卡上两份并存 = WDDM 溢出
-    共享显存、整机性能骤降。生产路径不调用本函数（server 常驻模型是检索
+    共享显存、整机性能骤降。    生产路径不调用本函数（server 常驻模型是检索
     延迟的根基）；只给"拉起别的模型进程前让路"的批处理/测试用。
+
+    持 GPU_LOCK（问题59 B6 下半：释放与加载竞态——加载途中被置空则复用
+    逻辑错乱；释放本身轻量，持锁无碍）。
     """
     global _model
-    _model = None
-    try:
-        import gc
-        gc.collect()
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
+    import gpu_arbiter
+    with gpu_arbiter.GPU_LOCK:
+        _model = None
+        try:
+            import gc
+            gc.collect()
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
 
 def _is_memory_error(e):
@@ -811,8 +856,16 @@ def _auto_batch_size(desired):
     global _last_batch_cap
     if _device != "cuda":
         return desired
-    import torch
-    free_gb = torch.cuda.mem_get_info()[0] / 1024 ** 3
+    try:
+        import torch
+        free_gb = torch.cuda.mem_get_info()[0] / 1024 ** 3
+    except Exception as e:
+        # 问题59 B4：CUDA 探针（mem_get_info）失败绝不能绕过降级链直接上抛——
+        # 此前本调用在 _encode 的 try 之外，CUDA 初死首批即整批上抛。探针失败
+        # 按"显存未知"处理：取保守上限，让 _encode 内的正常降级链接管。
+        # （fail-open 铁律：探测失败绝不阻塞任何路径）
+        log(f"显存探针失败（{type(e).__name__}），批次取保守上限：{e}")
+        return min(8, desired)
     cap = min(8, desired)  # Qwen 长块 bs=16 已近 6GB，固定 8 保安全
     if free_gb < 4.5:
         cap = min(cap, 4)  # 显存紧张再降
@@ -884,16 +937,18 @@ def encode_safe(texts, batch_size=None):
 def fallback_to_cpu(reason=""):
     """卸载当前模型并切 CPU（同进程内生效，无需重启）。"""
     global _model, _device
-    _cooldown_cuda(reason or "未知原因")
-    try:
-        import torch
-        if _model is not None:
-            _model = None
-            torch.cuda.empty_cache()
-    except Exception as e:
-        log(f"卸载 CUDA 模型失败（忽略）：{e}")
-    _device = None
-    log("已切换到 CPU 模式")
+    import gpu_arbiter
+    with gpu_arbiter.GPU_LOCK:
+        _cooldown_cuda(reason or "未知原因")
+        try:
+            import torch
+            if _model is not None:
+                _model = None
+                torch.cuda.empty_cache()
+        except Exception as e:
+            log(f"卸载 CUDA 模型失败（忽略）：{e}")
+        _device = None
+        log("已切换到 CPU 模式")
     # 埋点③（问题 32，降级收尾标记）：随后的批次重试会经 get_model 缓存未命中
     # 分支重新加载模型（埋点①cpu 以 max 合并续写宽限），但重载由调用方静默
     # 发生（见 _encode），若调用方是检索路径或索引已收尾则没有后续埋点——这里
@@ -1723,12 +1778,16 @@ def _wemm_auto_phase(lib, full=False, agent_allowed=None):
         backend = (CFG.get("wemm_backend") or "off")
         if backend not in ("on", "local"):
             return {}
-        try:
-            from retriever import release_reranker
-            release_reranker()
-            release_model()
-        except Exception:
-            pass
+        # B（问题58）：不再"建完文字库就无条件放 bge"——否则纯 md 增量（无页可渲染）
+        # 也白放一次，下次搜索又得重新上车。改为把"让路"作为 before_serve 回调传给
+        # wemm_indexer：只有真的要拉看图服务、要渲染页面时才释放 bge/reranker。
+        def _release_for_wemm():
+            try:
+                from retriever import release_reranker
+                release_reranker()
+                release_model()
+            except Exception:
+                pass
         from wemm_indexer import index_wemm_library
         log(f"[{name}] WEMM 页级导航自动同步（{'全量' if full else '增量'}）…")
         # 进度上报（问题47）：页同步阶段此前零写盘，GUI 全程显示旧 done 造成
@@ -1742,8 +1801,9 @@ def _wemm_auto_phase(lib, full=False, agent_allowed=None):
         st = {}
         try:
             st = index_wemm_library(lib, backend=True, full=full,
-                                    agent_allowed=agent_allowed,
-                                    progress=_wemm_progress)
+                                     agent_allowed=agent_allowed,
+                                     progress=_wemm_progress,
+                                     before_serve=_release_for_wemm)
             return st
         finally:
             # 本库真正收尾（含页库）：running=False 回到 done——否则末库的
@@ -1768,6 +1828,27 @@ def index_library(lib, incremental=True, full=False, agent_allowed=None,
     wemm_sync=False 跳过页级导航阶段——仅用于检索路径上的首跑同步重建
     （server.ensure_fresh 的空库分支）：页库可能耗时数十分钟，绝不能阻塞一次搜索。
     """
+    # 建索引只用 bge-m3（嵌入）；reranker 是检索专用步骤，若被上次检索留在显存
+    # 里就白占 ~1.1GB。开跑前先把它放下（bge 保留——本轮要拿它嵌块）。
+    try:
+        from retriever import release_reranker
+        release_reranker()
+    except Exception:
+        pass
+
+    # A（问题58）：BGE 文字索引阶段用不到 WEMM（页级看图）。开跑前主动请它下车，
+    # 而不是等 BGE 加载撞显存不足才被动踢——避免极端时序下 BGE 撞 WEMM 占显存
+    # 导致 OOM 降级 CPU（拖慢索引）。仅 wemm 开启时探测；fail-open 绝不影响索引。
+    if (CFG.get("wemm_backend") or "off") in ("on", "local"):
+        try:
+            import gpu_arbiter
+            with gpu_arbiter.GPU_LOCK:  # 问题59：开跑驱逐判定-执行原子化
+                _wurl = CFG.get("wemm_url")
+                if _wurl and gpu_arbiter.server_alive(_wurl):
+                    gpu_arbiter.evict_wemm(_wurl)
+        except Exception:
+            pass
+
     result = _index_core(lib["path"], lib["collection"], meta_path(lib["name"]),
                          lib["exclude_dirs"], lib["exclude_files"], lib["exclude_patterns"],
                          lib["extensions"], lib["chunk_char_limit"],
@@ -2283,7 +2364,11 @@ def prune_unreferenced_data(data_dir=None, cache_dir=None, chroma_dir=None,
                 pass
 
     # 2) 活着指纹 = 各注册库 meta 的 hash + 在途 MinerU 断点簿记
+    #    + legacy 基线 index_meta.json（问题59 B5：旧单库入口 index_vault 仍以它
+    #    为指纹文件；只保留文件、不保留其指涉的缓存 = 误删。迁移后该文件一般
+    #    已被改名走，不存在时 _load_hashes 返回空集，零副作用）
     keep = set()
+    keep |= _load_hashes(data_dir / "index_meta.json")
     for e in entries:
         keep |= _load_hashes(data_dir / f"index_meta_{e['name']}.json")
     try:

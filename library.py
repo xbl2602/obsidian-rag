@@ -21,6 +21,7 @@ import hashlib
 import json
 import re
 import sys
+import time
 from pathlib import Path
 
 from config import CFG, DATA_DIR
@@ -172,6 +173,55 @@ def is_same_place_blocked(ex_dirs, rel):
     return bool(s) and s in norm_ex_dir_entries(ex_dirs)
 
 
+# ---------------------------------------------------------------------------
+# 库简介（问题60）：导航/澄清性质的一段话，帮 AI 在通读全文前判断"这个库
+# 值不值得查"。source=none（从未生成）/ ai（生成写入，可被覆盖）/
+# user（用户手写，覆盖前须走 summary_gate 两段式确认，见 server.py）。
+# 内容指纹 fingerprint 由 library_summary.content_fingerprint 计算（依赖
+# index.load_meta，library.py 不反向导入 index 以免循环导入，故只存不算）。
+# 唯一写入口 set_library_summary：GUI 直改、GUI「刷新简介」、MCP 门禁通过后
+# 的写入都经这里，语义收口在一处（同 set_selection 的先例）。
+# ---------------------------------------------------------------------------
+SUMMARY_SOURCES = ("none", "ai", "user")
+SUMMARY_MAX_CHARS = 300
+_BLANK_SUMMARY = {"text": "", "source": "none", "updated_at": None,
+                  "fingerprint": None, "model": None}
+
+
+def get_library_summary(entry):
+    """条目的简介（读侧防御：非 dict/字段缺失一律回退空白态）。"""
+    s = entry.get("summary")
+    if not isinstance(s, dict):
+        return dict(_BLANK_SUMMARY)
+    out = dict(_BLANK_SUMMARY)
+    out.update({k: s.get(k) for k in _BLANK_SUMMARY if k in s})
+    if out["source"] not in SUMMARY_SOURCES:
+        out["source"] = "ai" if out.get("text") else "none"
+    if not isinstance(out.get("text"), str):
+        out["text"] = ""
+    return out
+
+
+def set_library_summary(name, text, source, fingerprint=None, model=None):
+    """写简介（唯一落盘口）。source 必须是 ai/user；none 只用于表示"未生成"，
+    不通过本函数写入（清空简介用本函数写 text=""）。"""
+    if source not in ("ai", "user"):
+        raise ValueError(f"非法 source：{source!r}（合法：ai/user）")
+    if not isinstance(text, str):
+        raise ValueError("简介必须是字符串")
+    text = text.strip()
+    if len(text) > SUMMARY_MAX_CHARS:
+        raise ValueError(f"简介超长（{len(text)} 字，上限 {SUMMARY_MAX_CHARS} 字）：请精简后再写入")
+    entries = load_registry()
+    entry = next((e for e in entries if e["name"] == name), None)
+    if entry is None:
+        raise ValueError(f"库不存在：{name}")
+    entry["summary"] = {"text": text, "source": source, "updated_at": time.time(),
+                        "fingerprint": fingerprint, "model": model}
+    save_registry(entries)
+    return entry
+
+
 def _sel_entry_lists(entry):
     """条目的勾选两表（读侧防御：非列表/非法路径元素静默丢弃，防手改逃逸）。"""
     out = []
@@ -296,7 +346,8 @@ def log(*args):
 
 def _blank_entry(name, path):
     return {k: None for k in OVERRIDE_KEYS} | {
-        "name": name, "path": path, "selection_in": [], "selection_out": []}
+        "name": name, "path": path, "selection_in": [], "selection_out": [],
+        "summary": None}
 
 
 def validate_name(name):
@@ -600,6 +651,7 @@ def list_summary():
             "blocks": blocks,
             "last_indexed": last,
             "overrides": ",".join(f"{k}={v!r}" for k, v in overrides.items()),
+            "summary": get_library_summary(e),
         })
     return rows
 

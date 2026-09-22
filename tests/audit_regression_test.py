@@ -1190,6 +1190,71 @@ def test_waiting_lock_sequence_with_grace():
     assert "stall_grace_until" not in calls[-1], "终态永无宽限"
 
 
+def test_offline_first_loading_tries_local_then_falls_back():
+    """离线优先加载（2026-09-12）：先 local_files_only=True（跳过 HF hub 联网校验，
+    实测冷加载 11.4s→2.6s），本地缺文件抛 OSError 时才回退联网（首次下载仍可用）。
+    本地命中只调一次、绝不联网。"""
+    calls = []
+
+    def factory(model_id, **kwargs):
+        calls.append(kwargs.get("local_files_only"))
+        if kwargs.get("local_files_only"):
+            raise OSError("local cache miss")
+        return "ONLINE"
+
+    assert index._load_pretrained(factory, "X/repo", device="cpu") == "ONLINE"
+    assert calls == [True, False], "缺失时必须先离线再回退联网：%r" % calls
+
+    calls.clear()
+
+    def factory2(model_id, **kwargs):
+        calls.append(kwargs.get("local_files_only"))
+        return "LOCAL"
+
+    assert index._load_pretrained(factory2, "X/repo") == "LOCAL"
+    assert calls == [True], "本地命中不得再联网：%r" % calls
+
+
+def test_model_load_paths_are_offline_first_and_fp16():
+    """静态契约：嵌入与重排两条加载路径都必须走离线优先；重排器必须 fp16。
+
+    嵌入：index._build_model 必须委托 _load_pretrained（否则联网核对回归）。
+    重排：retriever._get_reranker 必须离线优先 + torch_dtype=float16
+    （显存/读盘减半；分数扰动经真库 fp32/fp16 对比确认不改 0.75/0.30 档位）。
+    """
+    import retriever
+    assert "_load_pretrained" in inspect.getsource(index._build_model), \
+        "嵌入模型必须走离线优先加载"
+    rr_src = inspect.getsource(retriever._get_reranker)
+    assert "_load_pretrained" in rr_src, "重排器必须走离线优先加载"
+    assert "float16" in rr_src and "torch_dtype" in rr_src, "重排器必须 fp16 加载"
+
+
+def test_gpu_idle_unload_is_configurable():
+    """空闲卸载阈值可配：键进 DEFAULTS + 设置页，server 现读；默认 5 分钟（用户拍板，
+    离线加载后重上车只要 2~3 秒）；0 = 常驻不卸载（必须被类型校验接受，不得进
+    _POSITIVE_KEYS）。跑任务期间必须跳过卸载（否则长索引会被半路抽走 bge）。"""
+    assert "gpu_idle_unload_seconds" in config.DEFAULTS
+    assert isinstance(config.DEFAULTS["gpu_idle_unload_seconds"], int)
+    assert config.DEFAULTS["gpu_idle_unload_seconds"] == 300, "默认 5 分钟"
+    assert config._coerce("gpu_idle_unload_seconds", 0,
+                          config.DEFAULTS["gpu_idle_unload_seconds"]) == 0, \
+        "0（常驻不卸载）必须合法"
+    src = (Path(__file__).resolve().parent.parent / "server.py").read_text(encoding="utf-8")
+    assert "gpu_idle_unload_seconds" in src, "server 必须现读空闲卸载配置"
+    assert "limit <= 0" in src, "0 应视为常驻不卸载（跳过卸载）"
+    assert 'read_progress().get("running")' in src, "跑任务期间必须跳过卸载"
+
+
+def test_indexing_releases_reranker_up_front():
+    """建索引只用 bge-m3；reranker 是检索专用，开跑前必须先放下，否则被上次检索
+    留在显存里白占 ~1.1GB（用户实测：检索后建索引显存不降）。"""
+    src = inspect.getsource(index.index_library)
+    assert "release_reranker()" in src, "建索引必须先放下 reranker"
+    assert src.index("release_reranker()") < src.index("_index_core("), \
+        "放 reranker 必须在 _index_core 之前"
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

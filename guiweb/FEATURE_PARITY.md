@@ -50,6 +50,7 @@
 | 移除双确认（仅注销 / 删数据+勾选） | remove_library(drop) + 前端门禁 | ⬜ |
 | 打开文件夹 | open_path | ✅ 代码 |
 | 提取试验台（单文件、后端覆盖、子进程隔离、双页签、取消/超时、缓存隔离） | preview_start/poll/cancel（_preview_job + 临时目录父进程清理） | ✅ 代码 |
+| **新增（问题60）** 库简介：手动编辑 / LLM 刷新生成，用户手写覆盖前二次确认 | set_library_summary + refresh_library_summary（library_summary.py 采样+生成） | ✅ 代码；Flet gui/ 暂未补（先 guiweb） |
 
 ## 4. 设置
 | Flet 功能 | guiweb 落点 | 状态 |

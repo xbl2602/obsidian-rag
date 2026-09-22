@@ -670,15 +670,21 @@ function renderLibs() {
           return '<span class="fmt" style="color:var(--warn)">' + esc(k) + ' ×' + l.issues[k] + '</span>';
         }).join('')
       : '';
+    var sm = l.summary || {};
+    var summaryHtml = sm.text
+      ? esc(sm.text) + (sm.source === 'user' ? ' <span class="fmt">已手动编辑</span>' : '')
+      : '<span class="ov-sum">暂无简介 —— 点击「刷新简介」生成</span>';
     return '<div class="shell lib-card" data-libi="' + i + '"><div class="core lib-inner">'
       + '<div class="lib-top"><div style="min-width:0"><div class="lib-name">' + dot + esc(l.name) + '</div>'
       + '<div class="lib-path">' + esc(l.path) + '</div></div>'
       + '<div class="lib-stats"><div class="lib-stat"><b>' + fmtInt(l.blocks) + '</b><span>向量块</span></div>'
       + '<div class="lib-stat"><b class="mono" style="font-size:12px">' + esc(fmtTs(l.last_indexed)) + '</b><span>最近索引</span></div></div></div>'
       + '<div class="fmt-row">' + fmts + issues + '</div>'
+      + '<div class="lib-summary">' + summaryHtml + '</div>'
       + '<div class="lib-ops">'
       + '<button class="btn btn-sm" data-act="cfg">配置</button>'
       + '<button class="btn btn-sm" data-act="sel">勾选范围</button>'
+      + '<button class="btn btn-sm" data-act="sum">简介</button>'
       + '<button class="btn btn-sm btn-ghost" data-act="open">打开文件夹</button>'
       + '<span style="flex:1"></span>'
       + '<button class="btn btn-sm btn-ghost" data-act="rm" style="color:var(--err)">移除</button>'
@@ -695,7 +701,118 @@ $('libGrid').addEventListener('click', function (e) {
     API.open_path(lib.path).then(function () { toast('已打开「' + lib.name + '」所在文件夹'); });
   } else if (act === 'cfg') { openCfg(lib); }
   else if (act === 'sel') { openSel(lib); }
+  else if (act === 'sum') { openSum(lib); }
   else if (act === 'rm') { openRm(lib); }
+});
+
+/* ============ 库简介（问题60：导航性内容简介，手动编辑 / 后台批量生成） ============
+   单库刷新与"刷新全部简介"共用同一后台任务（start/poll，同提取试验台模式）：
+   点了就立刻返回，关掉简介弹层、切到别的标签页都不影响任务继续跑；顶部常驻
+   状态条显示进度，跑完弹 toast，不管这期间用户在不在这个弹层里。 */
+var SUM = { lib: null };
+var SUMBATCH = { polling: false, hidden: false, skip: new Set() };
+function openSum(lib) {
+  SUM.lib = lib.name;
+  var sm = lib.summary || {};
+  $('sumTitle').textContent = '库简介 · ' + lib.name;
+  $('sumText').value = sm.text || '';
+  $('sumMeta').textContent = sm.text
+    ? (sm.source === 'user' ? '当前为用户手写内容' : '当前为 AI 生成内容（模型：' + (sm.model || '?') + '）')
+    : '尚未生成过简介';
+  openModal('mSum');
+}
+$('sumRefresh').addEventListener('click', function () {
+  // 在这个库自己的弹窗里点刷新是针对性的明确动作，即使之前批量刷新时用户对
+  // 这个库选过"不覆盖"，这里也要重新问一次，而不是被批量场景的免打扰记忆挡住。
+  SUMBATCH.skip.delete(SUM.lib);
+  startSumBatch([SUM.lib], false);
+  toast('已在后台开始生成，关闭本窗口不影响进度');
+});
+$('sumSave').addEventListener('click', function () {
+  var text = $('sumText').value.trim();
+  API.set_library_summary(SUM.lib, text).then(function (res) {
+    if (!res.ok) { toast('保存失败：' + (res.error || '未知错误'), 'err'); return; }
+    var lib = LIBS_LIST.find(function (l) { return l.name === SUM.lib; });
+    if (lib) lib.summary = { text: text, source: 'user' };
+    renderLibs();
+    hideOverlay($('mSum'));
+    toast('简介已保存');
+  }).catch(function () { toast('保存失败', 'err'); });
+});
+
+function startSumBatch(names, force) {
+  API.refresh_library_summaries_batch(names, !!force).then(function (res) {
+    if (!res.ok) { toast(res.error || '启动失败', 'err'); return; }
+    SUMBATCH.polling = true;
+    SUMBATCH.hidden = false;
+    $('sumBatchBar').style.display = 'flex';
+    sumBatchPoll();
+  }).catch(function () { toast('启动失败', 'err'); });
+}
+function sumBatchPoll() {
+  if (!SUMBATCH.polling) return;
+  API.refresh_library_summaries_poll().then(function (st) {
+    if (!SUMBATCH.polling) return;
+    if (!SUMBATCH.hidden) {
+      $('sumBatchTxt').textContent = st.running
+        ? ('刷新简介中… ' + st.done + '/' + st.total + (st.current ? '（当前：' + st.current + '）' : ''))
+        : '整理结果…';
+    }
+    if (!st.running) {
+      SUMBATCH.polling = false;
+      $('sumBatchBar').style.display = 'none';
+      var okN = 0, failN = 0, confirmNames = [], alreadyDeclined = 0;
+      Object.keys(st.results).forEach(function (name) {
+        var r = st.results[name];
+        var lib = LIBS_LIST.find(function (l) { return l.name === name; });
+        if (r.ok) {
+          okN++;
+          if (lib) lib.summary = { text: r.text, source: 'ai' };
+          SUMBATCH.skip.delete(name); // 已成功覆盖为 AI 内容，之前的"跳过"记忆作废
+          if (SUM.lib === name) {
+            $('sumText').value = r.text;
+            $('sumMeta').textContent = '当前为 AI 生成内容';
+          }
+        } else if (r.needs_confirm) {
+          // 用户这个批次里已经明确说过"不覆盖"的库，不再每次批量刷新都重新弹窗
+          // 打断一次——只静默计入"已跳过"，除非用户专门打开这个库的简介弹窗
+          // 再点一次刷新（openSum 的 sumRefresh 会清掉这条免打扰记忆）。
+          if (SUMBATCH.skip.has(name)) { alreadyDeclined++; }
+          else { confirmNames.push(name); }
+        } else {
+          failN++;
+          toast('「' + name + '」生成失败：' + (r.error || '未知错误'), 'err');
+        }
+      });
+      renderLibs();
+      if (confirmNames.length) {
+        if (confirm('以下 ' + confirmNames.length + ' 个库的简介是用户手写内容，是否一并覆盖：\n'
+            + confirmNames.join('、'))) {
+          startSumBatch(confirmNames, true);
+          return;
+        }
+        confirmNames.forEach(function (n) { SUMBATCH.skip.add(n); });
+      }
+      var skippedTotal = confirmNames.length + alreadyDeclined;
+      if (okN || failN || skippedTotal) {
+        toast('简介刷新完成：' + okN + ' 个成功' + (failN ? '，' + failN + ' 个失败' : '')
+          + (skippedTotal ? '，' + skippedTotal + ' 个手写简介已跳过（如需覆盖请到该库简介弹窗内单独刷新）' : ''));
+      }
+      return;
+    }
+    setTimeout(sumBatchPoll, 800);
+  }).catch(function () { SUMBATCH.polling = false; $('sumBatchBar').style.display = 'none'; });
+}
+$('sumBatchBtn').addEventListener('click', function () {
+  if (SUMBATCH.polling) { toast('已有刷新任务在运行', 'warn'); return; }
+  var names = S.scope.length ? S.scope.slice() : LIBS_LIST.map(function (l) { return l.name; });
+  if (!names.length) { toast('没有可刷新的库', 'warn'); return; }
+  startSumBatch(names, false);
+  toast('已在后台开始批量刷新 ' + names.length + ' 个库的简介');
+});
+$('sumBatchHide').addEventListener('click', function () {
+  SUMBATCH.hidden = true;
+  $('sumBatchBar').style.display = 'none';
 });
 
 /* ============ 勾选范围（问题44：库内文件/文件夹级勾选建模） ============ */

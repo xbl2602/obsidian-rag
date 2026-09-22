@@ -77,8 +77,74 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
   进程配置一律经 `config.reload_config()` 现读（问题39），不要再读 import 快照
 - **GPU 显存仲裁（问题41，`gpu_arbiter.py`）**：同一时刻只让一个模型驻留显存——WEMM 加载
   前等空闲显存 ≥5.5GB；bge-m3 加载前显存不足则 evict WEMM（检索优先，被抢占批次由页索引
-  终态下轮重试）；server 空闲 600s 自动卸载 bge-m3/reranker；WEMM 空闲 5min 卸显存 +
-  30min 自退出、按需自动拉起。**fail-open 铁律：显存探测失败绝不阻塞任何路径**
+  终态下轮重试）；server 空闲 `gpu_idle_unload_seconds`（默认 300s/5min，**0=常驻不卸载**）
+  自动卸载 bge-m3/reranker（**索引运行期间跳过卸载**，防止抽走正在用的 bge）；WEMM 空闲 5min 卸显存 +
+  30min 自退出、按需自动拉起。**BGE↔WEMM 交接（问题58）**：建文字索引只用
+  bge，`index_library` 开跑前先 `release_reranker()`（检索专用，白占 ~1.1GB）
+  并**主动 evict 在线的 WEMM**（BGE 阶段用不到它，别等撞显存才被动踢）；文字索引
+  完成后 WEMM 阶段不再无条件放 bge，而是把释放包成 `before_serve` 回调传给
+   `wemm_indexer`，**只有真要渲染页面拉看图服务时才放 bge**（纯 md 增量不白放）。
+  **C 方案全局互斥（问题59）**：`gpu_arbiter.GPU_LOCK`（RLock）——一切显存驻留变更
+  （bge 加载/释放、reranker 释放、evict、让路判定）全持锁，纯查询不持；
+  `navigate` 15s 拿不到锁或索引在跑 → veto（只查已活着的服务，否则回忙），
+  `ensure_server` 长等待永远在锁外。
+  **fail-open 铁律：显存探测失败绝不阻塞任何路径**
+- **模型冷加载（2026-09-12）**：`index._load_pretrained` 离线优先——先
+  `local_files_only=True` 只读本地缓存（跳过 HF hub 联网核对，实测冷加载 11.4s→2.6s），
+  本地缺文件抛 `OSError` 才回退联网（首次下载不变）。嵌入与重排两条加载路径共用；
+  重排器另加 fp16（显存/读盘减半，分数经真库 fp32/fp16 对比不改 0.75/0.30 档位）。
+  新增模型加载路径必须穿 `_load_pretrained`，否则联网核对回归
+- **库简介（问题60，`library_summary.py`/`summary_gate.py`）**：`list_libraries` 此前只能
+  报库名/路径/块数这类元数据，回答不了"这库里到底讲什么"——库简介补这个空：一段
+  ≤300 字的导航/澄清性文字，帮 agent 检索前先判断值不值得往这查，**不是**检索结果
+  替代品，**禁止**逐字摘抄原文、不点名具体笔记细节。几百篇文档不必也不能全文喂
+  LLM：采样复用索引时已算好的 Chroma 块向量，做最远点采样（farthest-point sampling，
+  确定性、免迭代收敛）取 15~25 个代表块，输入规模由采样数固定、与库大小基本无关。
+  **触发纪律（红线）**：生成/刷新只能被显式触发——GUI「库→简介→刷新简介」按钮，
+  或对话里用户明确要求 agent 生成；**绝不**挂在索引流程之后自动跑，MCP 工具
+  `get_library_sample`/`propose_library_summary`/`apply_library_summary` 的 docstring
+  里硬编码了这条纪律（agent 运行时只读 docstring，不读本文件）。**覆盖保护**：
+  `library.get_library_summary(...)["source"]` 为 `none`/`ai` 时可直接覆盖；一旦
+  `source=="user"`（用户在 GUI 手写过），AI 想覆盖必须走 `summary_gate.py` 的两段式
+  确认（提案号+6位确认码+10分钟TTL+一次性，与 `selection_gate.py` 同一套机制，
+  互不依赖）；用户自己在 GUI 编辑框直接改并保存不经过此门禁，无条件生效。生成用的
+  LLM 复用 `retriever.hyde_generate` 的 OpenAI 兼容 chat completions 调用方式
+  （`config.library_summary_llm_url`/`_model`/`_api_key`，本地留空 key、云端带
+  Bearer），本轮只落地 guiweb 入口，Flet `gui/` 暂未补编辑界面（设置页字段因
+  `config_editor.py` 共享自动两边可见）。**真机实测两个坑都已修**：① Chroma
+  的 `embeddings` 是 numpy 数组，`arr or []` 这类真值判断会直接抛
+  "ambiguous truth value"——一律改用 `is None`/`len()` 判空，测试也换成
+  numpy 数组灌入假 collection 才测得出这个坑（python list 测不出）；②本地
+  思考型模型（如 Qwen3，先吐隐藏的 `reasoning_content` 再给最终 `content`）
+  跑得比 HyDE 那种查询期调用慢得多，30s 超时会在模型还在"想"的时候掐断连接
+  （见 `content` 恒为空、`reasoning_content` 非空的特征）——超时/token 预算
+  提到 180s/2000 且做成可调（`library_summary_llm_timeout_seconds`/
+  `_max_tokens`），`call_llm` 遇到"只吐了思考过程"的情况绝不把思考内容当简介
+  返回，宁可报错。**生成改成后台任务 + 轮询**（`guiweb/bridge.py`
+  `refresh_library_summaries_batch`/`_poll`，同提取试验台的 start/poll 模式；
+  单库刷新也走这条路径而非同步阻塞）：关掉简介弹层、切标签页都不影响任务继续跑，
+  完成后无论用户在不在原弹层里都会 toast；库页顶部新增"刷新全部简介"按钮，
+  目标 = 当前"库范围"多选（`S.scope`，空=全部库），批量遇到用户手写锁定的库
+  会跳过并在结束后汇总问一次是否一并覆盖，不逐库弹窗打断。**批量连续刷新又
+  暴露三个坑**：①本地推理服务端（LM Studio/llama.cpp 系）的"提示词前缀缓存"
+  会在多个库连续请求、且请求前缀逐字相同时命中错误缓存，把上一个库的话题
+  续到这次回答——不是代码真的传递了上下文，是服务端缓存匹配点落错了地方。
+  没有一刀切关缓存（用户明确要求"别整个关掉，固定规范提示词应该留在缓存里
+  给后面的库提速"），而是把 `_PROMPT_INSTRUCTIONS`（逐库不变）单独拆成一条
+  system 消息、`build_prompt` 只拼库名/文件/采样片段这条每次都变的 user
+  消息——服务端缓存命中点精确落在 system 消息末尾，要么整条复用要么整条
+  重算，没有"匹配到一半"的歧义，速度和正确性都要，也不需要区分本地/云端
+  要不要加特殊字段。②批量场景下同一个被拒绝覆盖的
+  手写库会在之后每次刷新都被重新追问——`app.js` 加了会话级免打扰记忆
+  `SUMBATCH.skip`（仅存活于当前页面会话，不持久化），批量场景跳过不再问，
+  但用户专门打开该库自己的简介弹窗点"刷新简介"视为针对性动作、会清掉记忆
+  重新问。③简介弹窗（`modal-wide`+96px 文本框+12.5px 字号）装不下 300 字，
+  看着像"生成完看不到内容"——改用 `modal-doc`（720px）+ `.sum-textarea-lg`
+  （260px 高/14px 字号）。**内容规范已定稿**（3 选 1 给用户挑，选了"范围地图"
+  + "检索决策卡"的融合）：`_PROMPT_INSTRUCTIONS` 要求简介必须同时做两件事——
+  先给总体定位+库内主要主题板块（口语化提，不罗列），再明确写"适合来这查
+  什么类型的问题"和"大概率查不到什么"（正反两面），直接服务于 agent
+  "值不值得查"的决策，而不是只报主题范围让 agent 自己猜。
 - 详细机制：`AI_GUIDE.md`（部署/使用）、Vault 内 `20-Projects/Obsidian RAG/` 文档组、
   开发史 `TASK_LOG.md`（问题 1–44）、路线 `TODO.md`
 
@@ -89,7 +155,7 @@ BGE-M3 嵌入 → Chroma；混合检索 + 重排；MCP server 接 opencode；Fle
 $env:PYTHONIOENCODING = "utf-8"
 
 # 回归测试（改动后必须全绿才算完成；单进程 A→B→C，实测约 45 秒）
-.venv\Scripts\python tests\run.py                  # 统一入口：14 套全跑 + 套级计时 Top10
+.venv\Scripts\python tests\run.py                  # 统一入口：15 套全跑 + 套级计时 Top10
 .venv\Scripts\python tests\run.py --suite test_dedup   # 只跑某套（调试用）
 .venv\Scripts\python tests\run.py --list           # 只列分组与顺序
 # 各文件仍可单独跑（用法不变，断言一个没删）：
@@ -135,6 +201,9 @@ $env:PYTHONIOENCODING = "utf-8"
    开关——一次性的手动测试会在用户不知情下变成正式生效的内容（2026-08-25 council
    审计发现：试验台测云端 OCR 曾写进生产缓存，之后 backend=none 的索引照样命中）。
 8. **API Key 不进日志**：MinerU 客户端的错误消息只含类型与摘要。
+9. **evict/卸载是瞬时点查而非持有**：凡"先腾显存、稍后再加载"的交接，必须复核中间窗口的
+   并发重入路径——`navigate_knowledge` 可在索引窗口把 WEMM 重新抬进显存、`get_model`
+   无锁可双重加载（2026-09-12 council 红队实测 B3/B6）。仲裁给的是快照，不是租约。
 
 ## 测试纪律
 

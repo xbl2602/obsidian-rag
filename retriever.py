@@ -8,7 +8,8 @@ from collections import Counter
 import chromadb
 
 from config import CFG
-from index import CHROMA_DIR, COLLECTION_NAME, encode_safe
+from index import CHROMA_DIR, COLLECTION_NAME, _load_pretrained, encode_safe
+import gpu_arbiter
 from library import effective_config, meta_path, resolve_entries
 from advice import advice_for
 
@@ -228,9 +229,12 @@ rerank_failures = 0  # 重排执行失败次数（eval 回归据此检测"静默
 
 
 def release_reranker():
-    """释放常驻重排模型（配合 index.release_model 让显存；下次懒加载回来）。"""
+    """释放常驻重排模型（配合 index.release_model 让显存；下次懒加载回来）。
+
+    持 GPU_LOCK（问题59：释放与加载/判定同锁，navigate 的原子判定不被插队）。"""
     global _reranker
-    _reranker = None
+    with gpu_arbiter.GPU_LOCK:
+        _reranker = None
 
 
 def _get_reranker():
@@ -239,6 +243,8 @@ def _get_reranker():
     reranker 与 embedding 模型独立，检索时才加载（首次 ~10s + 模型 ~1.1GB）。
     2026-08-15：加载加锁（双重检查）——此前无锁，mcp 并发请求时两个线程
     同时通过 None 检查、各自加载一份模型，后者覆盖前者（孤儿模型占显存）。
+    2026-09-12：离线优先加载（跳过 hub 联网校验，冷加载 10.2s→2.6s）+ fp16
+    （显存/读盘减半，官方推荐；分数扰动经真库对比确认不影响 0.75/0.30 档位）。
     """
     global _reranker, _reranker_failed
     if _reranker is not None or _reranker_failed:
@@ -248,7 +254,9 @@ def _get_reranker():
             return _reranker
         try:
             from sentence_transformers import CrossEncoder
-            _reranker = CrossEncoder(CFG["rerank_model"], max_length=512)
+            _reranker = _load_pretrained(CrossEncoder, CFG["rerank_model"],
+                                         max_length=512,
+                                         model_kwargs={"torch_dtype": "float16"})
         except Exception as e:
             _reranker_failed = True
             print(f"[retriever] 重排器加载失败（降级纯融合）：{e}", file=sys.stderr)

@@ -244,10 +244,19 @@
         <h1>知识库</h1>
         <p id="libNote">加载中</p>
       </div>
-      <button class="btn btn-primary" id="addLibBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        添加库
-      </button>
+      <div style="display:flex;gap:8px">
+        <button class="btn" id="sumBatchBtn">刷新全部简介</button>
+        <button class="btn btn-primary" id="addLibBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          添加库
+        </button>
+      </div>
+    </div>
+    <div class="sum-batch-bar" id="sumBatchBar" style="display:none">
+      <span class="mini-spin"></span>
+      <span id="sumBatchTxt">刷新中…</span>
+      <span style="flex:1"></span>
+      <button class="btn btn-sm btn-ghost" id="sumBatchHide">隐藏（后台继续跑）</button>
     </div>
     <div id="libGrid"></div>
   </section>
@@ -522,6 +531,21 @@
     <div class="m-ops">
       <button class="btn" data-close>取消</button>
       <button class="btn btn-primary" id="cfgOk">保存</button>
+    </div>
+  </div></div>
+</div>
+
+<!-- 库简介（问题60） -->
+<div class="overlay" id="mSum">
+  <div class="shell modal modal-doc"><div class="core modal-core">
+    <h3 id="sumTitle">库简介</h3>
+    <p class="m-desc">导航/澄清性质的一段话，帮 AI 在真正检索/通读之前先判断"这库值不值得往这查"——不是检索结果本身。可手动编辑，也可用 LLM 按库内容采样生成。</p>
+    <textarea class="in-text sum-textarea sum-textarea-lg" id="sumText" maxlength="300" placeholder="暂无简介，点击下方「刷新简介」自动生成，或直接在此手写…"></textarea>
+    <p class="m-desc" id="sumMeta" style="margin-top:8px;margin-bottom:0"></p>
+    <div class="m-ops">
+      <button class="btn" data-close>关闭</button>
+      <button class="btn btn-ghost" id="sumRefresh">刷新简介</button>
+      <button class="btn btn-primary" id="sumSave">保存</button>
     </div>
   </div></div>
 </div>
